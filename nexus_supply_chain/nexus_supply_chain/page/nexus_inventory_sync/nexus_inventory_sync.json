@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-02-26 13:56:19.600895",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-02-26 13:56:19.600895",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "nexus_inventory_sync",
+ "owner": "Administrator",
+ "page_name": "nexus_inventory_sync",
+ "roles": [],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Nexus Inventory Sync"
+}

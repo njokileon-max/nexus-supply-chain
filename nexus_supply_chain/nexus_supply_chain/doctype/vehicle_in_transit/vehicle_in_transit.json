@@ -1,0 +1,82 @@
+{
+ "actions": [],
+ "autoname": "field:vehicle_plate",
+ "creation": "2026-02-25 21:46:56.388459",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "vehicle_plate",
+  "vehicle_type",
+  "is_active",
+  "current_driver",
+  "current_status"
+ ],
+ "fields": [
+  {
+   "fieldname": "vehicle_plate",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Vehicle Plate",
+   "options": "Vehicle",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "vehicle_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Vehicle Type",
+   "options": "Vehicle Type"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "current_driver",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Current Driver",
+   "options": "User"
+  },
+  {
+   "default": "Idle",
+   "fieldname": "current_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Current Status",
+   "options": "Idle\nLoading\nEn Route\nReturning\nMaintenance"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-14 10:53:10.375360",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Vehicle In Transit",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

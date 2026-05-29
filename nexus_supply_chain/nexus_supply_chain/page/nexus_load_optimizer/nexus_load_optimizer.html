@@ -1,0 +1,18 @@
+<style>
+    .planner-card { background: white; padding: 15px; border-radius: 8px; border: 1px solid #d1d8dd; margin-bottom: 25px; }
+    .indicator-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .dot-green { background-color: #28a745; }
+    .dot-red { background-color: #dc3545; }
+</style>
+
+<div class="tonnage-plan-wrapper" style="padding: 20px; background-color: #f8f9fb;">
+    <div class="filter-bar">
+        <button id="clear-filters" class="btn btn-secondary">Clear Filters</button>
+    </div>
+
+    <div class="planner-card">
+        <h4>NEXUS LOAD OPTIMIZER</h4>
+        <button id="optimize-load" class="btn btn-primary">Optimize Load</button>
+        <div id="optimizer-sections-container" style="margin-top: 20px;"></div>
+    </div>
+</div>

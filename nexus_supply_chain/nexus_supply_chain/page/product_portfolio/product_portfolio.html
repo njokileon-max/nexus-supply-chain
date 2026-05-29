@@ -1,0 +1,36 @@
+<style>
+	.portfolio-dashboard {
+		padding: 15px;
+		background-color: var(--bg-color);
+	}
+	.portfolio-table-wrapper {
+		margin-top: 20px;
+		background: var(--card-bg);
+		border-radius: var(--border-radius);
+		box-shadow: var(--card-shadow);
+		padding: 15px;
+		border: 1px solid var(--border-color);
+		min-height: 400px;
+	}
+	.summary-banner {
+		padding: 10px 15px;
+		background-color: var(--gray-100);
+		border-left: 4px solid var(--blue-500);
+		margin-bottom: 15px;
+		border-radius: 4px;
+	}
+</style>
+
+<div class="portfolio-dashboard">
+	<div class="summary-banner">
+		<h4 class="mb-1">Operational Variance Analysis</h4>
+		<p class="text-muted text-small mb-0">
+			This engine queries all active items under Finished Goods and WIP, recursively exploding their default BOMs down to the raw material leaves to calculate the <b>True Theoretical Cost</b>. 
+			It compares this against the <b>System Recorded Valuation Rate</b>. 
+			<br><i>A positive (red) variance indicates the theoretical recipe cost is higher than current ledger valuation.</i>
+		</p>
+	</div>
+	
+	<div class="portfolio-table-wrapper">
+		</div>
+</div>

@@ -1,0 +1,80 @@
+<style>
+    .indicator-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .dot-green { background-color: #28a745; border: 1px solid #1e7e34; }
+    .dot-orange { background-color: #fd7e14; border: 1px solid #d39e00; }
+    .dot-red { background-color: #dc3545; border: 1px solid #bd2130; }
+    .planner-card { background: white; padding: 15px; border-radius: 8px; border: 1px solid #d1d8dd; margin-bottom: 25px; }
+    .filter-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; align-items: center; }
+    .note { font-size: 12px; color: #6c757d; }
+    .pagination button { margin: 0 5px; padding: 4px 10px; }
+    .th-sort-menu { position: relative; display: inline-block; cursor: pointer; }
+    .sort-menu-btn { font-size: 16px; padding: 0 4px; opacity: 0.7; }
+    .sort-menu-btn:hover { opacity: 1; }
+    .sort-dropdown {
+        position: absolute; background: white; border: 1px solid #d1d8dd; border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 160px; z-index: 100; right: 0;
+        display: none; padding: 6px 0;
+    }
+    .sort-dropdown.show { display: block; }
+    .sort-item { padding: 6px 12px; cursor: pointer; font-size: 13px; }
+    .sort-item:hover { background: #f0f4f7; }
+    .sort-item.active { font-weight: bold; background: #e9ecef; }
+
+    td.truncated[title]:hover { cursor: help; }
+    td.truncated[title]:hover::after {
+        content: attr(title); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+        background: #333; color: white; padding: 6px 10px; border-radius: 4px; font-size: 12px;
+        white-space: pre-wrap; max-width: 400px; z-index: 200; pointer-events: none;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+</style>
+
+<div class="material-planner-wrapper" style="padding: 20px; background-color: #f8f9fb;">
+    <div class="filter-bar">
+        <button id="clear-filters" class="btn btn-secondary">Clear Filters</button>
+    </div>
+
+    <div class="planner-card">
+        <h4 style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+            1. Sales Orders Readiness <button class="btn btn-default btn-xs btn-export" data-type="so">Export</button>
+        </h4>
+        <button class="btn btn-primary btn-get" data-type="so">Get Sales Orders</button>
+        <div id="so-table-container"></div>
+    </div>
+
+    <div class="planner-card">
+        <h4 style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+            2. Finished Goods Required <button class="btn btn-default btn-xs btn-export" data-type="fg">Export</button>
+        </h4>
+        <button class="btn btn-primary btn-get" data-type="fg">Get FG Items</button>
+        <label style="cursor: pointer; margin-left: 10px; font-weight: bold;">
+            <input type="checkbox" id="toggle-consolidate-fg"> Consolidate
+        </label>
+        <p class="note">Note: Without consolidation, balance is per-row (may not show cumulative shortages for duplicate items).</p>
+        <div id="fg-table-container"></div>
+    </div>
+
+    <div class="planner-card">
+        <h4 style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+            3. Sub-Assemblies Required <button class="btn btn-default btn-xs btn-export" data-type="sub">Export</button>
+        </h4>
+        <button class="btn btn-primary btn-get" data-type="sub">Get Sub Assemblies</button>
+        <label style="cursor: pointer; margin-left: 10px; font-weight: bold;">
+            <input type="checkbox" id="toggle-consolidate-sub"> Consolidate
+        </label>
+        <p class="note">Note: Without consolidation, balance is per-row (may not show cumulative shortages for duplicate items).</p>
+        <div id="sub-table-container"></div>
+    </div>
+
+    <div class="planner-card">
+        <h4 style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+            4. Raw Materials (Gross) <button class="btn btn-default btn-xs btn-export" data-type="rm">Export</button>
+        </h4>
+        <button class="btn btn-primary btn-get" data-type="rm">Get Raw Materials</button>
+        <label style="cursor: pointer; margin-left: 10px; font-weight: bold;">
+            <input type="checkbox" id="toggle-consolidate-rm"> Consolidate
+        </label>
+        <p class="note">Note: Without consolidation, balance is per-row (may not show cumulative shortages for duplicate items).</p>
+        <div id="rm-table-container"></div>
+    </div>
+</div>

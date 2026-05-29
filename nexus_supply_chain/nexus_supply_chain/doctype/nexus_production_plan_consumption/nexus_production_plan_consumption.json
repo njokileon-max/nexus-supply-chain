@@ -1,0 +1,53 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2026-03-01 22:10:00",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "item_code",
+    "warehouse",
+    "actual_qty",
+    "in_process_qty",
+    "planned_qty"
+  ],
+  "fields": [
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Link",
+      "label": "Item Code",
+      "options": "Item"
+    },
+    {
+      "fieldname": "warehouse",
+      "fieldtype": "Link",
+      "label": "Warehouse",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "actual_qty",
+      "fieldtype": "Float",
+      "label": "Actual Qty"
+    },
+    {
+      "fieldname": "in_process_qty",
+      "fieldtype": "Float",
+      "label": "In Process Qty"
+    },
+    {
+      "fieldname": "planned_qty",
+      "fieldtype": "Float",
+      "label": "Planned Qty"
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-03-01 22:10:00",
+  "modified_by": "Administrator",
+  "module": "Nexus Supply Chain",
+  "name": "Nexus Production Plan Consumption",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

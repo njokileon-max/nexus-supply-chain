@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-04-28 16:30:30.293748",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-04-28 16:30:30.293748",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "nexus_sales_dispatch",
+ "owner": "Administrator",
+ "page_name": "nexus_sales_dispatch",
+ "roles": [],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Sales Command Center"
+}

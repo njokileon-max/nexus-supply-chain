@@ -1,0 +1,118 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "DEL-.DD.-.MM.-.YY.-.####",
+ "creation": "2026-02-25 21:42:56.669362",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_gwmx",
+  "load_plan",
+  "driver",
+  "vehicle",
+  "trip_status",
+  "stops",
+  "returned_items",
+  "route_map_html",
+  "route_geojson",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_gwmx",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "load_plan",
+   "fieldtype": "Link",
+   "label": "Load Plan",
+   "options": "Nexus Load Plan"
+  },
+  {
+   "fetch_from": "vehicle.current_driver",
+   "fieldname": "driver",
+   "fieldtype": "Link",
+   "label": "Driver",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "vehicle",
+   "fieldtype": "Link",
+   "label": "Vehicle",
+   "options": "Vehicle In Transit"
+  },
+  {
+   "default": "Manifested",
+   "fieldname": "trip_status",
+   "fieldtype": "Select",
+   "label": "Trip Status",
+   "options": "Manifested\nDispatched\nCompleted\nReturning\nCancelled"
+  },
+  {
+   "fieldname": "stops",
+   "fieldtype": "Table",
+   "label": "Stops",
+   "options": "In Transit-Delivery Stop"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Vehicle Delivery Manifest",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "route_map_html",
+   "fieldtype": "HTML",
+   "label": "Route Map"
+  },
+  {
+   "fieldname": "route_geojson",
+   "fieldtype": "Long Text",
+   "label": "Route Geojson",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "returned_items",
+   "fieldtype": "Table",
+   "label": "Returned Items",
+   "options": "Manifest Returned Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-04-23 22:25:39.866681",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Vehicle Delivery Manifest",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

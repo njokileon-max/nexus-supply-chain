@@ -1,0 +1,96 @@
+{
+ "actions": [],
+ "autoname": "RES-.DD.-.MM.-.YY.-.####",
+ "creation": "2026-03-06 14:36:13.059224",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_jvo9",
+  "nexus_load_plan",
+  "reservation_status",
+  "expiry_date",
+  "items",
+  "release_reason",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_jvo9",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "nexus_load_plan",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Nexus Load Plan",
+   "options": "Nexus Load Plan",
+   "reqd": 1
+  },
+  {
+   "fieldname": "expiry_date",
+   "fieldtype": "Datetime",
+   "label": "Expiry Date"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "reservation_status",
+   "fieldtype": "Select",
+   "label": "Reservation Status",
+   "options": "Draft\nActive\nWaiting for Stock\nConsumed\nPartially Consumed\nReleased\nExpired",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Reserved Items",
+   "options": "Nexus Inventory Reservation Item"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Nexus Inventory Reservation",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "release_reason",
+   "fieldtype": "Select",
+   "label": "Release Reason",
+   "options": "\nLoad Plan Cancelled\nStock Reallocation\nCustomer Request\nReservation Expired\nInventory Correction"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-03-11 16:12:39.817201",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Inventory Reservation",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

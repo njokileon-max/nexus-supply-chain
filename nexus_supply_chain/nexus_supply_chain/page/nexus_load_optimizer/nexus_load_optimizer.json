@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-02-26 00:30:32.414681",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-02-26 00:32:58.441913",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "nexus_load_optimizer",
+ "owner": "Administrator",
+ "page_name": "nexus_load_optimizer",
+ "roles": [],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Nexus Load Optimizer"
+}
