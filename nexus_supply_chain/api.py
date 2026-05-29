@@ -474,19 +474,26 @@ def get_sales_dashboard_data():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    # 🚨 FIX: Safe Target Lookups (No raw SUM SQL)
+    # 🚨 FIX: Safe Target Lookups using Schema Verification
     root_sp = get_root_sales_person(user)
     sales_target = 0.0
     collection_target = 0.0
     
     if root_sp:
-        try:
-            t_data = frappe.db.get_value("Sales Person", root_sp, ["custom_sales_target", "custom_collection_target"], as_dict=True)
+        # 1. Check if the schema physically exists in the database
+        has_sales_col = frappe.db.has_column("Sales Person", "custom_sales_target")
+        has_coll_col = frappe.db.has_column("Sales Person", "custom_collection_target")
+        
+        # 2. Only query the columns that actually exist
+        fields_to_fetch = []
+        if has_sales_col: fields_to_fetch.append("custom_sales_target")
+        if has_coll_col: fields_to_fetch.append("custom_collection_target")
+        
+        if fields_to_fetch:
+            t_data = frappe.db.get_value("Sales Person", root_sp, fields_to_fetch, as_dict=True)
             if t_data:
                 sales_target = float(t_data.get("custom_sales_target") or 0.0)
                 collection_target = float(t_data.get("custom_collection_target") or 0.0)
-        except Exception:
-            pass # Silent fail to default 0.0 if schema is broken
 
     assigned_customers = frappe.db.sql(f"""
         SELECT DISTINCT parent FROM `tabSales Team` 
@@ -728,19 +735,26 @@ def get_sales_context():
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
-    # 🚨 FIX: Safe Target Lookups (No raw SUM SQL)
+    # 🚨 FIX: Safe Target Lookups using Schema Verification
     root_sp = get_root_sales_person(frappe.session.user)
     sales_target = 0.0
     collection_target = 0.0
     
     if root_sp:
-        try:
-            t_data = frappe.db.get_value("Sales Person", root_sp, ["custom_sales_target", "custom_collection_target"], as_dict=True)
+        # 1. Check if the schema physically exists in the database
+        has_sales_col = frappe.db.has_column("Sales Person", "custom_sales_target")
+        has_coll_col = frappe.db.has_column("Sales Person", "custom_collection_target")
+        
+        # 2. Only query the columns that actually exist
+        fields_to_fetch = []
+        if has_sales_col: fields_to_fetch.append("custom_sales_target")
+        if has_coll_col: fields_to_fetch.append("custom_collection_target")
+        
+        if fields_to_fetch:
+            t_data = frappe.db.get_value("Sales Person", root_sp, fields_to_fetch, as_dict=True)
             if t_data:
                 sales_target = float(t_data.get("custom_sales_target") or 0.0)
                 collection_target = float(t_data.get("custom_collection_target") or 0.0)
-        except Exception:
-            pass # Silent fail to default 0.0 if schema is broken
 
     mtd_sales = 0.0
     mtd_collections = 0.0
