@@ -12,7 +12,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
             <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
                 
-                <!-- ACTIVE SALES COLUMN -->
                 <div class="col-md-3 border-end d-flex flex-column bg-white" style="max-height: 100%;">
                     <div class="p-3 border-bottom bg-light">
                         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -25,11 +24,9 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         </div>
                     </div>
                     <div class="flex-grow-1 overflow-auto p-3" id="active-sales-container" style="background-color: #f8fafc;">
-                        <!-- Live DOM injected here -->
-                    </div>
+                        </div>
                 </div>
                 
-                <!-- CENTER MAP COLUMN -->
                 <div class="col-md-6 position-relative bg-light border-end">
                     <div id="fleet-map" style="height: 100%; width: 100%; z-index: 1;"></div>
                     
@@ -49,7 +46,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     </div>
                 </div>
 
-                <!-- STANDBY/OFFLINE SALES COLUMN -->
                 <div class="col-md-3 d-flex flex-column bg-white" style="max-height: 100%;">
                     <div class="p-3 border-bottom bg-light">
                         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -123,6 +119,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let map = null;
     let sales_markers = {};
     let ws = null;
+    let pingInterval = null; // 🚨 Added to manage the heartbeat loop
     
     // 🚨 ENDPOINTS 🚨
     const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/sales-ws";
@@ -171,21 +168,21 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
 
         team.forEach(rep => {
-            let email = rep.email; // No need to escape, we use filter() now
-            let safe_name = rep.full_name || rep.email || "Unknown Rep";
+            let email = (rep.email || "").toLowerCase(); // 🚨 Absolute Lowercase Shield
+            let safe_name = rep.full_name || email || "Unknown Rep";
             let $card = create_card_html(email, safe_name);
             standbyContainer.append($card);
         });
     }
 
-    // 🚨 UPDATE: Improved HTML Generator Strategy (Displays Email)
+    // 🚨 UPDATE: Improved HTML Generator Strategy (Forces Lowercase data-tid)
     function create_card_html(email, full_name) {
         let lower_name = full_name ? full_name.toLowerCase() : "";
-        let display_email = email;
+        let display_email = email ? email.toLowerCase() : ""; // 🚨 Absolute Lowercase Shield
         
         // Added email to data-name so search works for both Name and Email
         return $(`
-            <div class="sales-card theme-offline" data-tid="${email}" data-name="${lower_name} ${display_email.toLowerCase()}">
+            <div class="sales-card theme-offline" data-tid="${display_email}" data-name="${lower_name} ${display_email}">
                 <div class="card-header">
                     <div style="display: flex; justify-content: space-between; width: 100%;">
                         <span class="rep-name">${full_name}</span>
@@ -211,32 +208,55 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
 
         ws.onopen = () => {
             $('#conn-stat').text('WS Live').removeClass('text-danger border-danger').addClass('text-success border-success');
+            
+            // 🚨 CLEAN HEARTBEAT: Prevent memory leaks on reconnect
+            if (pingInterval) clearInterval(pingInterval);
+            
+            // 30-Second Bidirectional Heartbeat to keep Nginx tunnel open
+            pingInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ action: "ping" }));
+                }
+            }, 30000);
         };
 
         ws.onmessage = (event) => {
             requestAnimationFrame(() => {
                 try {
                     const data = JSON.parse(event.data);
-                    const sales_team = data.sales_team || {};
+                    
+                    // 🚨 Ignore heartbeat responses from the server
+                    if (data.action === "pong") return;
+                    
+                    const raw_sales_team = data.sales_team || {};
+                    
+                    // 🚨 ABSOLUTE STRING NORMALIZATION: Map incoming payload to strictly lowercase
+                    const sales_team = {};
+                    Object.keys(raw_sales_team).forEach(k => {
+                        sales_team[k.toLowerCase()] = raw_sales_team[k];
+                    });
 
                     // A. Update Live Reps & Shift to Active Container
                     Object.keys(sales_team).forEach(email => {
                         let rep = sales_team[email];
                         let speedKmh = Math.round((rep.speed || 0) * 3.6);
                         
-                        // 🚨 FIX: Bulletproof DOM Selector
-                        // Bypasses jQuery's string parsing rules, making special characters (@, .) perfectly safe.
                         let $card = $('.sales-card').filter(function() {
                             return $(this).attr('data-tid') === email;
                         });
 
-                        // Strict Matching (The Ghost Ping Fix)
+                        // 🚨 DYNAMIC CARD INJECTION: If they don't exist in DOM, build them on the fly
                         if ($card.length === 0) {
-                            return; 
-                        }
-
-                        // Shift to Active container if it was offline
-                        if ($card.parent().attr('id') !== 'active-sales-container') {
+                            let safe_name = rep.full_name || email || "Unknown Rep";
+                            let newCardHtml = create_card_html(email, safe_name);
+                            $('#active-sales-container').append(newCardHtml);
+                            
+                            // Re-select the newly injected card to apply styling updates
+                            $card = $('.sales-card').filter(function() {
+                                return $(this).attr('data-tid') === email;
+                            });
+                        } else if ($card.parent().attr('id') !== 'active-sales-container') {
+                            // Shift to Active container if it was offline
                             $('#active-sales-container').append($card);
                         }
 
@@ -292,11 +312,12 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         }
                     });
 
-                    // B. The Purge Fix: Maintain Offline shifting (Using the safe .attr extractor)
+                    // B. The Purge Fix: Maintain Offline shifting using the normalized keys
                     $('.sales-card').each(function() {
-                        let raw_email = $(this).attr('data-tid');
+                        let dom_email = $(this).attr('data-tid'); // Already lowercase
 
-                        if (!sales_team[raw_email]) {
+                        // If DOM email isn't in the newly sanitized sales_team payload
+                        if (!sales_team[dom_email]) {
                             // If they are missing from WS, shift to Standby
                             if ($(this).parent().attr('id') !== 'standby-sales-container') {
                                 $('#standby-sales-container').append($(this));
@@ -311,9 +332,9 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                             $(this).find('.customer-val').text('None');
 
                             // Purge Marker from Map
-                            if (sales_markers[raw_email]) {
-                                map.removeLayer(sales_markers[raw_email]);
-                                delete sales_markers[raw_email];
+                            if (sales_markers[dom_email]) {
+                                map.removeLayer(sales_markers[dom_email]);
+                                delete sales_markers[dom_email];
                             }
                         }
                     });
@@ -326,6 +347,8 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
 
         ws.onclose = () => {
             $('#conn-stat').text('Reconnecting...').removeClass('text-success border-success').addClass('text-danger border-danger');
+            // 🚨 Clean up the interval when closed to prevent memory leaks
+            if (pingInterval) clearInterval(pingInterval);
             setTimeout(connectTelemetryWebSocket, 3000); 
         };
 

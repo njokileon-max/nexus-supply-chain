@@ -474,26 +474,32 @@ def get_sales_dashboard_data():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    # 🚨 FIX: Safe Target Lookups using Schema Verification
-    root_sp = get_root_sales_person(user)
+    # 🚨 FIX: Cascade Schema Lookup for Targets (User -> Employee -> Sales Person)
     sales_target = 0.0
     collection_target = 0.0
     
-    if root_sp:
-        # 1. Check if the schema physically exists in the database
-        has_sales_col = frappe.db.has_column("Sales Person", "custom_sales_target")
-        has_coll_col = frappe.db.has_column("Sales Person", "custom_collection_target")
+    employee_id = frappe.db.get_value("Employee", {"user_id": user}, "name")
+    root_sp = get_root_sales_person(user)
+    
+    cascade_path = [
+        ("User", user),
+        ("Employee", employee_id),
+        ("Sales Person", root_sp)
+    ]
+    
+    for doctype, docname in cascade_path:
+        if not docname: continue
         
-        # 2. Only query the columns that actually exist
-        fields_to_fetch = []
-        if has_sales_col: fields_to_fetch.append("custom_sales_target")
-        if has_coll_col: fields_to_fetch.append("custom_collection_target")
-        
-        if fields_to_fetch:
-            t_data = frappe.db.get_value("Sales Person", root_sp, fields_to_fetch, as_dict=True)
-            if t_data:
-                sales_target = float(t_data.get("custom_sales_target") or 0.0)
-                collection_target = float(t_data.get("custom_collection_target") or 0.0)
+        if sales_target == 0.0 and frappe.db.has_column(doctype, "custom_sales_target"):
+            val = frappe.db.get_value(doctype, docname, "custom_sales_target")
+            if val: sales_target = float(val)
+            
+        if collection_target == 0.0 and frappe.db.has_column(doctype, "custom_collection_target"):
+            val = frappe.db.get_value(doctype, docname, "custom_collection_target")
+            if val: collection_target = float(val)
+            
+        if sales_target > 0.0 and collection_target > 0.0:
+            break
 
     assigned_customers = frappe.db.sql(f"""
         SELECT DISTINCT parent FROM `tabSales Team` 
@@ -735,26 +741,33 @@ def get_sales_context():
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
-    # 🚨 FIX: Safe Target Lookups using Schema Verification
-    root_sp = get_root_sales_person(frappe.session.user)
+    # 🚨 FIX: Cascade Schema Lookup for Targets (User -> Employee -> Sales Person)
+    user = frappe.session.user
     sales_target = 0.0
     collection_target = 0.0
     
-    if root_sp:
-        # 1. Check if the schema physically exists in the database
-        has_sales_col = frappe.db.has_column("Sales Person", "custom_sales_target")
-        has_coll_col = frappe.db.has_column("Sales Person", "custom_collection_target")
+    employee_id = frappe.db.get_value("Employee", {"user_id": user}, "name")
+    root_sp = get_root_sales_person(user)
+    
+    cascade_path = [
+        ("User", user),
+        ("Employee", employee_id),
+        ("Sales Person", root_sp)
+    ]
+    
+    for doctype, docname in cascade_path:
+        if not docname: continue
         
-        # 2. Only query the columns that actually exist
-        fields_to_fetch = []
-        if has_sales_col: fields_to_fetch.append("custom_sales_target")
-        if has_coll_col: fields_to_fetch.append("custom_collection_target")
-        
-        if fields_to_fetch:
-            t_data = frappe.db.get_value("Sales Person", root_sp, fields_to_fetch, as_dict=True)
-            if t_data:
-                sales_target = float(t_data.get("custom_sales_target") or 0.0)
-                collection_target = float(t_data.get("custom_collection_target") or 0.0)
+        if sales_target == 0.0 and frappe.db.has_column(doctype, "custom_sales_target"):
+            val = frappe.db.get_value(doctype, docname, "custom_sales_target")
+            if val: sales_target = float(val)
+            
+        if collection_target == 0.0 and frappe.db.has_column(doctype, "custom_collection_target"):
+            val = frappe.db.get_value(doctype, docname, "custom_collection_target")
+            if val: collection_target = float(val)
+            
+        if sales_target > 0.0 and collection_target > 0.0:
+            break
 
     mtd_sales = 0.0
     mtd_collections = 0.0
