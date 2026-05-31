@@ -1425,24 +1425,16 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         if doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
             command = "FORCE_METADATA_REFRESH"
             
-        # 🚨 THE FIX: Wrapper function to delay execution until DB commit
-        def _fire_webhook():
-            try:
-                requests.post(
-                    "http://nexus-brain:8001/api/v1/cache/invalidate",
-                    json={
-                        "emails": list(affected_emails), 
-                        "doctype": doc.doctype, 
-                        "docname": doc.name,
-                        "command": command
-                    },
-                    timeout=3
-                )
-            except Exception as e:
-                frappe.log_error(title="Cache Eviction API Failed", message=str(e))
-
-        # Add to Frappe's post-transaction queue
-        frappe.db.after_commit.add(_fire_webhook)
+        # 🚨 THE PERMANENT FIX: Offload to a background worker to prevent DB Snapshot Race Conditions
+        frappe.enqueue(
+            "nexus_supply_chain.api.execute_fastapi_webhook",
+            queue="short",
+            affected_emails=list(affected_emails),
+            doctype=doc.doctype,
+            docname=doc.name,
+            command=command,
+            enqueue_after_commit=True
+        )
 
 @frappe.whitelist()
 def create_mobile_customer(payload):
@@ -1539,3 +1531,29 @@ def register_sales_check_in_correction(visit_id, distance_m):
     except Exception as e:
         frappe.log_error(title="Distance Correction Failed", message=str(e))
         return {"status": "error", "message": str(e)}
+    
+# =========================================================================
+# 🚨 BACKGROUND WORKER: FASTAPI WEBHOOK
+# =========================================================================
+def execute_fastapi_webhook(affected_emails, doctype, docname, command):
+    import requests
+    import frappe
+    import time
+    
+    # 🚨 THE RACE-CONDITION KILLER: Wait 1.5 seconds for MariaDB to fully flush.
+    # Because this is in a background queue, it does NOT freeze the user's browser!
+    time.sleep(1.5)
+    
+    try:
+        requests.post(
+            "http://nexus-brain:8001/api/v1/cache/invalidate",
+            json={
+                "emails": affected_emails, 
+                "doctype": doctype, 
+                "docname": docname,
+                "command": command
+            },
+            timeout=5
+        )
+    except Exception as e:
+        frappe.log_error(title="Cache Eviction API Failed", message=str(e))
