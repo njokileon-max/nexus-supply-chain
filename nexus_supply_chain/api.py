@@ -1383,15 +1383,21 @@ def trigger_cache_eviction_and_notify(doc, method=None):
             
     # 2. Customer Specific
     elif doc.doctype == "Customer":
+        # Capture the incoming additions/changes
         for row in doc.get("sales_team", []):
-            if row.sales_person: _add_sp_and_ancestors(row.sales_person, affected_emails)
+            if row.sales_person: 
+                _add_sp_and_ancestors(row.sales_person, affected_emails)
             
-        # 🚨 THE REASSIGNMENT SHIELD: Look up the historic state prior to saving
-        old_doc = doc.get_doc_before_save()
-        if old_doc:
-            for old_row in old_doc.get("sales_team", []):
-                if old_row.sales_person: 
-                    _add_sp_and_ancestors(old_row.sales_person, affected_emails)
+        # 🚨 THE REASSIGNMENT SHIELD: Query the raw database right before it updates
+        if doc.name and frappe.db.exists("Customer", doc.name):
+            old_team = frappe.db.get_all(
+                "Sales Team", 
+                filters={"parent": doc.name, "parenttype": "Customer"}, 
+                fields=["sales_person"]
+            )
+            for old_row in old_team:
+                if old_row.get("sales_person"):
+                    _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
 
     # 3. Transaction Specific (Orders, Payments)
     elif doc.doctype in ["Sales Order", "Sales Invoice", "Payment Entry"]:
