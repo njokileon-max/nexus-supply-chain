@@ -1415,23 +1415,28 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         affected_emails = _get_all_sales_rep_emails()
 
     if affected_emails:
-        try:
-            # Use a special command to indicate metadata refresh (forces full vault re-sync)
-            command = "FORCE_VAULT_SYNC"
-            if doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
-                command = "FORCE_METADATA_REFRESH"
-            requests.post(
-                "http://nexus-brain:8001/api/v1/cache/invalidate",
-                json={
-                    "emails": list(affected_emails), 
-                    "doctype": doc.doctype, 
-                    "docname": doc.name,
-                    "command": command
-                },
-                timeout=3
-            )
-        except Exception as e:
-            frappe.log_error(title="Cache Eviction API Failed", message=str(e))
+        command = "FORCE_VAULT_SYNC"
+        if doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
+            command = "FORCE_METADATA_REFRESH"
+            
+        # 🚨 THE FIX: Wrapper function to delay execution until DB commit
+        def _fire_webhook():
+            try:
+                requests.post(
+                    "http://nexus-brain:8001/api/v1/cache/invalidate",
+                    json={
+                        "emails": list(affected_emails), 
+                        "doctype": doc.doctype, 
+                        "docname": doc.name,
+                        "command": command
+                    },
+                    timeout=3
+                )
+            except Exception as e:
+                frappe.log_error(title="Cache Eviction API Failed", message=str(e))
+
+        # Add to Frappe's post-transaction queue
+        frappe.db.after_commit.add(_fire_webhook)
 
 @frappe.whitelist()
 def create_mobile_customer(payload):
