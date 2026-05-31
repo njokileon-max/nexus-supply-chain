@@ -1364,68 +1364,71 @@ def trigger_cache_eviction_and_notify(doc, method=None):
     """
     Centralized Webhook Runner: Fires to FastAPI to drop the cache and notify mobile units.
     """
-    if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
-        return
+    try:
+        if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
+            return
 
-    affected_emails = set()
-    
-    # 1. Global Updates (Items, Prices, Stock)
-    if doc.doctype in ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note"]:
-        reps = frappe.db.sql("""
-            SELECT e.user_id, sp.employee 
-            FROM `tabSales Person` sp
-            LEFT JOIN `tabEmployee` e ON sp.employee = e.name
-            WHERE sp.enabled = 1
-        """, as_dict=True)
-        for r in reps:
-            if r.user_id: affected_emails.add(r.user_id)
-            elif r.employee and "@" in r.employee: affected_emails.add(r.employee)
-            
-    # 2. Customer Specific
-    elif doc.doctype == "Customer":
-        # Capture the incoming additions/changes
-        for row in doc.get("sales_team", []):
-            if row.sales_person: 
-                _add_sp_and_ancestors(row.sales_person, affected_emails)
-            
-        # 🚨 THE REASSIGNMENT SHIELD: Query the raw database right before it updates
-        if doc.name and frappe.db.exists("Customer", doc.name):
-            old_team = frappe.db.get_all(
-                "Sales Team", 
-                filters={"parent": doc.name, "parenttype": "Customer"}, 
-                fields=["sales_person"]
+        affected_emails = set()
+        
+        # 1. Global Updates (Items, Prices, Stock)
+        if doc.doctype in ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note"]:
+            reps = frappe.db.sql("""
+                SELECT e.user_id, sp.employee 
+                FROM `tabSales Person` sp
+                LEFT JOIN `tabEmployee` e ON sp.employee = e.name
+                WHERE sp.enabled = 1
+            """, as_dict=True)
+            for r in reps:
+                if r.user_id: affected_emails.add(r.user_id)
+                elif r.employee and "@" in r.employee: affected_emails.add(r.employee)
+                
+        # 2. Customer Specific
+        elif doc.doctype == "Customer":
+            for row in doc.get("sales_team", []):
+                if row.sales_person: 
+                    _add_sp_and_ancestors(row.sales_person, affected_emails)
+                
+            if doc.name and frappe.db.exists("Customer", doc.name):
+                old_team = frappe.db.get_all(
+                    "Sales Team", 
+                    filters={"parent": doc.name, "parenttype": "Customer"}, 
+                    fields=["sales_person"]
+                )
+                for old_row in old_team:
+                    if old_row.get("sales_person"):
+                        _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
+
+        # 3. Transaction Specific (Orders, Payments)
+        elif doc.doctype in ["Sales Order", "Sales Invoice", "Payment Entry"]:
+            customer_field = doc.party if doc.doctype == "Payment Entry" else doc.customer
+            if customer_field:
+                sales_team = frappe.db.sql("SELECT sales_person FROM `tabSales Team` WHERE parent=%s AND parenttype='Customer'", (customer_field,), as_dict=True)
+                for row in sales_team:
+                    if row.sales_person: _add_sp_and_ancestors(row.sales_person, affected_emails)
+            if doc.owner and "@" in doc.owner:
+                affected_emails.add(doc.owner)
+
+        # 4. Sales Person Targets/Updates
+        elif doc.doctype == "Sales Person":
+            if doc.employee:
+                user_email = frappe.db.get_value("Employee", doc.employee, "user_id")
+                if user_email: affected_emails.add(user_email)
+
+        # 5. Global Metadata
+        elif doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
+            affected_emails = _get_all_sales_rep_emails()
+
+        if not affected_emails:
+            frappe.log_error(
+                title="Nexus Cache: No Emails Found",
+                message=f"Doctype: {doc.doctype}, Docname: {doc.name}"
             )
-            for old_row in old_team:
-                if old_row.get("sales_person"):
-                    _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
+            return
 
-    # 3. Transaction Specific (Orders, Payments)
-    elif doc.doctype in ["Sales Order", "Sales Invoice", "Payment Entry"]:
-        customer_field = doc.party if doc.doctype == "Payment Entry" else doc.customer
-        if customer_field:
-            sales_team = frappe.db.sql("SELECT sales_person FROM `tabSales Team` WHERE parent=%s AND parenttype='Customer'", (customer_field,), as_dict=True)
-            for row in sales_team:
-                if row.sales_person: _add_sp_and_ancestors(row.sales_person, affected_emails)
-        if doc.owner and "@" in doc.owner:
-            affected_emails.add(doc.owner)
-
-    # 4. Sales Person Targets/Updates
-    elif doc.doctype == "Sales Person":
-        if doc.employee:
-            user_email = frappe.db.get_value("Employee", doc.employee, "user_id")
-            if user_email: affected_emails.add(user_email)
-
-    # 5. 🚨 GLOBAL METADATA DOCTYPES (Customer Group, Territory, Currency, Tax Category)
-    elif doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
-        # Invalidate all sales reps because these affect dropdown options for everyone
-        affected_emails = _get_all_sales_rep_emails()
-
-    if affected_emails:
         command = "FORCE_VAULT_SYNC"
         if doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
             command = "FORCE_METADATA_REFRESH"
             
-        # 🚨 THE PERMANENT FIX: Offload to a background worker to prevent DB Snapshot Race Conditions
         frappe.enqueue(
             "nexus_supply_chain.api.execute_fastapi_webhook",
             queue="short",
@@ -1434,6 +1437,11 @@ def trigger_cache_eviction_and_notify(doc, method=None):
             docname=doc.name,
             command=command,
             enqueue_after_commit=True
+        )
+    except Exception as e:
+        frappe.log_error(
+            title="Nexus Cache Eviction Failed",
+            message=f"Doctype: {doc.doctype}, Docname: {doc.name}, Error: {str(e)}"
         )
 
 @frappe.whitelist()
@@ -1540,9 +1548,9 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
     import frappe
     import time
     
-    # 🚨 THE RACE-CONDITION KILLER: Wait 1.5 seconds for MariaDB to fully flush.
+    # 🚨 THE RACE-CONDITION KILLER: Wait 3.0 seconds for MariaDB to fully flush.
     # Because this is in a background queue, it does NOT freeze the user's browser!
-    time.sleep(1.5)
+    time.sleep(3.0)
     
     try:
         requests.post(

@@ -20,7 +20,9 @@ app_license = ""
 doc_events = {
     "Customer": {
         "before_save": [
-            "nexus_supply_chain.utils.geocoding.queue_customer_geocoding",
+            "nexus_supply_chain.utils.geocoding.queue_customer_geocoding"
+        ],
+        "after_save": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
