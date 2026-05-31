@@ -9,20 +9,15 @@ app_license = ""
 
 
 # apps/nexus_supply_chain/nexus_supply_chain/hooks.py
-
 # Document events - Mapping your Python logic to Frappe triggers
 # apps/nexus_supply_chain/nexus_supply_chain/hooks.py
-
 # apps/nexus_supply_chain/nexus_supply_chain/hooks.py
-
 # apps/nexus_supply_chain/nexus_supply_chain/hooks.py
 
 doc_events = {
     "Customer": {
         "before_save": [
-            "nexus_supply_chain.utils.geocoding.queue_customer_geocoding"
-        ],
-        "after_save": [
+            "nexus_supply_chain.utils.geocoding.queue_customer_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
