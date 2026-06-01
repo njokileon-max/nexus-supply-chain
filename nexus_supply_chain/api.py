@@ -1365,6 +1365,10 @@ def trigger_cache_eviction_and_notify(doc, method=None):
     Centralized Webhook Runner: Fires to FastAPI to drop the cache and notify mobile units.
     """
     try:
+        # 🚨 THE THUNDERING HERD SHIELD: Block individual cache drops during bulk Data Imports
+        if getattr(frappe.flags, 'in_import', False):
+            return
+
         if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
             return
 
@@ -1539,7 +1543,50 @@ def register_sales_check_in_correction(visit_id, distance_m):
     except Exception as e:
         frappe.log_error(title="Distance Correction Failed", message=str(e))
         return {"status": "error", "message": str(e)}
-    
+
+# =========================================================================
+# 🚨 BULK IMPORT SWEEPER: Post-Import Execution
+# =========================================================================
+def trigger_post_import_cache_eviction(doc, method=None):
+    """
+    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
+    Prevents the thundering herd problem by waiting until all rows are saved,
+    then issuing a single global sweep command.
+    """
+    try:
+        if doc.status not in ["Success", "Partial Success"]:
+            return
+            
+        target_doctypes = ["Customer", "Item", "Item Price", "Customer Group", "Territory", "Currency", "Tax Category"]
+        if doc.reference_doctype not in target_doctypes:
+            return
+
+        if not doc.has_value_changed("status"):
+            return
+            
+        affected_emails = _get_all_sales_rep_emails()
+        if not affected_emails:
+            return
+            
+        command = "FORCE_VAULT_SYNC"
+        if doc.reference_doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
+            command = "FORCE_METADATA_REFRESH"
+
+        frappe.enqueue(
+            "nexus_supply_chain.api.execute_fastapi_webhook",
+            queue="short",
+            affected_emails=list(affected_emails),
+            doctype=doc.reference_doctype,
+            docname=f"Bulk_Import_{doc.name}",
+            command=command,
+            enqueue_after_commit=True
+        )
+        
+        frappe.log_error(title="Nexus Bulk Import Sweep", message=f"Successfully queued global cache eviction for {doc.reference_doctype} import.")
+        
+    except Exception as e:
+        frappe.log_error(title="Nexus Post-Import Eviction Failed", message=f"Error: {str(e)}")
+
 # =========================================================================
 # 🚨 BACKGROUND WORKER: FASTAPI WEBHOOK
 # =========================================================================
@@ -1553,10 +1600,26 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
     time.sleep(3.0)
     
     try:
+        # 🚨 Harvest physical device FCM tokens directly from the database
+        fcm_tokens = {}
+        if affected_emails:
+            format_emails = ','.join(['%s'] * len(affected_emails))
+            tokens_data = frappe.db.sql(f"""
+                SELECT user, fcm_token 
+                FROM `tabNexus FCM Device` 
+                WHERE user IN ({format_emails})
+            """, tuple(affected_emails), as_dict=True)
+            
+            for row in tokens_data:
+                if row.user not in fcm_tokens:
+                    fcm_tokens[row.user] = []
+                fcm_tokens[row.user].append(row.fcm_token)
+
         requests.post(
             "http://nexus-brain:8001/api/v1/cache/invalidate",
             json={
-                "emails": affected_emails, 
+                "emails": list(affected_emails), 
+                "fcm_tokens": fcm_tokens,
                 "doctype": doctype, 
                 "docname": docname,
                 "command": command

@@ -137,10 +137,14 @@ doc_events = {
         "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
         "on_change": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
         "on_trash": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+    },
+
+    # 🚨 BULK DATA IMPORT TRIGGERS (The Thundering Herd Shield)
+    # Fires exactly once after a Frappe v15 Data Import completely finishes.
+    "Data Import": {
+        "on_update": "nexus_supply_chain.api.trigger_post_import_cache_eviction"
     }
 }
-
-# -----------------------------------------------------------
 # ENTERPRISE SECURITY HOOKS: Row-Level Access Control
 # -----------------------------------------------------------
 # Optional: if you later add more frequent checks via settings
