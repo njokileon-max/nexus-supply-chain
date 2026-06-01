@@ -1,5 +1,3 @@
-// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_sales_dispatch/nexus_sales_dispatch.js
-
 frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({
         parent: wrapper,
@@ -7,7 +5,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         single_column: true 
     });
 
-    // 1. Centered Enterprise Layout (3-Column Architecture)
     $(wrapper).find('.layout-main-section').html(`
         <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
             <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
@@ -24,7 +21,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         </div>
                     </div>
                     <div class="flex-grow-1 overflow-auto p-3" id="active-sales-container" style="background-color: #f8fafc;">
-                        </div>
+                    </div>
                 </div>
                 
                 <div class="col-md-6 position-relative bg-light border-end">
@@ -65,7 +62,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         </div>
     `);
 
-    // 2. Deep Enterprise Styling
     $('head').append(`
         <style>
             .sales-card { 
@@ -102,7 +98,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             .ping-offline { background: #9ca3af; opacity: 0.5; }
             @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.7; } 100% { transform: scale(0.9); opacity: 1; } }
 
-            /* Dynamic Theme Colors */
             .theme-traveling { border-left-color: #3b82f6; }
             .theme-traveling .status-badge { background-color: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
             
@@ -115,17 +110,14 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         </style>
     `);
 
-    // 3. Global State Registry
     let map = null;
     let sales_markers = {};
     let ws = null;
-    let pingInterval = null; // 🚨 Added to manage the heartbeat loop
+    let pingInterval = null;
     
-    // 🚨 ENDPOINTS 🚨
     const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/sales-ws";
     const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
-    // 🚨 LOAD NATIVE LIBRARIES 🚨
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css", 
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -146,7 +138,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         connectTelemetryWebSocket();
     });
 
-    // 4. Data Bridge: Fetch Base Sales Team from Backend
     function refresh_sales_data() {
         frappe.call({
             method: "nexus_supply_chain.nexus_supply_chain.page.nexus_sales_dispatch.nexus_sales_dispatch.get_sales_team",
@@ -157,10 +148,9 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // Creates the static DOM elements initially. They default to Offline.
     function render_baseline_team(team) {
         let standbyContainer = $('#standby-sales-container').empty();
-        $('#active-sales-container').empty(); // Clear spinners
+        $('#active-sales-container').empty();
 
         if(team.length === 0) {
             standbyContainer.html(`<div class="text-center p-5 text-muted">No active Sales Personnel found in system.</div>`);
@@ -168,19 +158,17 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
 
         team.forEach(rep => {
-            let email = (rep.email || "").toLowerCase(); // 🚨 Absolute Lowercase Shield
+            let email = (rep.email || "").toLowerCase();
             let safe_name = rep.full_name || email || "Unknown Rep";
             let $card = create_card_html(email, safe_name);
             standbyContainer.append($card);
         });
     }
 
-    // 🚨 UPDATE: Improved HTML Generator Strategy (Forces Lowercase data-tid)
     function create_card_html(email, full_name) {
         let lower_name = full_name ? full_name.toLowerCase() : "";
-        let display_email = email ? email.toLowerCase() : ""; // 🚨 Absolute Lowercase Shield
+        let display_email = email ? email.toLowerCase() : "";
         
-        // Added email to data-name so search works for both Name and Email
         return $(`
             <div class="sales-card theme-offline" data-tid="${display_email}" data-name="${lower_name} ${display_email}">
                 <div class="card-header">
@@ -200,7 +188,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         `);
     }
 
-    // 5. THE TELEMETRY ENGINE (0-Lag DOM Rendering)
     function connectTelemetryWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
@@ -209,10 +196,8 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         ws.onopen = () => {
             $('#conn-stat').text('WS Live').removeClass('text-danger border-danger').addClass('text-success border-success');
             
-            // 🚨 CLEAN HEARTBEAT: Prevent memory leaks on reconnect
             if (pingInterval) clearInterval(pingInterval);
             
-            // 30-Second Bidirectional Heartbeat to keep Nginx tunnel open
             pingInterval = setInterval(() => {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ action: "ping" }));
@@ -225,18 +210,15 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 try {
                     const data = JSON.parse(event.data);
                     
-                    // 🚨 Ignore heartbeat responses from the server
                     if (data.action === "pong") return;
                     
                     const raw_sales_team = data.sales_team || {};
                     
-                    // 🚨 ABSOLUTE STRING NORMALIZATION: Map incoming payload to strictly lowercase
                     const sales_team = {};
                     Object.keys(raw_sales_team).forEach(k => {
                         sales_team[k.toLowerCase()] = raw_sales_team[k];
                     });
 
-                    // A. Update Live Reps & Shift to Active Container
                     Object.keys(sales_team).forEach(email => {
                         let rep = sales_team[email];
                         let speedKmh = Math.round((rep.speed || 0) * 3.6);
@@ -245,28 +227,24 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                             return $(this).attr('data-tid') === email;
                         });
 
-                        // 🚨 DYNAMIC CARD INJECTION: If they don't exist in DOM, build them on the fly
                         if ($card.length === 0) {
                             let safe_name = rep.full_name || email || "Unknown Rep";
                             let newCardHtml = create_card_html(email, safe_name);
                             $('#active-sales-container').append(newCardHtml);
                             
-                            // Re-select the newly injected card to apply styling updates
                             $card = $('.sales-card').filter(function() {
                                 return $(this).attr('data-tid') === email;
                             });
                         } else if ($card.parent().attr('id') !== 'active-sales-container') {
-                            // Shift to Active container if it was offline
                             $('#active-sales-container').append($card);
                         }
 
-                        // Update DOM States smoothly
                         $card.removeClass('theme-offline theme-traveling theme-checked-in');
-                        let color = '#3b82f6'; // Default Blue for traveling
+                        let color = '#3b82f6';
                         
                         if (rep.status === 'Checked-In') {
                             $card.addClass('theme-checked-in');
-                            color = '#10b981'; // Green
+                            color = '#10b981';
                         } else {
                             $card.addClass('theme-traveling');
                         }
@@ -279,7 +257,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         let customerDisplay = rep.current_customer && rep.current_customer !== 'None' ? rep.current_customer : 'In Transit';
                         $card.find('.customer-val').text(customerDisplay);
 
-                        // Update or Create the Map Marker (Gender Neutral SVG Profile)
                         let heading = rep.heading || 0;
 
                         if (sales_markers[email]) {
@@ -312,18 +289,14 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         }
                     });
 
-                    // B. The Purge Fix: Maintain Offline shifting using the normalized keys
                     $('.sales-card').each(function() {
-                        let dom_email = $(this).attr('data-tid'); // Already lowercase
+                        let dom_email = $(this).attr('data-tid');
 
-                        // If DOM email isn't in the newly sanitized sales_team payload
                         if (!sales_team[dom_email]) {
-                            // If they are missing from WS, shift to Standby
                             if ($(this).parent().attr('id') !== 'standby-sales-container') {
                                 $('#standby-sales-container').append($(this));
                             }
                             
-                            // Revert styles
                             $(this).removeClass('theme-traveling theme-checked-in').addClass('theme-offline');
                             $(this).find('.ping-dot').removeClass('ping-online').addClass('ping-offline');
                             $(this).find('.stat-text').text('Offline').removeClass('text-dark fw-bold').addClass('text-muted');
@@ -331,7 +304,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                             $(this).find('.status-val').text(`● OFFLINE`);
                             $(this).find('.customer-val').text('None');
 
-                            // Purge Marker from Map
                             if (sales_markers[dom_email]) {
                                 map.removeLayer(sales_markers[dom_email]);
                                 delete sales_markers[dom_email];
@@ -340,14 +312,13 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     });
 
                 } catch (e) {
-                    console.error("Payload execution error:", e);
+                    console.error(e);
                 }
             });
         };
 
         ws.onclose = () => {
             $('#conn-stat').text('Reconnecting...').removeClass('text-success border-success').addClass('text-danger border-danger');
-            // 🚨 Clean up the interval when closed to prevent memory leaks
             if (pingInterval) clearInterval(pingInterval);
             setTimeout(connectTelemetryWebSocket, 3000); 
         };
@@ -355,9 +326,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         ws.onerror = () => { ws.close(); };
     }
 
-    // =========================================================================
-    // SEARCH & FILTER INTERACTIVITY
-    // =========================================================================
     function applySearch(inputId, containerId) {
         $(inputId).on('keyup', function() {
             let val = $(this).val().toLowerCase();
@@ -373,9 +341,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     applySearch('#sales-search-active', '#active-sales-container');
     applySearch('#sales-search-standby', '#standby-sales-container');
 
-    // =========================================================================
-    // MAP ZOOM INTERACTION
-    // =========================================================================
     $(wrapper).on('click', '.sales-card', function(e) {
         let raw_email = $(this).attr('data-tid'); 
         
@@ -386,7 +351,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             map.flyTo(sales_markers[raw_email].getLatLng(), 16, { duration: 1.2 });
             sales_markers[raw_email].openPopup();
         } else {
-            frappe.show_alert({message: 'User is currently offline. No live GPS fix available.', indicator: 'orange'});
+            frappe.show_alert({message: 'User is currently offline.', indicator: 'orange'});
         }
     });
 };
