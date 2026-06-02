@@ -1512,18 +1512,21 @@ def create_mobile_customer(payload):
 @frappe.whitelist()
 def update_customer_coordinates(customer, latitude, longitude, google_maps_link=None):
     """
-    Polymorphic injection target: allows direct coordinate saving bypassing web scrapers
+    Polymorphic injection target: allows direct coordinate saving bypassing web scrapers.
+    🚨 FIX: Uses doc.save() instead of set_value to guarantee Redis Cache Eviction hooks fire!
     """
     try:
         if frappe.db.exists("Customer", customer):
-            update_dict = {
-                "custom_latitude": str(latitude),
-                "custom_longitude": str(longitude)
-            }
+            doc = frappe.get_doc("Customer", customer)
+            doc.custom_latitude = str(latitude)
+            doc.custom_longitude = str(longitude)
             if google_maps_link:
-                update_dict["custom_google_maps_link"] = google_maps_link
+                doc.custom_google_maps_link = google_maps_link
                 
-            frappe.db.set_value("Customer", customer, update_dict)
+            # Disable permission checks for automated API updates
+            doc.flags.ignore_permissions = True
+            doc.save() # This explicitly triggers the cache eviction webhook instantly
+            
             return {"status": "success", "message": "Location updated successfully.", "lat": latitude, "lng": longitude}
         return {"status": "error", "message": "Customer not found."}
     except Exception as e:
