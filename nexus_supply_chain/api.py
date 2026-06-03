@@ -24,6 +24,8 @@ def extract_and_set_coords(doc, method):
                 if data.get("status") == "success":
                     doc.custom_latitude = data.get("lat")
                     doc.custom_longitude = data.get("lng")
+                    if data.get("combined_coordinates"):
+                        doc.custom_combined_coordinates = data.get("combined_coordinates")
                 else:
                     frappe.msgprint(f"Nexus Brain Warning: {data.get('message')}")
             else:
@@ -1485,7 +1487,10 @@ def create_mobile_customer(payload):
         if payload.get("latitude") and payload.get("longitude"):
             doc.custom_latitude = str(payload.get("latitude"))
             doc.custom_longitude = str(payload.get("longitude"))
-        
+            
+        if payload.get("custom_combined_coordinates"):
+            doc.custom_combined_coordinates = payload.get("custom_combined_coordinates")
+
         if payload.get("google_maps_link"):
             doc.custom_google_maps_link = payload.get("google_maps_link")
 
@@ -1510,7 +1515,7 @@ def create_mobile_customer(payload):
         return {"status": "error", "message": f"Failed to create customer: {str(e)}"}
 
 @frappe.whitelist()
-def update_customer_coordinates(customer, latitude, longitude, google_maps_link=None):
+def update_customer_coordinates(customer, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None):
     """
     Polymorphic injection target: allows direct coordinate saving bypassing web scrapers.
     🚨 FIX: Uses doc.save() instead of set_value to guarantee Redis Cache Eviction hooks fire!
@@ -1520,6 +1525,10 @@ def update_customer_coordinates(customer, latitude, longitude, google_maps_link=
             doc = frappe.get_doc("Customer", customer)
             doc.custom_latitude = str(latitude)
             doc.custom_longitude = str(longitude)
+            
+            if custom_combined_coordinates:
+                doc.custom_combined_coordinates = custom_combined_coordinates
+                
             if google_maps_link:
                 doc.custom_google_maps_link = google_maps_link
                 
