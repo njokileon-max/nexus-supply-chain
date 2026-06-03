@@ -577,9 +577,11 @@ def get_sales_context():
             c.customer_name, 
             c.default_price_list, 
             c.payment_terms,
-            c.mobile_no,
+            COALESCE(c.custom_phone_number, c.mobile_no) as mobile_no,
+            c.custom_location,
             c.custom_latitude,
             c.custom_longitude,
+            c.custom_combined_coordinates,
             c.custom_google_maps_link,
             c.name as customer_id,
             (SELECT MAX(posting_date) FROM `tabSales Invoice` WHERE customer = c.name AND docstatus = 1) as last_invoiced_date
@@ -1479,9 +1481,13 @@ def create_mobile_customer(payload):
         doc.tax_category = payload.get("tax_category")
         doc.payment_terms = payload.get("payment_terms")
         
-        # Custom fields
-        doc.custom_phone_number = phone_number if phone_number else None
-        doc.custom_location = location_text if location_text else None
+        # Custom fields & Universal Compatibility Mapping
+        if phone_number:
+            doc.mobile_no = phone_number
+            doc.custom_phone_number = phone_number
+            
+        if location_text:
+            doc.custom_location = location_text
         
         # 🚨 FIX: Polymorphic Coordinate Mapping (Accepts 'latitude' or 'lat')
         lat = payload.get("latitude") or payload.get("lat")
