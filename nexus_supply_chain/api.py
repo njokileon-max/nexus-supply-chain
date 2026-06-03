@@ -1483,10 +1483,13 @@ def create_mobile_customer(payload):
         doc.custom_phone_number = phone_number if phone_number else None
         doc.custom_location = location_text if location_text else None
         
-        # Map coordinates if provided
-        if payload.get("latitude") and payload.get("longitude"):
-            doc.custom_latitude = str(payload.get("latitude"))
-            doc.custom_longitude = str(payload.get("longitude"))
+        # 🚨 FIX: Polymorphic Coordinate Mapping (Accepts 'latitude' or 'lat')
+        lat = payload.get("latitude") or payload.get("lat")
+        lng = payload.get("longitude") or payload.get("lng")
+        
+        if lat and lng:
+            doc.custom_latitude = str(lat)
+            doc.custom_longitude = str(lng)
             
         if payload.get("custom_combined_coordinates"):
             doc.custom_combined_coordinates = payload.get("custom_combined_coordinates")
