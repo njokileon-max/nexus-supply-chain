@@ -1,292 +1,415 @@
-frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
-    var page = frappe.ui.make_app_page({
+frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
+    let page = frappe.ui.make_app_page({
         parent: wrapper,
-        title: 'Nexus Production Command',
-        single_column: true
+        title: 'Nexus Sales Team Command Center',
+        single_column: true 
     });
 
-    let masterData = [];
-    let autoRefreshInterval;
-    let currentlyOpenBip = null;
+    $(wrapper).find('.layout-main-section').html(`
+        <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
+            <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
+                
+                <div class="col-md-3 border-end d-flex flex-column bg-white" style="max-height: 100%;">
+                    <div class="p-3 border-bottom bg-light">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="m-0 fw-bold text-success"><i class="fa fa-users me-2"></i> ACTIVE FIELD TEAM</h6>
+                            <span class="badge bg-success-subtle text-success border border-success" id="conn-stat" style="font-size: 10px;">Connecting...</span>
+                        </div>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white border-end-0"><i class="fa fa-search text-muted"></i></span>
+                            <input type="text" class="form-control border-start-0" id="sales-search-active" placeholder="Filter active rep...">
+                        </div>
+                    </div>
+                    <div class="flex-grow-1 overflow-auto p-3" id="active-sales-container" style="background-color: #f8fafc;"></div>
+                </div>
+                
+                <div class="col-md-6 position-relative bg-light border-end">
+                    <div id="fleet-map" style="height: 100%; width: 100%; z-index: 1;"></div>
+                    <div class="position-absolute top-0 end-0 m-3 p-3 bg-white shadow rounded border" style="z-index: 999; font-size: 11px; min-width: 160px; border-color: #e5e7eb !important;">
+                        <div class="fw-bold mb-2 text-dark small text-uppercase">Map Legend</div>
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#3b82f6;border:2px solid #fff;box-shadow:0 0 4px rgba(59,130,246,0.4);display:inline-block;"></span> 
+                            Traveling
+                        </div>
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2px solid #fff;box-shadow:0 0 4px rgba(16,185,129,0.4);display:inline-block;"></span> 
+                            Checked-In
+                        </div>
+                        <div class="mt-2 pt-2 border-top text-muted small">
+                            <i class="fa fa-shield-alt me-1"></i> Hosted Secure Map Engine
+                        </div>
+                    </div>
+                </div>
 
-    // 1. Inject Styles: "Dark Cards on White Canvas"
-    $(page.main).html(`
-        <style>
-            /* The White Canvas Wrapper */
-            .nexus-prod-wrapper { padding: 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; min-height: 100vh;}
-            
-            /* Light Search Bar & Toggles */
-            .nexus-search-row { display: flex; gap: 20px; align-items: center; margin-bottom: 25px;}
-            .nexus-search-input { flex-grow: 1; padding: 14px 20px; border-radius: 8px; border: 1px solid #cbd5e1; background-color: #ffffff; color: #1e293b; font-size: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); transition: all 0.2s ease;}
-            .nexus-search-input:focus { outline: none; border-color: #38bdf8; box-shadow: 0 2px 8px rgba(56, 189, 248, 0.15); }
-            .nexus-search-input::placeholder { color: #94a3b8; }
-            
-            .nexus-toggle-label { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #475569; white-space: nowrap; cursor: pointer; user-select: none; background: #ffffff; padding: 12px 16px; border-radius: 8px; border: 1px solid #cbd5e1; box-shadow: 0 2px 4px rgba(0,0,0,0.02);}
-            .nexus-toggle-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: #38bdf8;}
+                <div class="col-md-3 d-flex flex-column bg-white" style="max-height: 100%;">
+                    <div class="p-3 border-bottom bg-light">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="m-0 fw-bold text-secondary"><i class="fa fa-user-clock me-2"></i> OFFLINE TEAM</h6>
+                        </div>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white border-end-0"><i class="fa fa-search text-muted"></i></span>
+                            <input type="text" class="form-control border-start-0" id="sales-search-standby" placeholder="Filter offline rep...">
+                        </div>
+                    </div>
+                    <div class="flex-grow-1 overflow-auto p-3" id="standby-sales-container" style="background-color: #f8fafc;">
+                        <div class="text-center p-5 text-muted"><i class="fa fa-spinner fa-spin fa-2x"></i><br><br>Loading Database...</div>
+                    </div>
+                </div>
 
-            /* The Dark Cards */
-            .nexus-bip-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; margin-bottom: 20px; overflow: hidden; box-shadow: 0 8px 15px rgba(0,0,0,0.1); transition: 0.3s;}
-            .nexus-bip-header { padding: 20px 25px; display: flex; justify-content: space-between; align-items: center; background: #1e293b; cursor: pointer; transition: background 0.2s;}
-            .nexus-bip-header:hover { background: #27354f; }
-            .nexus-bip-title { font-size: 18px; font-weight: 700; color: #38bdf8;}
-            
-            .nexus-metrics-row { display: flex; gap: 25px; text-align: right; align-items: center;}
-            .nexus-metric-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;}
-            .nexus-metric-val { font-size: 16px; font-weight: 800; color: #f8fafc;}
-            .nexus-val-alert { color: #f43f5e; }
-            .nexus-val-success { color: #10b981; }
-            
-            .nexus-btn-expand { background: #38bdf8; color: #0f172a; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; transition: background 0.2s;}
-            .nexus-btn-expand:hover { background: #0ea5e9; }
-            .nexus-btn-close { background: #475569; color: #f8fafc; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px;}
-            
-            /* Expanded Area & Inner Sub-Cards (Slightly Lighter Dark) */
-            .nexus-expanded-area { padding: 0 25px 25px 25px; background: #1e293b; border-top: 1px solid #334155;}
-            .nexus-summary-block { background: #334155; padding: 20px; border-radius: 8px; margin: 25px 0; border: 1px solid #475569; color: #f8fafc;}
-            .nexus-sub-card { background: #334155; border-left: 4px solid #475569; padding: 18px 20px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); border-left-width: 4px; color: #f8fafc;}
-            
-            /* Table Styling */
-            .nexus-table-wrapper { max-height: 300px; overflow-y: auto; overflow-x: auto; margin-bottom: 25px; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
-            .nexus-table { width: 100%; min-width: 1200px; border-collapse: collapse; text-align: left; background: #334155; }
-            .nexus-table th { background-color: #0f172a; color: #94a3b8; font-size: 12px; font-weight: 700; text-transform: uppercase; padding: 14px; position: sticky; top: 0; z-index: 10;}
-            .nexus-table td { padding: 14px; border-bottom: 1px solid #475569; color: #f8fafc; font-size: 14px;}
-            .nexus-nowrap { white-space: nowrap; }
-
-            /* Hyperlink Styling for Sales Orders */
-            .nexus-so-link { color: #38bdf8; font-weight: 700; text-decoration: none; transition: color 0.2s;}
-            .nexus-so-link:hover { text-decoration: underline; color: #0ea5e9; }
-        </style>
-
-        <div class="nexus-prod-wrapper">
-            <div class="nexus-search-row">
-                <input type="text" id="nexus-bip-search" class="nexus-search-input" placeholder="Search Bulk Intermediate Products by Name or ID...">
-                <label class="nexus-toggle-label">
-                    <input type="checkbox" id="nexus-hide-stocked" class="nexus-toggle-checkbox" checked>
-                    Hide Fully Stocked (Zero Net Produce)
-                </label>
-            </div>
-            <div id="nexus-bip-list-container">
-                <div style="text-align:center; padding: 50px; color: #64748b; font-weight: 600; font-size: 16px;">Syncing Live Production Requirements...</div>
             </div>
         </div>
     `);
 
-    // 2. Data Fetching
-    function fetchData() {
-        frappe.call({
-            method: "nexus_supply_chain.api.get_nexus_production_data",
-            callback: function(r) {
-                if(r.message && r.message.length > 0) {
-                    masterData = r.message;
-                    processAndRender();
+    $('head').append(`
+        <style>
+            .sales-card { 
+                padding: 16px; 
+                border-radius: 10px; 
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+                font-size: 14px; 
+                border-left-width: 6px;
+                border-left-style: solid;
+                transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.3s ease;
+                margin-bottom: 16px;
+                cursor: pointer;
+                background-color: #ffffff;
+                will-change: transform;
+            }
+            .sales-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+            }
+            .sales-card.active-selection { 
+                box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.8); 
+            }
+            .card-header-row { display: flex; justify-content: space-between; width: 100%; align-items: flex-start; margin-bottom: 4px; }
+            .rep-name { font-size: 16px; font-weight: 800; letter-spacing: 0.2px; color: #1e293b; line-height: 1.2; word-break: break-word; padding-right: 10px; }
+            .speed-indicator { font-family: 'Monaco', 'Consolas', monospace; font-weight: 700; font-size: 14px; color: #64748b; white-space: nowrap; }
+            .status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+            .card-meta { font-size: 13px; margin-bottom: 6px; color: #475569; display: flex; align-items: center; }
+            .card-meta-icon { margin-right: 8px; width: 16px; text-align: center; color: #94a3b8; }
+            .ping-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; flex-shrink: 0; }
+            .ping-online { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.5); animation: pulse-ring 2s infinite; }
+            .ping-offline { background: #9ca3af; opacity: 0.5; }
+            @keyframes pulse-ring { 
+                0% { transform: scale(0.9); opacity: 1; } 
+                50% { transform: scale(1.1); opacity: 0.7; } 
+                100% { transform: scale(0.9); opacity: 1; } 
+            }
+            .theme-traveling { border-left-color: #3b82f6; }
+            .theme-traveling .status-badge { background-color: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+            .theme-checked-in { border-left-color: #10b981; }
+            .theme-checked-in .status-badge { background-color: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+            .theme-offline { border-left-color: #94a3b8; background-color: #f8fafc; opacity: 0.85; }
+            .theme-offline .status-badge { background-color: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+            .theme-offline .rep-name { color: #475569; }
+
+            .leaflet-marker-icon { transition: transform 0.8s linear !important; }
+        </style>
+    `);
+
+    let latestSalesState = {};
+    let renderedSalesState = {};
+    let cardElementCache = {};
+    let map = null;
+    let sales_markers = {};
+    let ws = null;
+    let pingInterval = null;
+    let renderLoopId = null;
+    let staleCheckId = null;
+
+    const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/sales-ws";
+    const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
+
+    function startRenderLoop() {
+        if (renderLoopId) clearInterval(renderLoopId);
+        renderLoopId = setInterval(flushRenderQueue, 250);
+    }
+
+    function flushRenderQueue() {
+        const currentEmails = Object.keys(latestSalesState);
+
+        currentEmails.forEach(email => {
+            const rep = latestSalesState[email];
+            const prev = renderedSalesState[email];
+
+            const statusChanged = !prev || prev.status !== rep.status;
+            const customerChanged = !prev || prev.current_customer !== rep.current_customer;
+            const speedChanged = !prev || Math.abs((prev.speed || 0) - (rep.speed || 0)) > 0.5;
+            const positionChanged = !prev || prev.lat !== rep.lat || prev.lng !== rep.lng;
+            const headingChanged = !prev || Math.abs((prev.heading || 0) - (rep.heading || 0)) > 2;
+            const isNewRep = !prev;
+
+            if (!isNewRep && !statusChanged && !customerChanged && !speedChanged && !positionChanged && !headingChanged) {
+                return;
+            }
+
+            let $card = cardElementCache[email];
+            if (!$card || $card.length === 0) {
+                const safe_name = rep.full_name || email || "Unknown Rep";
+                $card = create_card_html(email, safe_name);
+                cardElementCache[email] = $card;
+                $('#active-sales-container').append($card);
+            }
+
+            if ($card.parent().attr('id') !== 'active-sales-container') {
+                $('#active-sales-container').append($card);
+            }
+
+            if (isNewRep || statusChanged) {
+                $card.removeClass('theme-offline theme-traveling theme-checked-in');
+                $card.addClass(rep.status === 'Checked-In' ? 'theme-checked-in' : 'theme-traveling');
+                $card.find('.ping-dot').removeClass('ping-offline').addClass('ping-online');
+                $card.find('.stat-text').text('Live Tracking').removeClass('text-muted').addClass('text-dark fw-bold');
+                $card.find('.status-val').text(`● ${rep.status.toUpperCase()}`);
+            }
+
+            if (isNewRep || speedChanged) {
+                const speedKmh = Math.round((rep.speed || 0) * 3.6);
+                $card.find('.speed-val').text(`${speedKmh} km/h`);
+            }
+
+            if (isNewRep || customerChanged) {
+                const customerDisplay = rep.current_customer && rep.current_customer !== 'None'
+                    ? rep.current_customer
+                    : 'In Transit';
+                $card.find('.customer-val').text(customerDisplay);
+            }
+
+            if (rep.lat && rep.lng && (isNewRep || positionChanged || headingChanged || statusChanged)) {
+                const color = rep.status === 'Checked-In' ? '#10b981' : '#3b82f6';
+                const heading = rep.heading || 0;
+
+                if (sales_markers[email]) {
+                    sales_markers[email].setLatLng([rep.lat, rep.lng]);
+
+                    if (isNewRep || statusChanged || headingChanged) {
+                        const newIcon = build_marker_icon(color, heading);
+                        sales_markers[email].setIcon(newIcon);
+                    } else {
+                        const iconEl = sales_markers[email].getElement();
+                        if (iconEl) {
+                            const arrow = iconEl.querySelector('.direction-ring');
+                            if (arrow) arrow.style.transform = `rotate(${heading}deg)`;
+                        }
+                    }
                 } else {
-                    $('#nexus-bip-list-container').html(`<div style="text-align:center; padding: 50px; color: #64748b; font-weight: 600; font-size: 16px;">System Stable. No Active Production Requirements.</div>`);
+                    const icon = build_marker_icon(color, heading);
+                    const safe_popup_name = rep.full_name || email || "Unknown";
+                    const popupText = `<b>${safe_popup_name}</b><br><span class="text-muted small">${rep.status}</span>`;
+                    sales_markers[email] = L.marker([rep.lat, rep.lng], { icon })
+                        .addTo(map)
+                        .bindPopup(`<div class="p-1">${popupText}</div>`);
                 }
+            }
+
+            renderedSalesState[email] = { ...rep };
+        });
+    }
+
+    function startStaleCheckLoop() {
+        if (staleCheckId) clearInterval(staleCheckId);
+        staleCheckId = setInterval(function() {
+            const activeEmails = new Set(Object.keys(latestSalesState));
+
+            Object.keys(cardElementCache).forEach(email => {
+                if (!activeEmails.has(email)) {
+                    const $card = cardElementCache[email];
+                    if (!$card || $card.length === 0) return;
+
+                    if ($card.parent().attr('id') !== 'standby-sales-container') {
+                        $('#standby-sales-container').append($card);
+                    }
+
+                    $card.removeClass('theme-traveling theme-checked-in').addClass('theme-offline');
+                    $card.find('.ping-dot').removeClass('ping-online').addClass('ping-offline');
+                    $card.find('.stat-text').text('Offline').removeClass('text-dark fw-bold').addClass('text-muted');
+                    $card.find('.speed-val').text('--');
+                    $card.find('.status-val').text('● OFFLINE');
+                    $card.find('.customer-val').text('None');
+
+                    if (sales_markers[email]) {
+                        map.removeLayer(sales_markers[email]);
+                        delete sales_markers[email];
+                    }
+
+                    delete renderedSalesState[email];
+                }
+            });
+        }, 5000);
+    }
+
+    function build_marker_icon(color, heading) {
+        const htmlIcon = `
+            <div style="position:relative;width:34px;height:34px;">
+                <div class="direction-ring" style="position:absolute;top:0;left:0;width:100%;height:100%;transform:rotate(${heading}deg);transition:transform 0.5s linear;">
+                    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" style="opacity:0.6;">
+                        <path d="M12 2L15 8L12 6L9 8L12 2Z" fill="${color}"/>
+                    </svg>
+                </div>
+                <div style="position:absolute;top:4px;left:4px;background:#fff;border-radius:50%;width:26px;height:26px;box-shadow:0 2px 5px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;border:2px solid ${color};">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="${color}" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                    </svg>
+                </div>
+            </div>`;
+        return L.divIcon({ className: '', html: htmlIcon, iconSize: [34, 34], iconAnchor: [17, 17] });
+    }
+
+    function create_card_html(email, full_name) {
+        const lower_name = full_name ? full_name.toLowerCase() : "";
+        const display_email = email ? email.toLowerCase() : "";
+        return $(`
+            <div class="sales-card theme-offline" data-tid="${display_email}" data-name="${lower_name} ${display_email}">
+                <div class="card-header-row">
+                    <span class="rep-name">${full_name}</span>
+                    <span class="speed-indicator speed-val">--</span>
+                </div>
+                <div style="font-size:11px;color:#64748b;margin-bottom:10px;">
+                    <i class="fa fa-envelope-o me-1"></i> ${display_email}
+                </div>
+                <div class="status-badge status-val">● OFFLINE</div>
+                <div class="card-meta">
+                    <i class="fa fa-building card-meta-icon"></i>
+                    <span class="customer-val text-truncate" style="max-width:180px;">None</span>
+                </div>
+                <div class="mt-2 d-flex align-items-center small rounded" style="background:rgba(0,0,0,0.03);padding:8px;">
+                    <span class="ping-dot ping-offline"></span>
+                    <span class="stat-text text-muted">Awaiting Connection...</span>
+                </div>
+            </div>
+        `);
+    }
+
+    function refresh_sales_data() {
+        frappe.call({
+            method: "nexus_supply_chain.nexus_supply_chain.page.nexus_sales_dispatch.nexus_sales_dispatch.get_sales_team",
+            callback: function(r) {
+                const initial_team = r.message || [];
+                render_baseline_team(initial_team);
             }
         });
     }
 
-    // 3. Sorting & Smart Filtering
-    function processAndRender() {
-        let searchString = $('#nexus-bip-search').val().toLowerCase();
-        let hideStocked = $('#nexus-hide-stocked').is(':checked');
-        
-        let filtered = masterData.filter(bip => {
-            let matchSearch = bip.bip_code.toLowerCase().includes(searchString) || 
-                              bip.bip_name.toLowerCase().includes(searchString);
-            let matchActionable = hideStocked ? bip.ideal_bulk > 0 : true;
-            return matchSearch && matchActionable;
-        });
+    function render_baseline_team(team) {
+        $('#standby-sales-container').empty();
+        $('#active-sales-container').empty();
+        cardElementCache = {};
+        renderedSalesState = {};
 
-        filtered.sort((a, b) => {
-            let a_actionable = a.ideal_bulk >= a.min_batch ? 1 : 0;
-            let b_actionable = b.ideal_bulk >= b.min_batch ? 1 : 0;
-            if (a_actionable !== b_actionable) return b_actionable - a_actionable;
-            return b.ideal_bulk - a.ideal_bulk; 
-        });
-
-        renderMinimizedCards(filtered);
-    }
-
-    $('#nexus-bip-search').on('input', processAndRender);
-    $('#nexus-hide-stocked').on('change', processAndRender);
-
-    // 4. Rendering Minimized Cards
-    function renderMinimizedCards(data) {
-        if(data.length === 0) {
-            $('#nexus-bip-list-container').html(`<div style="text-align:center; padding: 50px; color: #64748b; font-weight: 600; font-size: 16px;">No batches meet the current filter criteria.</div>`);
+        if (team.length === 0) {
+            $('#standby-sales-container').html(
+                `<div class="text-center p-5 text-muted">No active Sales Personnel found in system.</div>`
+            );
             return;
         }
 
-        let html = "";
-        data.forEach(bip => {
-            let minBatchClass = bip.remainder > 0 ? "nexus-val-alert" : "";
-            
-            html += `
-                <div class="nexus-bip-card" id="card-${bip.bip_code}">
-                    <div class="nexus-bip-header" onclick="window.toggleCard('${bip.bip_code}')">
-                        <div class="nexus-bip-title">${bip.bip_name} <span style="color:#64748b; font-weight:600; font-size:15px;">[${bip.bip_code}]</span></div>
-                        <div class="nexus-metrics-row">
-                            <div><div class="nexus-metric-label">Min Batch</div><div class="nexus-metric-val ${minBatchClass}">${bip.min_batch} KG</div></div>
-                            <div><div class="nexus-metric-label">Bulk Req</div><div class="nexus-metric-val nexus-val-success">${bip.ideal_bulk} KG</div></div>
-                            <div><div class="nexus-metric-label">Remainder</div><div class="nexus-metric-val">${bip.remainder} KG</div></div>
-                            <button class="nexus-btn-expand" id="btn-${bip.bip_code}">View Full Card</button>
-                        </div>
-                    </div>
-                    <div id="expanded-${bip.bip_code}" class="nexus-expanded-area" style="display: none;"></div>
-                </div>
-            `;
+        team.forEach(rep => {
+            const email = (rep.email || "").toLowerCase();
+            const safe_name = rep.full_name || email || "Unknown Rep";
+            const $card = create_card_html(email, safe_name);
+            cardElementCache[email] = $card;
+            $('#standby-sales-container').append($card);
         });
-        $('#nexus-bip-list-container').html(html);
-
-        if (currentlyOpenBip && $(`#card-${currentlyOpenBip}`).length) {
-            window.toggleCard(currentlyOpenBip, true);
-        }
     }
 
-    // 5. Accordion Logic
-    window.toggleCard = function(bipCode, isSilentRefresh = false) {
-        let expandContainer = $(`#expanded-${bipCode}`);
-        let btn = $(`#btn-${bipCode}`);
+    function connectTelemetryWebSocket() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
 
-        if (!isSilentRefresh && expandContainer.is(":visible")) {
-            expandContainer.slideUp(200, () => expandContainer.empty());
-            btn.text("View Full Card").removeClass("nexus-btn-close").addClass("nexus-btn-expand");
-            currentlyOpenBip = null;
-            return;
-        }
+        ws = new WebSocket(FASTAPI_WS_URL);
 
-        if (currentlyOpenBip && currentlyOpenBip !== bipCode) {
-            $(`#expanded-${currentlyOpenBip}`).slideUp(200, function() { $(this).empty(); });
-            $(`#btn-${currentlyOpenBip}`).text("View Full Card").removeClass("nexus-btn-close").addClass("nexus-btn-expand");
-        }
+        ws.onopen = () => {
+            $('#conn-stat')
+                .text('WS Live')
+                .removeClass('text-danger border-danger')
+                .addClass('text-success border-success');
 
-        let bipData = masterData.find(b => b.bip_code === bipCode);
-        if(!bipData) return;
+            if (pingInterval) clearInterval(pingInterval);
+            pingInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ action: "ping" }));
+                }
+            }, 30000);
+        };
 
-        let fullHtml = buildInnerCardHtml(bipData);
-        
-        expandContainer.html(fullHtml);
-        if (!isSilentRefresh) expandContainer.slideDown(300);
-        else expandContainer.show();
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.action === "pong") return;
 
-        btn.text("Close Details").removeClass("nexus-btn-expand").addClass("nexus-btn-close");
-        currentlyOpenBip = bipCode;
-    };
+                const raw_team = data.sales_team || {};
+                
+                const incoming = {};
+                Object.keys(raw_team).forEach(k => {
+                    incoming[k.toLowerCase()] = raw_team[k];
+                });
 
-    // Helper: Turns comma-separated SO strings into clickable anchor tags
-    function formatSOLinks(soString) {
-        if (!soString || soString === "None") return "None";
-        return soString.split(', ').map(so => `<a href="/app/sales-order/${so}" target="_blank" class="nexus-so-link">${so}</a>`).join(', ');
+                latestSalesState = incoming;
+
+            } catch (e) {
+                console.error("WS parse error:", e);
+            }
+        };
+
+        ws.onclose = () => {
+            $('#conn-stat')
+                .text('Reconnecting...')
+                .removeClass('text-success border-success')
+                .addClass('text-danger border-danger');
+            if (pingInterval) clearInterval(pingInterval);
+            setTimeout(connectTelemetryWebSocket, 3000);
+        };
+
+        ws.onerror = () => { ws.close(); };
     }
 
-    // 6. The Complex HTML Builder (3-Tier View)
-    function buildInnerCardHtml(bip) {
-        let fgs = bip.fgs;
-        
-        let packSummary = fgs.map(f => {
-            let reqPack = Math.max(f.gross, f.net_produce) + f.excess;
-            return `&bull; <strong style="color:#38bdf8;">${f.pack_code}</strong> (${f.name}): <strong>${reqPack}</strong> total units required<br>`;
-        }).join('');
-
-        // Tier 1 Logistics logic
-        let tier1Html = '';
-        let requiresProduction = fgs.filter(f => f.primary > 0);
-        let satisfiedFromStock = fgs.filter(f => f.primary === 0 && f.gross > 0);
-
-        if (requiresProduction.length > 0) {
-            tier1Html += requiresProduction.map(f => `
-                <div style="margin: 8px 0; font-size: 15px;">Package <span style="color:#38bdf8; font-weight:700;">${f.id}</span> <em>${f.name}</em> into <span style="color:#38bdf8; font-weight:700;">${f.primary} units</span> fulfilling SO ${formatSOLinks(f.so_list)}</div>
-            `).join('');
-        }
-        if (satisfiedFromStock.length > 0) {
-            tier1Html += satisfiedFromStock.map(f => `
-                <div style="margin: 8px 0; font-size: 15px; color: #10b981; display: flex; align-items: center; gap: 8px;">
-                    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="flex-shrink: 0;"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
-                    <span>Order for <span style="font-weight:700;">${f.id}</span> (${f.gross} units for ${formatSOLinks(f.so_list)}) is fully satisfied from existing Bin stock. No production needed.</span>
-                </div>
-            `).join('');
-        }
-        if (tier1Html === '') {
-            tier1Html = '<div style="color: #94a3b8; font-style: italic; font-size: 14px;">No active sales orders.</div>';
-        }
-
-        let html = `
-            <div class="nexus-summary-block">
-                <div style="font-weight: 800; color: #94a3b8; text-transform: uppercase; font-size: 12px; margin-bottom: 12px; letter-spacing: 0.5px;">Production Card Details</div>
-                <div style="line-height: 1.8; font-size: 15px;">
-                    Minimum Batch = <span style="color: #f43f5e; font-weight: 800;">${bip.min_batch} KG</span><br>
-                    Bulk Required (Sales + Shelf) = <span style="color: #10b981; font-weight: 800;">${bip.ideal_bulk} KG</span><br>
-                    Remainder (To be forced full) = <strong style="color: #f8fafc;">${bip.remainder} KG</strong>
-                </div>
-                <div style="font-weight: 800; color: #94a3b8; text-transform: uppercase; font-size: 12px; margin-top: 20px; margin-bottom: 10px; letter-spacing: 0.5px;">Total Packaging Required</div>
-                <div style="line-height: 1.8; font-size: 15px;">${packSummary}</div>
-            </div>
-
-            <div class="nexus-table-wrapper">
-                <table class="nexus-table">
-                    <thead>
-                        <tr>
-                            <th>FG ID</th>
-                            <th>FG Name</th>
-                            <th>Pack Code</th>
-                            <th>Gross Order</th>
-                            <th style="color: #f8fafc;">Actual (Bin)</th>
-                            <th>Avail (FIFO)</th>
-                            <th>MRL</th>
-                            <th>Max Shelf</th>
-                            <th style="color: #10b981;">Net Produce (Units)</th>
-                            <th style="color: #38bdf8;">Net Produce (KG)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${fgs.map(f => `
-                        <tr>
-                            <td class="nexus-nowrap" style="font-weight:700;">${f.id}</td>
-                            <td>${f.name}</td>
-                            <td class="nexus-nowrap">${f.pack_code}</td>
-                            <td>${f.gross}</td>
-                            <td style="font-weight:700; color: #f8fafc;">${f.actual}</td>
-                            <td>${f.available}</td>
-                            <td>${f.mrl}</td>
-                            <td>${f.max_shelf}</td>
-                            <td style="color: #10b981; font-weight: 800; font-size: 15px;">${f.net_produce}</td>
-                            <td style="color: #38bdf8; font-weight: 800; font-size: 15px;">${f.batch_net_produce_kg}</td>
-                        </tr>`).join('')}
-                    </tbody>
-                </table>
-            </div>
-
-            <div style="padding-bottom: 10px;">
-                <div class="nexus-sub-card" style="border-left-color: #3b82f6;">
-                    <div style="font-weight: 800; color: #94a3b8; text-transform: uppercase; font-size: 12px; margin-bottom: 10px; letter-spacing: 0.5px;">1. Primary Fulfilment (Sales Orders)</div>
-                    ${tier1Html}
-                </div>
-
-                <div class="nexus-sub-card" style="border-left-color: #10b981;">
-                    <div style="font-weight: 800; color: #94a3b8; text-transform: uppercase; font-size: 12px; margin-bottom: 10px; letter-spacing: 0.5px;">2. Shelf Life Fulfillment (MRL Hit)</div>
-                    ${fgs.filter(f => f.shelf > 0).map(f => `
-                        <div style="margin: 8px 0; font-size: 15px;">Package <span style="color:#10b981; font-weight:700;">${f.id}</span> <em>${f.name}</em> into <span style="color:#10b981; font-weight:700;">${f.shelf} units</span> to fill shelf capacity.</div>
-                    `).join('') || '<div style="color: #94a3b8; font-style: italic; font-size: 14px;">Shelves are stable above MRL limits.</div>'}
-                </div>
-
-                <div class="nexus-sub-card" style="border-left-color: #8b5cf6;">
-                    <div style="font-weight: 800; color: #94a3b8; text-transform: uppercase; font-size: 12px; margin-bottom: 10px; letter-spacing: 0.5px;">3. Strategic Restock (From Excess Bulk)</div>
-                    ${fgs.filter(f => f.excess > 0).map(f => `
-                        <div style="margin: 8px 0; font-size: 15px;">Package <span style="color:#a78bfa; font-weight:700;">${f.id}</span> <em>${f.name}</em> into <span style="color:#a78bfa; font-weight:700;">${f.excess} units</span> (${roundKg(f.excess_kg)} KG) to replenish stock.</div>
-                    `).join('') || '<div style="color: #94a3b8; font-style: italic; font-size: 14px;">No excess bulk generated requiring distribution.</div>'}
-                </div>
-            </div>
-        `;
-        return html;
+    function applySearch(inputId, containerId) {
+        $(inputId).on('keyup', function() {
+            const val = $(this).val().toLowerCase();
+            $(`${containerId} .sales-card`).each(function() {
+                const name = $(this).attr('data-name');
+                if (name) $(this).toggle(name.includes(val));
+            });
+        });
     }
 
-    function roundKg(val) { return Math.round(val * 100) / 100; }
+    applySearch('#sales-search-active', '#active-sales-container');
+    applySearch('#sales-search-standby', '#standby-sales-container');
 
-    page.set_primary_action('Refresh Now', fetchData);
-    fetchData(); 
-    
-    // Auto-Polling Engine (Every 5 Minutes / 300,000ms)
-    autoRefreshInterval = setInterval(fetchData, 300000); 
-    frappe.router.on('change', () => clearInterval(autoRefreshInterval));
-}
+    $(wrapper).on('click', '.sales-card', function() {
+        const email = $(this).attr('data-tid');
+        $('.sales-card').removeClass('active-selection');
+        $(this).addClass('active-selection');
+
+        if (sales_markers[email]) {
+            map.flyTo(sales_markers[email].getLatLng(), 16, { duration: 1.2 });
+            sales_markers[email].openPopup();
+        } else {
+            frappe.show_alert({ message: 'User is currently offline.', indicator: 'orange' });
+        }
+    });
+
+    frappe.require([
+        "/assets/nexus_supply_chain/leaflet/leaflet.css",
+        "/assets/nexus_supply_chain/leaflet/leaflet.js",
+        "https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css",
+        "https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js",
+        "https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.20/leaflet-maplibre-gl.js"
+    ], function() {
+
+        map = L.map('fleet-map', { zoomControl: false }).setView([-1.2921, 36.8219], 12);
+        L.control.zoom({ position: 'topright' }).addTo(map);
+        L.maplibreGL({
+            style: TILE_SERVER_URL,
+            attribution: '© Sovereign Nexus Maps'
+        }).addTo(map);
+
+        refresh_sales_data();
+
+        connectTelemetryWebSocket();
+
+        startRenderLoop();
+
+        startStaleCheckLoop();
+    });
+};

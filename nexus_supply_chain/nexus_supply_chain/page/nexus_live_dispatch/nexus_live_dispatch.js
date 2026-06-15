@@ -1,5 +1,3 @@
-// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_live_dispatch/nexus_live_dispatch.js
-
 frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({
         parent: wrapper,
@@ -7,7 +5,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         single_column: true 
     });
 
-    // 1. Centered Enterprise Layout (3-Column Architecture)
     $(wrapper).find('.layout-main-section').html(`
         <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
             <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
@@ -78,7 +75,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         </div>
     `);
 
-    // 2. Deep Enterprise Styling
     $('head').append(`
         <style>
             .vehicle-card { 
@@ -120,7 +116,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             .ping-offline { background: #9ca3af; opacity: 0.5; }
             @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.7; } 100% { transform: scale(0.9); opacity: 1; } }
 
-            /* 🚨 Deep Enterprise Colors */
             .theme-transit { background-color: #064e3b; border-left-color: #10b981; color: #ecfdf5; }
             .theme-transit .status-badge { background-color: #047857; color: #ffffff; }
             
@@ -138,7 +133,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         </style>
     `);
 
-    // 3. Global State Registry
     let map = null;
     let vehicle_markers = {};
     
@@ -146,17 +140,13 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
     let active_route_layers = {}; 
     let unvisited_waypoints = {}; 
     
-    // Throttle state for expensive Turf calculations
     let last_math_calc = {}; 
     let ws = null;
     
-    // 🚨 ENDPOINTS 🚨
     const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/ws";
     
-    // Vector Tile URL
     const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
-    // 🚨 LOAD NATIVE LIBRARIES (Leaflet + Turf + MapLibre) 🚨
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css", 
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -169,7 +159,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         map = L.map('fleet-map', { zoomControl: false }).setView([-1.2921, 36.8219], 12);
         L.control.zoom({ position: 'topright' }).addTo(map);
         
-        // 🚨 0-LAG VECTOR TILE ENGINE (Bypasses .png raster delays) 🚨
         L.maplibreGL({
             style: TILE_SERVER_URL,
             attribution: '© Sovereign Nexus Maps'
@@ -179,7 +168,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         connectTelemetryWebSocket();
     });
 
-    // 4. Data Bridge: Fetch Vehicles as Source of Truth
     function refresh_dispatch_data() {
         frappe.call({
             method: "frappe.client.get_list",
@@ -228,12 +216,10 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             let status = v.current_status ? v.current_status.toUpperCase() : 'IDLE';
             let m = manifestMap[v.name];
             
-            // Override physical status if manifest is just "Ready"
             if (m && m.trip_status === 'Ready') {
                 status = 'LOADING';
             }
             
-            // 🚨 INTERCEPT FIX: Forcefully drop the completed manifest payload if the vehicle is currently Idle or in Maintenance.
             if (status === 'IDLE' || status === 'MAINTENANCE') {
                 m = null; 
             }
@@ -246,7 +232,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 groups['IDLE'].push(v);
             }
 
-            // Only attempt to draw static routes if an active manifest actually exists
             if (m && m.route_geojson && !static_route_layers[v.name]) {
                 try {
                     let parsedGeoJSON = JSON.parse(m.route_geojson);
@@ -272,7 +257,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             }
         });
 
-        // Apply Deep Enterprise Themes to Rendering Groups
         render_group(activeContainer, 'Loading / Ready', groups['LOADING'], manifestMap, 'theme-loading');
         render_group(activeContainer, 'En Route', groups['EN ROUTE'], manifestMap, 'theme-transit');
         render_group(activeContainer, 'Returning', groups['RETURNING'], manifestMap, 'theme-returning');
@@ -281,61 +265,55 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         render_group(standbyContainer, 'Maintenance', groups['MAINTENANCE'], manifestMap, 'theme-maintenance');
     }
 
-    function render_group(container, title, items, manifestMap, themeClass) {
-        if (items.length === 0) return;
-        
-        container.append(`<div class="status-group-header">${title}</div>`);
-        
-        items.forEach(v => {
-            // Note: If the vehicle is Idle/Maintenance, 'm' is forced to null by the intercept above.
-            let m = manifestMap[v.name];
-            if (title === 'Idle' || title === 'Maintenance') {
-                m = null; 
-            }
+	function render_group(container, title, items, manifestMap, themeClass) {
+		if (items.length === 0) return;
+		
+		container.append(`<div class="status-group-header">${title}</div>`);
+		
+		items.forEach(v => {
+			let m = manifestMap[v.name];
+			if (title === 'Idle' || title === 'Maintenance') {
+				m = null; 
+			}
 
-            let manifestText = m 
-                ? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
-                : `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
-            
-            // 🚨 UNIFIED TRACKING ID MAPPING 🚨
-            // Explicitly build the exact string FastAPI uses: driver::vehicle
-            let driver_email = v.current_driver || "Unknown_Driver";
-            let vehicle_id = v.name || "Idle";
-            let trackingKey = `${driver_email}::${vehicle_id}`;
+			let manifestText = m 
+				? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
+				: `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
+			
+			let driver_email = v.current_driver || "Unknown_Driver";
+			let vehicle_id = v.name || "Idle";
+			let trackingKey = `${driver_email}::${vehicle_id}`;
 
-            let btnHtml = m && m.trip_status !== 'Ready' ? `
-                <button class="card-btn btn-gmaps" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="color: inherit;">
-                    <i class="fa fa-traffic-light me-2 text-warning"></i> View Live Traffic & ETA
-                </button>` : '';
+			let btnHtml = m && m.trip_status !== 'Ready' ? `
+				<button class="card-btn btn-gmaps" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="color: inherit;">
+					<i class="fa fa-traffic-light me-2 text-warning"></i> View Live Traffic & ETA
+				</button>` : '';
 
-            container.append(`
-                <div class="vehicle-card ${themeClass}" data-vehicle="${v.name}" data-tid="${trackingKey}">
-                    <div class="card-header">
-                        <span class="plate-number">${v.name}</span>
-                        <span class="speed-indicator speed-val" data-tid="${trackingKey}">0 km/h</span>
-                    </div>
-                    <div class="status-badge">● ${title}</div>
-                    <div class="card-meta"><span class="card-meta-icon">👤</span> Operator: ${v.current_driver || 'Unassigned'}</div>
-                    ${manifestText}
-                    ${btnHtml}
-                    <div class="mt-3 d-flex align-items-center small rounded" style="background: rgba(0,0,0,0.2); padding: 8px;">
-                        <span class="ping-dot ping-offline" data-tid="${trackingKey}"></span>
-                        <span class="stat-text" data-tid="${trackingKey}" style="opacity: 0.9;">Offline</span>
-                    </div>
-                </div>
-            `);
-        });
-    }
+			container.append(`
+				<div class="vehicle-card ${themeClass}" data-vehicle="${v.name}" data-tid="${trackingKey}">
+					<div class="card-header">
+						<span class="plate-number">${v.name}</span>
+						<span class="speed-indicator speed-val" data-tid="${trackingKey}">0 km/h</span>
+					</div>
+					<div class="status-badge">● ${title}</div>
+					<div class="card-meta"><span class="card-meta-icon">👤</span> Operator: ${v.current_driver || 'Unassigned'}</div>
+					${manifestText}
+					${btnHtml}
+					<div class="mt-3 d-flex align-items-center small rounded" style="background: rgba(0,0,0,0.2); padding: 8px;">
+						<span class="ping-dot ping-offline" data-tid="${trackingKey}"></span>
+						<span class="stat-text" data-tid="${trackingKey}" style="opacity: 0.9;">Offline</span>
+					</div>
+				</div>
+			`);
+		});
+	}
 
-    // =========================================================================
-    // 🚨 DEEP LINK ENGINE (Google Maps Integration)
-    // =========================================================================
     $(wrapper).on('click', '.btn-gmaps', function(e) {
         e.stopPropagation(); 
         let btn = $(this);
         let manifest_id = btn.attr('data-manifest-id');
         let vehicle_id = btn.attr('data-vehicle-id');
-        let trackingKey = btn.attr('data-tid'); // Safely captures the unified ID
+        let trackingKey = btn.attr('data-tid');
 
         if (!localStorage.getItem('nexus_google_educated')) {
             let d = new frappe.ui.Dialog({
@@ -368,7 +346,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         let original_html = btn.html();
         btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin me-2"></i> Syncing...');
 
-        // Find the precise marker location based on the exact 1:1 tracking key
         let marker = vehicle_markers[trackingKey];
         let current_pos = marker ? marker.getLatLng() : null;
         
@@ -424,7 +401,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // 5. THE TELEMETRY ENGINE (0-Lag DOM Rendering)
     function connectTelemetryWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
@@ -445,8 +421,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         let v = fleet[tracking_id];
                         let speedKmh = Math.round(v.speed * 3.6);
                         
-                        // 🚨 1:1 DOM PARITY FIX 🚨
-                        // We safely escape the exact tracking_id provided by FastAPI to target the jQuery elements.
                         let exact_tid = v.tracking_id || tracking_id;
                         let safe_tid = exact_tid.replace(/"/g, '\\"'); 
                         
@@ -454,7 +428,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         let $stat = $(`.stat-text[data-tid="${safe_tid}"]`);
                         let $speed = $(`.speed-val[data-tid="${safe_tid}"]`);
 
-                        // UI Status shifts to Online exactly when payload arrives
                         $dot.removeClass('ping-offline').addClass('ping-online');
                         $stat.text('Live').css('opacity', '1');
                         $speed.text(`${speedKmh} km/h`);
@@ -465,7 +438,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         let cardColor = $(`.vehicle-card[data-tid="${safe_tid}"]`).css('border-left-color');
                         if (cardColor) color = cardColor;
 
-                        // Marker mapped by exact_tid
                         if (vehicle_markers[exact_tid]) {
                             vehicle_markers[exact_tid].setLatLng([v.lat, v.lng]);
                             let iconElement = vehicle_markers[exact_tid].getElement();
@@ -492,7 +464,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                             vehicle_markers[exact_tid] = L.marker([v.lat, v.lng], { icon: icon }).addTo(map).bindPopup(`<div class="p-1">${popupText}</div>`);
                         }
 
-                        // MATH THROTTLING (Bound to physical vehicle for GeoJSON route mapping)
                         let physical_vehicle_name = v.vehicle;
                         
                         if (!last_math_calc[physical_vehicle_name] || (now - last_math_calc[physical_vehicle_name] > 1000)) {
@@ -532,35 +503,28 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         }
                     });
 
-                    // 🚨 THE PURGE FIX: Aggressive Cleanup of Orphaned Markers and Lines
                     Object.keys(vehicle_markers).forEach(marker_id => {
                         if (!fleet[marker_id]) {
-                            // 1. Remove the live truck marker
                             map.removeLayer(vehicle_markers[marker_id]);
                             delete vehicle_markers[marker_id];
                             
-                            // 2. Extract the physical vehicle from the driver::vehicle tracking key
                             let physical_vehicle = marker_id.split('::')[1];
 
                             if (physical_vehicle && physical_vehicle !== 'Idle') {
-                                // 3. Purge the active blue route line if no longer tracking
                                 if(active_route_layers[physical_vehicle]) {
                                     map.removeLayer(active_route_layers[physical_vehicle]);
                                     delete active_route_layers[physical_vehicle];
                                 }
                                 
-                                // 4. Purge the static grey planned route line
                                 if(static_route_layers[physical_vehicle]) {
                                     map.removeLayer(static_route_layers[physical_vehicle]);
                                     delete static_route_layers[physical_vehicle];
                                 }
 
-                                // 5. Clear math throttles
                                 delete unvisited_waypoints[physical_vehicle];
                                 delete last_math_calc[physical_vehicle];
                             }
 
-                            // 6. Instantly Update the Specific UI Card Back to Offline
                             let safe_tid = marker_id.replace(/"/g, '\\"'); 
                             $(`.ping-dot[data-tid="${safe_tid}"]`).removeClass('ping-online').addClass('ping-offline');
                             $(`.stat-text[data-tid="${safe_tid}"]`).text('Offline').css('opacity', '0.8');
@@ -582,11 +546,9 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         ws.onerror = () => { ws.close(); };
     }
 
-    // PERFECTED MAP ZOOM INTERACTION
     $(wrapper).on('click', '.vehicle-card', function(e) {
         if ($(e.target).closest('.btn-gmaps').length) return; 
 
-        // Uses unified tracking string dynamically passed
         let tid = $(this).attr('data-tid'); 
         let v_name = $(this).attr('data-vehicle'); 
         

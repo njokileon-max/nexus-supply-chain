@@ -13,14 +13,12 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
 		render_portfolio_table(page);
 	});
 
-	// Initial Render
 	render_portfolio_table(page);
 }
 
 function render_portfolio_table(page) {
 	let $container = page.main.find('.portfolio-table-wrapper');
 	
-    // 1. Inject a visual loading state so you know it's trying
 	$container.html('<div class="text-muted text-center" style="padding: 50px;"><h5><i class="fa fa-spinner fa-spin"></i> Calculating deep recursive BOM costs...</h5></div>');
 	
 	console.log("🚀 Firing Frappe Call to: nexus_supply_chain.nexus_supply_chain.page.product_portfolio.product_portfolio.get_portfolio_data");
@@ -31,12 +29,10 @@ function render_portfolio_table(page) {
             console.log("📦 Backend Response Payload:", r);
 
 			if (r.message && r.message.length > 0) {
-                // We have data! Clear the loading state and build the table
 				$container.empty();
 				build_datatable($container, r.message);
 				frappe.show_alert({message: __('Calculations Complete'), indicator: 'green'});
 			} else {
-                // The backend returned [] (Empty List)
                 $container.html(`
                     <div class="text-muted text-center" style="padding: 50px;">
                         <h4>No Data Found</h4>

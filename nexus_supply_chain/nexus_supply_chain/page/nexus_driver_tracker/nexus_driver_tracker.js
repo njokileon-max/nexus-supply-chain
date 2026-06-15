@@ -1,13 +1,9 @@
-// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_driver_tracker/nexus_driver_tracker.js
-
 let wakeLock = null;
 let ws = null; 
 let reconnect_interval = 3000; 
 
-// 🚨 CLOUDFLARE SECURE WEBSOCKET TUNNEL (FastAPI Telemetry) 🚨
 const FASTAPI_WS_URL = "wss://whereas-reproductive-tribune-accepts.trycloudflare.com/telemetry/ws";
 
-// 🚨 SOVEREIGN SELF-HOSTED MAP TUNNEL (Docker TileServer-GL) 🚨
 const TILE_SERVER_URL = "https://boc-weblog-johnny-shelter.trycloudflare.com/styles/basic-preview/style.json";
 
 frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
@@ -33,7 +29,7 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                     </div>
                 </div>
                 
-                <div class="flex-grow-1 position-relative">
+                <div class="col-md-6 position-relative bg-light border-end">
                     <div id="driver-map" style="height: 100%; width: 100%; z-index: 1;"></div>
                     
                     <div class="position-absolute top-0 end-0 m-3 d-flex flex-column gap-2" style="z-index: 999; width: 220px;">
@@ -66,13 +62,12 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
 
     $("<style>@keyframes smallPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.7); } 70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } } .driver-action-btn { font-size: 13px; padding: 12px 15px; border-radius: 8px; text-align: left; }</style>").appendTo("head");
 
-    // Clear ghost 404 cache immediately
     let activeManifestKey = Object.keys(localStorage).find(k => k.startsWith('tracking_'));
     let initialTarget = null;
     
     if (activeManifestKey) {
         initialTarget = activeManifestKey.replace('tracking_', '');
-        localStorage.removeItem(activeManifestKey); // 🚨 Fixes the infinite 404 loop
+        localStorage.removeItem(activeManifestKey);
     }
 
     if (initialTarget) {
@@ -95,19 +90,17 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
         let driver_marker = null;
         let last_known_pos = null; 
         
-        let current_active_manifest = null; // State tracker for hot-swaps
+        let current_active_manifest = null;
         let current_manifest_doc = null;
-        let target_driver_email = null; // 🚨 Assign driver directly from DB
+        let target_driver_email = null;
 
         let activeRouteLayer = null; 
         let unvisitedWaypoints = []; 
 
-        // Reset Map if exists
         if (window.nexus_tracker_map) {
             window.nexus_tracker_map.remove();
         }
 
-        // 🚨 LOAD LEAFLET + MAPLIBRE-GL-LEAFLET BRIDGE + TURF.JS 🚨
         frappe.require([
             "/assets/nexus_supply_chain/leaflet/leaflet.css", 
             "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -121,7 +114,6 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
             window.nexus_tracker_map = map;
             L.control.zoom({ position: 'topright' }).addTo(map);
             
-            // 🚨 NATIVE VECTOR TILES INJECTION (Sovereign Docker Server) 🚨
             L.maplibreGL({
                 style: TILE_SERVER_URL,
                 attribution: '&copy; Sovereign Nexus Maps'
@@ -129,15 +121,11 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
 
             activeRouteLayer = L.geoJSON(null, { style: { color: '#2563eb', weight: 6, opacity: 0.9 } }).addTo(map);
 
-            // =========================================================================
-            // 🚨 1. DB CALL: FIND THE DRIVER BEFORE TRACKING BEGINS & GRACEFUL FAILURE 🚨
-            // =========================================================================
             frappe.call({
-                method: 'frappe.client.get',
+                path: 'frappe.client.get',
                 args: { doctype: 'Vehicle Delivery Manifest', name: target_id },
                 callback: function(r) {
                     if (r.message) {
-                        // Success! It's a valid Manifest ID. Lock in the driver and the route.
                         current_manifest_doc = r.message;
                         target_driver_email = r.message.driver.toLowerCase(); 
                         $('#tracker-status').text(`Tracking: ${r.message.name}`);
@@ -159,12 +147,10 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                         }
                         connect_websocket();
                     } else if (target_id.includes('@')) {
-                        // Fallback: It's not a manifest, but it is an email. Try raw tracking.
                         target_driver_email = target_id.toLowerCase();
                         $('#tracker-status').text(`Free Roaming: ${target_driver_email}`);
                         connect_websocket();
                     } else {
-                        // 🚨 ERROR HANDLING: It's a dead ID. Fail gracefully.
                         $('#tracker-status').text(`Target Not Found`);
                         $('#ping-text').text("ID does not exist in Database.").removeClass("text-warning").addClass("text-danger");
                         $('#live-pulse').css({ 'background': '#ef4444', 'animation': 'none' });
@@ -172,9 +158,6 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                 }
             });
 
-            // =========================================================================
-            // 🚨 2. TELEMETRY ENGINE & RUBBER-BAND PHYSICS
-            // =========================================================================
             function connect_websocket() {
                 if (ws && ws.readyState === WebSocket.OPEN) ws.close();
 
@@ -187,13 +170,12 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                 ws.onmessage = function(event) {
                     let data = JSON.parse(event.data);
                     const fleet = data.fleet || {};
-                    
+                     
                     let vehicleData = null;
                     let active_driver_id = null;
 
-                    // 🚨 STRICT MATCHER: Ensures we track the exact email regardless of the phone's state
                     let d_key = Object.keys(fleet).find(k => k.toLowerCase() === target_driver_email);
-                    
+                     
                     if (d_key) {
                         vehicleData = fleet[d_key];
                         active_driver_id = d_key;
@@ -209,15 +191,13 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                     let heading = vehicleData.heading || 0; 
                     let ping_manifest = vehicleData.manifest_id;
 
-                    // 🚨 HOLY TRINITY EXTRACTION: Parse Vehicle ID safely
                     let display_vehicle = (vehicleData.vehicle && vehicleData.vehicle !== "Unknown_Vehicle") 
                                             ? vehicleData.vehicle 
                                             : (current_manifest_doc ? current_manifest_doc.vehicle : 'Unassigned Truck');
-                    
+                     
                     last_known_pos = { lat: currentLat, lng: currentLng }; 
                     let is_idle = !ping_manifest || ping_manifest === "No_Active_Manifest";
 
-                    // 🚨 STATE MACHINE HOT-SWAP DETECTION 🚨
                     if (!is_idle && current_active_manifest !== ping_manifest) {
                         current_active_manifest = ping_manifest;
                         $('#tracker-status').text(`Active Trip: ${ping_manifest}`);
@@ -228,9 +208,8 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                         $('#tracker-status').text(`Free Roaming: ${active_driver_id}`);
                     }
 
-                    // Render Dynamic Truck Marker (Blue = Active, Grey = Idle)
                     let markerColor = is_idle ? '#9ca3af' : '#2563eb';
-                    
+                     
                     if (driver_marker) {
                         driver_marker.setLatLng([currentLat, currentLng]);
                         let iconElement = driver_marker.getElement();
@@ -240,7 +219,6 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                             if (arrow) arrow.style.transform = `rotate(${heading}deg)`;
                             if (svgPath) svgPath.setAttribute('fill', markerColor);
                         }
-                        // Update popup dynamically with the verified Vehicle ID
                         driver_marker.setPopupContent(`<div class="p-1"><b>${display_vehicle}</b><br><span class="text-muted small">${active_driver_id}</span></div>`);
                         map.panTo([currentLat, currentLng], {animate: true});
                     } else {
@@ -258,12 +236,10 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                         map.setView([currentLat, currentLng], 15);
                     }
 
-                    // 🚨 THE TRUE 3-POINT RUBBER-BAND PHYSICS 🚨
                     if (!is_idle && ping_manifest === target_id && unvisitedWaypoints.length > 0 && typeof turf !== 'undefined') {
                         try {
                             let truckPoint = turf.point([currentLng, currentLat]);
 
-                            // 1. Pop waypoints that are passed
                             while (unvisitedWaypoints.length > 0) {
                                 let nextPoint = turf.point(unvisitedWaypoints[0]);
                                 let dist = turf.distance(truckPoint, nextPoint, {units: 'kilometers'});
@@ -274,17 +250,14 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                             if (unvisitedWaypoints.length > 0) {
                                 let remainingLine = turf.lineString(unvisitedWaypoints);
                                 
-                                // 2. Snap to the Asphalt
                                 let snappedPoint = turf.nearestPointOnLine(remainingLine, truckPoint);
                                 let offRouteDist = turf.distance(truckPoint, snappedPoint, {units: 'kilometers'});
 
                                 let liveLineCoords = [];
                                 
                                 if (offRouteDist > 0.1) {
-                                    // Detached: Leash broken, draw only on the asphalt
                                     liveLineCoords = [...unvisitedWaypoints];
                                 } else {
-                                    // 3. Attached: [Live Car] -> [Snapped Asphalt Point] -> [Remaining Route]
                                     let snappedCoords = snappedPoint.geometry.coordinates;
                                     liveLineCoords = [[currentLng, currentLat], [snappedCoords[0], snappedCoords[1]], ...unvisitedWaypoints];
                                 }
@@ -297,7 +270,7 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                             }
                         } catch (e) { console.warn(e); }
                     } else if (is_idle && activeRouteLayer) {
-                        activeRouteLayer.clearLayers(); // Erase the blue line if they go idle
+                        activeRouteLayer.clearLayers();
                     }
                 };
 
@@ -309,9 +282,6 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
                 ws.onerror = function(error) { ws.close(); };
             }
 
-            // =========================================================================
-            // 🚨 3. GOOGLE MAPS SHORTCUTS (No $ string bleed)
-            // =========================================================================
             $('#btn-full-route').on('click', function(e) {
                 e.stopPropagation();
                 let btn = $(this);
@@ -336,13 +306,13 @@ frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
 
                         if (unvisitedWaypoints && unvisitedWaypoints.length > 0) {
                             let final_pt = unvisitedWaypoints[unvisitedWaypoints.length - 1];
-                            coords.push(final_pt[1] + "," + final_pt[0]); 
+                            coords.push(final_pt[1] + "," + final_pt[0]);
                         }
 
                         if (coords.length > 10) coords = coords.slice(0, 10);
 
                         if (coords.length > 0) {
-                            let dest = coords.pop(); 
+                            let dest = coords.pop();
                             googleMapsUrl += "&destination=" + dest;
                             if (coords.length > 0) googleMapsUrl += "&waypoints=" + coords.join('|');
                         } else if (last_known_pos) {

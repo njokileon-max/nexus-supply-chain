@@ -6,20 +6,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# 🚨 INITIALIZE FASTAPI ENTERPRISE ENGINE 🚨
 app = FastAPI(title="Nexus Fleet Telemetry Gateway")
 
-# Allow ERPNext / Frappe domains to connect via WebSocket without CORS blocking
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In strict production, replace "*" with your ERPNext domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 🚨 THE DATA CONTRACT 🚨
-# Must perfectly match the JSON payload sent from NexusLocationService.kt
 class TelemetryPing(BaseModel):
     driver: str
     manifest_id: str
@@ -30,17 +26,12 @@ class TelemetryPing(BaseModel):
     heading: float
     timestamp: int
 
-# 🚨 IN-MEMORY 0-LAG DATASTORE 🚨
-# Bypasses SQL completely. Holds the live state of the entire fleet in RAM.
 active_fleet: Dict[str, Dict[str, Any]] = {}
 
-# 🚨 NEW: DRIVER GRAVEYARD CACHE
-# Blocks "dying breath" delayed background pings after a driver logs out.
 DRIVER_LOGOUT_GRAVEYARD: Dict[str, float] = {}
 
 class ConnectionManager:
     def __init__(self):
-        # Keeps track of all open Frappe/ERPNext browser tabs
         self.active_connections: List[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
@@ -57,9 +48,6 @@ class ConnectionManager:
         """
         current_time = time.time()
         
-        # 🚨 AUTO-CLEANUP MEMORY LEAK GUARD 🚨
-        # If a truck drives into a dead zone and hasn't pinged in 60 seconds,
-        # remove it from the active map so it doesn't display as "ghost tracking".
         stale_keys = [
             tracking_id for tracking_id, data in active_fleet.items() 
             if current_time - data.get("server_received_time", 0) > 60
@@ -69,20 +57,15 @@ class ConnectionManager:
 
         payload = {"fleet": active_fleet}
         
-        # Broadcast to all connected dispatchers
         for connection in self.active_connections:
             try:
                 await connection.send_json(payload)
             except RuntimeError:
-                # Connection dropped mid-transfer, ignore and let WebSocketDisconnect catch it
                 pass
 
 manager = ConnectionManager()
 
 
-# =========================================================================
-# 1. THE INGESTION NODE (From Kotlin Android App)
-# =========================================================================
 @app.post("/telemetry/ping")
 async def receive_ping(ping: TelemetryPing):
     """
@@ -91,21 +74,14 @@ async def receive_ping(ping: TelemetryPing):
     driver = ping.driver if ping.driver else "Unknown_Driver"
     vehicle = ping.vehicle if ping.vehicle else "Idle"
 
-    # 🚨 GRAVEYARD GUARD: Block pings from drivers who recently logged out
     if driver in DRIVER_LOGOUT_GRAVEYARD:
         if time.time() - DRIVER_LOGOUT_GRAVEYARD[driver] < 120.0:
             return {"status": "rejected", "message": "Ping rejected. Driver recently logged out."}
         else:
-            # 120 seconds have passed, it's safe to assume this is a fresh legitimate login.
             del DRIVER_LOGOUT_GRAVEYARD[driver]
 
-    # 🚨 UNIFIED TRACKING ID: Explicit string binding driver to vehicle
-    # Prevents frontend jQuery mapping errors and backend duplication.
     tracking_id = f"{driver}::{vehicle}"
 
-    # 🚨 THE GHOST TRUCK FIX: Strict 1:1 Parity
-    # If the driver transitioned from Idle to a Vehicle (or vice versa),
-    # or changed vehicles, forcefully delete any old tracking keys to prevent duplication.
     stale_keys = [
         k for k, v in active_fleet.items() 
         if (v.get("driver") == driver or v.get("vehicle") == vehicle) and k != tracking_id
@@ -114,7 +90,7 @@ async def receive_ping(ping: TelemetryPing):
         del active_fleet[k]
 
     active_fleet[tracking_id] = {
-        "tracking_id": tracking_id, # Exposed explicitly for the JS DOM mapper
+        "tracking_id": tracking_id,
         "driver": driver,
         "manifest_id": ping.manifest_id,
         "vehicle": vehicle,
@@ -123,7 +99,7 @@ async def receive_ping(ping: TelemetryPing):
         "speed": ping.speed,
         "heading": ping.heading,
         "timestamp": ping.timestamp,
-        "server_received_time": time.time() # Used for the 60-second ghost cleanup
+        "server_received_time": time.time()
     }
     return {"status": "secured"}
 
@@ -135,15 +111,12 @@ async def receive_driver_logout(payload: Dict = Body(...)):
     """
     driver_email = payload.get("driver")
     if driver_email:
-        # Wipe them from active RAM instantly
         keys_to_delete = [k for k, v in active_fleet.items() if v.get("driver") == driver_email]
         for k in keys_to_delete:
             del active_fleet[k]
             
-        # Push to Graveyard to block trailing Kotlin pings
         DRIVER_LOGOUT_GRAVEYARD[driver_email] = time.time()
         
-        # Broadcast the purged state instantly
         await manager.broadcast_fleet_state()
         print(f"📡 Fleet Telemetry Purged & Blacklisted: {driver_email} logged out.")
         
@@ -162,9 +135,6 @@ async def receive_driver_login(payload: Dict = Body(...)):
     return {"status": "resurrected"}
 
 
-# =========================================================================
-# 2. THE BROADCAST NODE (To Frappe/ERPNext Dashboard)
-# =========================================================================
 @app.websocket("/telemetry/ws")
 async def fleet_telemetry_stream(websocket: WebSocket):
     """
@@ -173,11 +143,8 @@ async def fleet_telemetry_stream(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Blast the payload
             await manager.broadcast_fleet_state()
             
-            # Wait exactly 1 second to match the Kotlin firing rate.
-            # This prevents WebSocket flooding and browser UI crashing.
             await asyncio.sleep(1)
             
     except WebSocketDisconnect:
@@ -187,14 +154,11 @@ async def fleet_telemetry_stream(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    # 🚨 PRODUCTION RUNNER SETTINGS 🚨
-    # workers=1 is REQUIRED when using an in-memory dictionary (active_fleet). 
-    # If you increase workers, the memory gets split and dashboards will flicker.
     uvicorn.run(
         "nexuslivedispatch:app", 
         host="0.0.0.0", 
         port=8001, 
         loop="uvloop", 
         workers=1,
-        log_level="warning" # Suppresses standard HTTP logs to save disk space
+        log_level="warning"
     )

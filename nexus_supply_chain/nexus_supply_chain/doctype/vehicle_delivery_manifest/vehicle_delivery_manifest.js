@@ -1,25 +1,18 @@
-// apps/nexus_supply_chain/nexus_supply_chain/doctype/vehicle_delivery_manifest/vehicle_delivery_manifest.js
+let wakeLock = null;
 
-let wakeLock = null;   // Screen Wake Lock (prevents phone sleep)
-
-// 🚨 SOVEREIGN SELF-HOSTED MAP TUNNEL (Docker TileServer-GL) 🚨
-// Replace this with the Cloudflare Tunnel URL pointing to your localhost:8082 Docker container
 const TILE_SERVER_URL = "https://from-trunk-debug-sufficient.trycloudflare.com/styles/basic-preview/style.json";
 
 frappe.ui.form.on('Vehicle Delivery Manifest', {
     refresh: function(frm) {
         
-        // 1. Render the Map (Light Theme / Centered via MapLibre)
         if (frm.fields_dict.route_map_html && frm.doc.route_geojson) {
             render_manifest_map(frm);
         }
 
-        // 2. Telemetry Persistence: Resume tracking UI if active
         if (localStorage.getItem('tracking_' + frm.doc.name) === 'true' && frm.doc.trip_status === 'Dispatched') {
             frm.set_intro(__("GPS Tracking is currently LIVE via Native App."), "blue");
         }
 
-        // 2.5 PWA + WAKE LOCK (Keeps screen alive for the driver)
         if (frm.doc.trip_status === 'Dispatched' && !wakeLock) {
             frm.dashboard.add_comment('blue', `
                 <div style="background:#2563eb;color:white;padding:14px;border-radius:8px;text-align:center;font-weight:bold;margin-bottom:10px;">
@@ -47,12 +40,8 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
             });
         }
 
-        // =================================================================
-        // CORE OPERATIONAL ACTIONS
-        // =================================================================
         if (!frm.is_new() && frm.doc.docstatus === 1) {
             
-            // --- BUTTON: TRACK DRIVER'S LOCATION ---
             if (frm.doc.trip_status === 'Ready' || frm.doc.trip_status === 'Dispatched' || frm.doc.trip_status === 'Completed' || frm.doc.trip_status === 'Returning') {
                 frm.add_custom_button(__('<i class="fa fa-map-marked-alt me-2 text-primary"></i> Track Driver Location'), function() {
                     localStorage.setItem('tracking_' + frm.doc.name, 'true');
@@ -60,11 +49,9 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                 }).addClass('btn-default fw-bold');
             }
 
-            // --- BUTTON: START DELIVERY TRIP ---
             if (frm.doc.trip_status === 'Ready') {
                 frm.add_custom_button(__('<i class="fa fa-play me-2 text-success"></i> Start Delivery Trip'), function() {
                     frappe.confirm('Initiate trip and record official departure from the yard? (Ensure Native App tracking is started)', () => {
-                        // 🚨 REROUTED: Using unified sync endpoint
                         frappe.call({
                             method: "nexus_supply_chain.api.sync_manifest_from_app",
                             args: { 
@@ -91,7 +78,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                 }).addClass('btn-default fw-bold');
             }
 
-            // --- BUTTON: CONFIRM ARRIVAL AT FACTORY ---
             if (frm.doc.trip_status === 'Dispatched' || frm.doc.trip_status === 'Completed' || frm.doc.trip_status === 'Returning') {
                 frm.add_custom_button(__('🏁 Confirm Arrival at Factory'), function() {
                     frappe.confirm('Confirm you have reached the factory compound? This will stop GPS tracking and reset the vehicle to Idle.', () => {
@@ -114,7 +100,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                             body: JSON.stringify({ manifest_id: frm.doc.name })
                         }).catch(e => console.log("Backend sync complete."));
 
-                        // 🚨 REROUTED: Using unified sync endpoint
                         frappe.call({
                             method: "nexus_supply_chain.api.sync_manifest_from_app",
                             args: { 
@@ -130,7 +115,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                 }).addClass('btn-danger fw-bold text-white');
             }
 
-            // --- BUTTON: CONFIRM A STOP (Safety Dialog & Qty Table) ---
             if (frm.doc.trip_status === 'Dispatched' || frm.doc.trip_status === 'Returning') {
                 frm.add_custom_button(__('Confirm a Stop'), function() {
                     let pending_stops = frm.doc.stops.filter(d => d.delivery_status === 'Pending');
@@ -148,7 +132,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                             { fieldtype: 'Section Break' },
                             { 
                                 label: 'Delivery Status', fieldname: 'delivery_status', fieldtype: 'Select', reqd: 1,
-                                options: 'Delivered\nPartially Delivered\nFailed', // 🚨 Removed 'Returned'
+                                options: 'Delivered\nPartially Delivered\nFailed',
                                 onchange: function() {
                                     let is_partial = this.value === 'Partially Delivered';
                                     d.set_df_property('return_reason', 'hidden', !is_partial);
@@ -157,7 +141,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                     if (is_partial) {
                                         let selected_row = pending_stops.find(s => s.name === d.get_value('stop_row_id'));
                                         
-                                        // 🚨 NATIVE FETCH: Use Frappe's built in ORM to get items securely
                                         frappe.call({
                                             method: "frappe.client.get_list",
                                             args: {
@@ -202,7 +185,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                 }
                             },
                             { fieldtype: 'HTML', fieldname: 'returned_items_html', hidden: 1 },
-                            // 🚨 DATABASE FIX: Perfectly synchronized, case-sensitive return reasons array
                             { label: 'Primary Reason for Return', fieldname: 'return_reason', fieldtype: 'Select', hidden: 1, options: '\nDamaged In Transit\nIncorrect Item\nIncorrect Quantity\nCustomer Rejected Value\nCustomer Payment Failure\nArrived Outside Delivery Window' },
                             { fieldtype: 'Section Break' },
                             { label: 'Driver Notes (Optional)', fieldname: 'driver_notes', fieldtype: 'Small Text' }
@@ -229,7 +211,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                         if (qty_returned > max_qty) {
                                             frappe.msgprint(`Quantity returned cannot exceed the ordered quantity (${max_qty}).`);
                                             validation_failed = true;
-                                            return false; 
+                                            return false;
                                         }
 
                                         returned_data.push({
@@ -239,7 +221,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                     }
                                 });
 
-                                if (validation_failed) return; 
+                                if (validation_failed) return;
                                 
                                 if (returned_data.length === 0) {
                                     frappe.msgprint("Please select at least one item to return for a Partially Delivered status.");
@@ -254,7 +236,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                             frappe.confirm(__('Confirm delivery for <b>{0}</b>? This will trigger automated invoicing and cannot be undone.', [selected_stop_label]), () => {
                                 d.get_primary_btn().prop('disabled', true).html('Processing...');
 
-                                // 🚨 REROUTED: Using the unified sync payload structure
                                 let payload = [{
                                     name: values.stop_row_id,
                                     delivery_status: values.delivery_status,
@@ -269,10 +250,10 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                         manifest_name: frm.doc.name,
                                         stops: JSON.stringify(payload)
                                     },
-                                    callback: function(res) { 
+                                    callback: function(res) {
                                         if(res.message && res.message.status === "success") {
-                                            d.hide(); 
-                                            frm.reload_doc(); 
+                                            d.hide();
+                                            frm.reload_doc();
                                         }
                                     },
                                     error: function() {
@@ -286,7 +267,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                 }).addClass('btn-success');
             }
 
-            // --- BUTTON: NAVIGATE TO NEXT STOP ---
             if (frm.doc.trip_status === 'Dispatched' || frm.doc.trip_status === 'Returning') {
                 frm.add_custom_button(__('Navigate to Next Stop'), function() {
                     let pending_stops = frm.doc.stops.filter(d => d.delivery_status === 'Pending' && (d.custom_latitude || d.latitude));
@@ -305,7 +285,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                         primary_action(v) {
                             let stop = pending_stops.find(s => s.name === v.sel);
                             if (stop) {
-                                // 🚨 PRECISION ROUTING: Uses Custom Coordinates if available
                                 let target_lat = stop.custom_latitude || stop.latitude;
                                 let target_lng = stop.custom_longitude || stop.longitude;
                                 
@@ -321,9 +300,6 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
     }
 });
 
-// =================================================================
-// 🚨 SOVEREIGN MAP RENDERER (MapLibre-Leaflet Bridge) 🚨
-// =================================================================
 function render_manifest_map(frm) {
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css", 
@@ -335,9 +311,8 @@ function render_manifest_map(frm) {
         let $wrapper = frm.get_field('route_map_html').$wrapper;
         $wrapper.empty().append('<div id="manifest-map" style="height: 400px; border-radius: 8px; border: 1px solid #cbd5e1; margin-top: 10px;"></div>');
         
-        let map = L.map('manifest-map').setView([-1.2921, 36.8219], 12); 
-        
-        // 🚨 Inject Sovereign Vector Tiles 🚨
+        let map = L.map('manifest-map').setView([-1.2921, 36.8219], 12);
+
         L.maplibreGL({
             style: TILE_SERVER_URL,
             attribution: '&copy; Sovereign Nexus Maps'
@@ -348,7 +323,6 @@ function render_manifest_map(frm) {
             map.fitBounds(routeLayer.getBounds(), { padding: [20, 20] });
             
             frm.doc.stops.forEach((stop, i) => {
-                // Target the most precise coordinates available
                 let pin_lat = stop.custom_latitude || stop.latitude;
                 let pin_lng = stop.custom_longitude || stop.longitude;
                 

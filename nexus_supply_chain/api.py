@@ -1,5 +1,3 @@
-# apps/nexus_supply_chain/nexus_supply_chain/api.py
-
 import frappe
 import requests
 import json
@@ -7,9 +5,6 @@ import math
 from datetime import datetime
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime
 
-# =================================================================
-# 1. CUSTOMER GEOCODING HOOK (Server-to-Server)
-# =================================================================
 def extract_and_set_coords(doc, method):
     if doc.custom_google_maps_link and doc.has_value_changed("custom_google_maps_link"):
         try:
@@ -34,9 +29,6 @@ def extract_and_set_coords(doc, method):
         except Exception as e:
             frappe.log_error(title="Coord Extraction Failed", message=str(e))
 
-# =================================================================
-# 2. MOBILE APP GATEKEEPER API (X-RAY MODE)
-# =================================================================
 @frappe.whitelist()
 def check_mobile_app_access():
     """
@@ -72,9 +64,6 @@ def check_mobile_app_access():
         frappe.local.response["http_status_code"] = 403
         return {"status": "denied", "message": debug_msg}
 
-# =========================================================================
-# 3. USER PROFILE & ROLE ROUTER (For App Navigation)
-# =========================================================================
 @frappe.whitelist(allow_guest=True)
 def get_user_profile():
     """
@@ -99,9 +88,6 @@ def get_user_profile():
         }
     }
 
-# =================================================================
-# 4. LIVE INVENTORY & RESERVATION EXTRACTOR (Strict Control Room)
-# =================================================================
 @frappe.whitelist()
 def get_nexus_live_inventory():
     reservations = frappe.db.sql("""
@@ -163,9 +149,6 @@ def get_nexus_live_inventory():
         frappe.log_error(message=str(e), title="Nexus Live Inventory Sync Failed")
         return []
     
-# =================================================================
-# 5. PRODUCTION COMMAND CARDS EXTRACTOR
-# =================================================================
 @frappe.whitelist()
 def get_nexus_production_data():
     sales_orders = frappe.db.sql("""
@@ -298,9 +281,6 @@ def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
     
     return {"status": "success", "message": "Manifest synced securely."}
 
-# =========================================================================
-# 🚨 SECURE DRIVER CONTEXT & MANIFEST API
-# =========================================================================
 @frappe.whitelist()
 def get_my_active_manifests_and_context():
     driver_email = frappe.session.user
@@ -381,9 +361,6 @@ def get_my_active_manifests_and_context():
         }
     }
 
-# =========================================================================
-# 🚨 FIREBASE CLOUD MESSAGING (FCM) ENDPOINT
-# =========================================================================
 @frappe.whitelist()
 def save_fcm_token(fcm_token):
     user = frappe.session.user
@@ -405,9 +382,6 @@ def save_fcm_token(fcm_token):
         frappe.log_error("FCM Token Save Error", str(e))
         return {"status": "failed", "message": "Failed to save token. Check server logs."}
 
-# =========================================================================
-# LEGACY FLEET CONTEXT API
-# =========================================================================
 @frappe.whitelist()
 def get_driver_context():
     driver_email = frappe.session.user
@@ -426,10 +400,6 @@ def get_driver_context():
         "vehicle": vehicle,
         "manifest_id": manifest or "No_Active_Manifest"
     }
-
-# =========================================================================
-# 🚨 NEXUS SALES APP API (RESTORED SOURCE OF TRUTH)
-# =========================================================================
 
 def get_root_sales_person(user_email):
     employee_name = frappe.db.get_value("Employee", {"user_id": user_email}, "name")
@@ -455,7 +425,6 @@ def get_authorized_sales_persons(user_email):
     
     return [sp[0] for sp in authorized_sps] if authorized_sps else []
 
-
 @frappe.whitelist()
 def get_sales_dashboard_data():
     user = frappe.session.user
@@ -476,7 +445,6 @@ def get_sales_dashboard_data():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    # 🚨 FIX: Cascade Schema Lookup for Targets (User -> Employee -> Sales Person)
     sales_target = 0.0
     collection_target = 0.0
     
@@ -554,8 +522,6 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
-
-# 🚨 RESTORED & ENHANCED: get_sales_context 
 @frappe.whitelist()
 def get_sales_context():
     """
@@ -570,12 +536,11 @@ def get_sales_context():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    # 1. Scoped Customers (Rep's Route Only) + 🚨 INJECTED last_invoiced_date
     customers = frappe.db.sql(f"""
-        SELECT 
-            c.name as name, 
-            c.customer_name, 
-            c.default_price_list, 
+        SELECT
+            c.name as name,
+            c.customer_name,
+            c.default_price_list,
             c.payment_terms,
             COALESCE(c.custom_phone_number, c.mobile_no) as mobile_no,
             c.custom_location,
@@ -593,7 +558,6 @@ def get_sales_context():
     
     customer_ids = [c['name'] for c in customers]
 
-    # 2. Global Items via Nested Sets (All descendants of 'Finished Goods')
     items = frappe.db.sql("""
         SELECT i.name as name, i.item_code, i.item_name
         FROM `tabItem` i
@@ -603,13 +567,11 @@ def get_sales_context():
         AND ig.rgt <= (SELECT rgt FROM `tabItem Group` WHERE name = 'Finished Goods')
     """, as_dict=True)
 
-    # 3. Global Prices
     prices = frappe.db.sql("""
         SELECT item_code, price_list, price_list_rate
         FROM `tabItem Price`
     """, as_dict=True)
 
-    # 4. Actual Qty from Bins (Restricted to the target warehouse)
     bins = frappe.db.sql("""
         SELECT item_code, SUM(actual_qty) as actual_qty
         FROM `tabBin`
@@ -617,13 +579,11 @@ def get_sales_context():
         GROUP BY item_code
     """, as_dict=True)
 
-    # 5. Delivery Regions (Safe fallback)
     try:
         regions = frappe.db.sql("""SELECT name FROM `tabDelivery Region`""", as_dict=True)
     except Exception:
         regions = [{"name": "Default Center"}]
 
-    # 🚨 5.1 Metadata Arrays for Mobile Dropdowns
     try:
         customer_groups = frappe.db.sql("""SELECT name FROM `tabCustomer Group`""", as_dict=True)
     except Exception:
@@ -654,7 +614,6 @@ def get_sales_context():
     except Exception:
         tax_categories = []
 
-    # 🚨 6. ORDER RECOVERY ENGINE (Last 30 Days strictly for this User)
     thirty_days_ago = add_days(today(), -30)
     recent_orders = frappe.db.sql("""
         SELECT name as id, customer_name as customer, custom_delivery_region as region, 
@@ -712,7 +671,6 @@ def get_sales_context():
     else:
         recent_orders = []
 
-    # 🚨 7. DEBT SNAPSHOT (Outstanding Invoices strictly for Assigned Customers)
     debt_snapshot = []
     if customer_ids:
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -741,11 +699,9 @@ def get_sales_context():
             
             debt_snapshot = unpaid_invoices
 
-    # 🚨 8. DASHBOARD STATS (Targets & MTD Performance)
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
-    # 🚨 FIX: Cascade Schema Lookup for Targets (User -> Employee -> Sales Person)
     user = frappe.session.user
     sales_target = 0.0
     collection_target = 0.0
@@ -822,8 +778,6 @@ def get_sales_context():
         }
     }
 
-
-# 🚨 NEW: 0-LAG DIFFERENTIAL VIEWER ENDPOINT
 @frappe.whitelist()
 def get_invoice_details_for_order(order_id):
     """
@@ -839,8 +793,6 @@ def get_invoice_details_for_order(order_id):
     
     return {"status": "success", "data": items}
 
-
-# 🚨 RESTORED: submit_sales_order_from_app
 @frappe.whitelist()
 def submit_sales_order_from_app(payload):
     """
@@ -871,7 +823,6 @@ def submit_sales_order_from_app(payload):
                 "description": payload.get("notes", "") 
             })
 
-        # 🚨 Auto-assign the Sales Person to the Sales Team child table
         sales_person = get_root_sales_person(frappe.session.user)
         if sales_person:
             so.append("sales_team", {
@@ -890,7 +841,6 @@ def submit_sales_order_from_app(payload):
     except Exception as e:
         frappe.log_error(title="App Order Submission Failed", message=str(e))
         return {"status": "error", "message": f"Failed to create order: {str(e)}"}
-
 
 @frappe.whitelist()
 def register_sales_check_in(customer, lat, lng):
@@ -928,7 +878,6 @@ def register_sales_check_in(customer, lat, lng):
     except Exception:
         pass 
 
-    # 🚨 INJECTED: Returned visit_id explicitly so the app can correct the variance distance if updated.
     return {"status": "success", "message": "Check-In recorded successfully.", "distance_m": distance, "visit_id": doc.name}
 
 @frappe.whitelist()
@@ -969,8 +918,6 @@ def register_sales_check_out(customer):
 
     return {"status": "success", "message": "Checked out successfully.", "duration_minutes": duration_minutes}
 
-
-# 🚨 UPDATED: Deep-Dive Reporting Engine for Overdues & Outstandings
 @frappe.whitelist()
 def get_extended_sales_reports(report_type):
     """
@@ -1045,10 +992,6 @@ def get_extended_sales_reports(report_type):
 
     return {"status": "success", "data": data}
 
-# =========================================================================
-# 6. APP OMNI-DIRECTIONAL WEBHOOK TRIGGERS (Mobile Sync Updates)
-# =========================================================================
-
 def trigger_app_customer_refresh(doc, method=None):
     old_doc = doc.get_doc_before_save()
     if not old_doc: return
@@ -1087,8 +1030,8 @@ def trigger_app_customer_refresh(doc, method=None):
                 user_email = frappe.db.get_value("Employee", sp.employee, "user_id")
                 if user_email:
                     affected_emails.add(user_email)
-                elif "@" in sp.employee: 
-                    affected_emails.add(sp.employee)
+            elif "@" in sp.employee: 
+                affected_emails.add(sp.employee)
 
     if affected_emails:
         try:
@@ -1128,7 +1071,6 @@ def trigger_app_catalog_refresh(doc, method=None):
             )
         except Exception as e:
             frappe.log_error(title="App Catalog Refresh Trigger Failed", message=str(e))
-
 
 def trigger_financial_refresh(doc, method=None):
     """
@@ -1218,8 +1160,8 @@ def trigger_financial_refresh(doc, method=None):
                 user_email = frappe.db.get_value("Employee", sp.employee, "user_id")
                 if user_email:
                     affected_emails.add(user_email)
-                elif "@" in sp.employee: 
-                    affected_emails.add(sp.employee)
+            elif "@" in sp.employee: 
+                affected_emails.add(sp.employee)
 
     if affected_emails:
         try:
@@ -1237,7 +1179,6 @@ def trigger_financial_refresh(doc, method=None):
             )
         except Exception:
             pass
-
 
 def trigger_order_status_update(doc, method=None):
     """
@@ -1320,11 +1261,6 @@ def trigger_sales_person_update(doc, method=None):
     except Exception as e:
         frappe.log_error(title="App Sales Person Trigger Failed", message=str(e))
 
-
-# =========================================================================
-# 🚨 PHASE 9: CACHE EVICTION & MOBILE ONBOARDING LOGIC
-# =========================================================================
-
 def _add_sp_and_ancestors(sales_person, affected_emails):
     sp_doc = frappe.db.get_value("Sales Person", sales_person, ["lft", "rgt"], as_dict=True)
     if not sp_doc: return
@@ -1335,14 +1271,12 @@ def _add_sp_and_ancestors(sales_person, affected_emails):
             if user_email: affected_emails.add(user_email)
             elif "@" in a.employee: affected_emails.add(a.employee)
 
-
 def _get_all_sales_rep_emails():
     """
     Returns a set of all active sales rep emails (from Sales Person -> Employee -> User).
     Used for global metadata changes (Customer Group, Territory, Currency, Tax Category).
     """
     emails = set()
-    # Primary path: via Employee
     reps = frappe.db.sql("""
         SELECT e.user_id
         FROM `tabSales Person` sp
@@ -1353,7 +1287,6 @@ def _get_all_sales_rep_emails():
         if r.user_id:
             emails.add(r.user_id)
     
-    # Fallback: direct employee email field (if user_id not set)
     fallback = frappe.db.sql("""
         SELECT employee FROM `tabSales Person`
         WHERE enabled = 1 AND employee LIKE '%@%'
@@ -1363,13 +1296,11 @@ def _get_all_sales_rep_emails():
     
     return emails
 
-
 def trigger_cache_eviction_and_notify(doc, method=None):
     """
     Centralized Webhook Runner: Fires to FastAPI to drop the cache and notify mobile units.
     """
     try:
-        # 🚨 THE THUNDERING HERD SHIELD: Block individual cache drops during bulk Data Imports
         if getattr(frappe.flags, 'in_import', False):
             return
 
@@ -1378,7 +1309,6 @@ def trigger_cache_eviction_and_notify(doc, method=None):
 
         affected_emails = set()
         
-        # 1. Global Updates (Items, Prices, Stock)
         if doc.doctype in ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note"]:
             reps = frappe.db.sql("""
                 SELECT e.user_id, sp.employee 
@@ -1390,7 +1320,6 @@ def trigger_cache_eviction_and_notify(doc, method=None):
                 if r.user_id: affected_emails.add(r.user_id)
                 elif r.employee and "@" in r.employee: affected_emails.add(r.employee)
                 
-        # 2. Customer Specific
         elif doc.doctype == "Customer":
             for row in doc.get("sales_team", []):
                 if row.sales_person: 
@@ -1406,7 +1335,6 @@ def trigger_cache_eviction_and_notify(doc, method=None):
                     if old_row.get("sales_person"):
                         _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
 
-        # 3. Transaction Specific (Orders, Payments)
         elif doc.doctype in ["Sales Order", "Sales Invoice", "Payment Entry"]:
             customer_field = doc.party if doc.doctype == "Payment Entry" else doc.customer
             if customer_field:
@@ -1416,13 +1344,11 @@ def trigger_cache_eviction_and_notify(doc, method=None):
             if doc.owner and "@" in doc.owner:
                 affected_emails.add(doc.owner)
 
-        # 4. Sales Person Targets/Updates
         elif doc.doctype == "Sales Person":
             if doc.employee:
                 user_email = frappe.db.get_value("Employee", doc.employee, "user_id")
                 if user_email: affected_emails.add(user_email)
 
-        # 5. Global Metadata
         elif doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
             affected_emails = _get_all_sales_rep_emails()
 
@@ -1462,14 +1388,13 @@ def create_mobile_customer(payload):
         payload = json.loads(payload)
         
     phone_number = payload.get("phone_number")
-    location_text = payload.get("location_text")  # New field for custom_location
+    location_text = payload.get("location_text") 
     customer_name = payload.get("customer_name")
     
     if not customer_name:
         return {"status": "error", "message": "Customer name is required."}
     
     try:
-        # Create Customer
         doc = frappe.new_doc("Customer")
         doc.customer_name = customer_name
         doc.customer_type = payload.get("customer_type", "Company")
@@ -1481,7 +1406,6 @@ def create_mobile_customer(payload):
         doc.tax_category = payload.get("tax_category")
         doc.payment_terms = payload.get("payment_terms")
         
-        # Custom fields & Universal Compatibility Mapping
         if phone_number:
             doc.mobile_no = phone_number
             doc.custom_phone_number = phone_number
@@ -1489,7 +1413,6 @@ def create_mobile_customer(payload):
         if location_text:
             doc.custom_location = location_text
         
-        # 🚨 FIX: Polymorphic Coordinate Mapping (Accepts 'latitude' or 'lat')
         lat = payload.get("latitude") or payload.get("lat")
         lng = payload.get("longitude") or payload.get("lng")
         
@@ -1503,7 +1426,6 @@ def create_mobile_customer(payload):
         if payload.get("google_maps_link"):
             doc.custom_google_maps_link = payload.get("google_maps_link")
 
-        # Route Assignment
         sales_person = payload.get("sales_person") or get_root_sales_person(frappe.session.user)
         if sales_person:
             doc.append("sales_team", {
@@ -1541,9 +1463,8 @@ def update_customer_coordinates(customer, latitude, longitude, custom_combined_c
             if google_maps_link:
                 doc.custom_google_maps_link = google_maps_link
                 
-            # Disable permission checks for automated API updates
             doc.flags.ignore_permissions = True
-            doc.save() # This explicitly triggers the cache eviction webhook instantly
+            doc.save()
             
             return {"status": "success", "message": "Location updated successfully.", "lat": latitude, "lng": longitude}
         return {"status": "error", "message": "Customer not found."}
@@ -1565,9 +1486,6 @@ def register_sales_check_in_correction(visit_id, distance_m):
         frappe.log_error(title="Distance Correction Failed", message=str(e))
         return {"status": "error", "message": str(e)}
 
-# =========================================================================
-# 🚨 BULK IMPORT SWEEPER: Post-Import Execution
-# =========================================================================
 def trigger_post_import_cache_eviction(doc, method=None):
     """
     🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
@@ -1608,20 +1526,14 @@ def trigger_post_import_cache_eviction(doc, method=None):
     except Exception as e:
         frappe.log_error(title="Nexus Post-Import Eviction Failed", message=f"Error: {str(e)}")
 
-# =========================================================================
-# 🚨 BACKGROUND WORKER: FASTAPI WEBHOOK
-# =========================================================================
 def execute_fastapi_webhook(affected_emails, doctype, docname, command):
     import requests
     import frappe
     import time
     
-    # 🚨 THE RACE-CONDITION KILLER: Wait 3.0 seconds for MariaDB to fully flush.
-    # Because this is in a background queue, it does NOT freeze the user's browser!
     time.sleep(3.0)
     
     try:
-        # 🚨 Harvest physical device FCM tokens directly from the database
         fcm_tokens = {}
         if affected_emails:
             format_emails = ','.join(['%s'] * len(affected_emails))

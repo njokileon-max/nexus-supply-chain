@@ -1,5 +1,3 @@
-# apps/nexus_supply_chain/nexus_supply_chain/doctype/vehicle_delivery_manifest/vehicle_delivery_manifest.py
-
 import frappe
 import json
 import requests
@@ -45,7 +43,6 @@ class VehicleDeliveryManifest(Document):
     def on_update(self):
         self.auto_assign_driver()
         
-        # 🚨 FCM PUSH TRIGGER: Re-assignments
         if self.docstatus == 1 and self.has_value_changed("driver") and self.trip_status in ["Ready", "Dispatched"]:
             self.notify_driver("Route Reassigned", f"Manifest {self.name} has been assigned to you.")
 
@@ -64,7 +61,7 @@ class VehicleDeliveryManifest(Document):
                 frappe.throw(
                     title="Routing Configuration Error",
                     msg=f"Missing GPS Coordinates for Company '{company_name}'.\n"
-                         "Please set 'custom_latitude' and 'custom_longitude' in the Company settings."
+                        "Please set 'custom_latitude' and 'custom_longitude' in the Company settings."
                 )
 
             FACTORY_COORDS = [factory_lng, factory_lat]
@@ -95,7 +92,6 @@ class VehicleDeliveryManifest(Document):
         if self.load_plan:
             frappe.db.set_value("Nexus Load Plan", self.load_plan, "dispatch_status", "Manifested")
 
-        # 🚨 FCM PUSH TRIGGER: Initial Dispatch Ready
         self.notify_driver("New Dispatch Ready", f"Manifest {self.name} is ready for departure.")
 
     def on_cancel(self):
@@ -124,7 +120,6 @@ class VehicleDeliveryManifest(Document):
     def notify_driver(self, title, message):
         """Fetches the driver's FCM tokens from the custom table and enqueues the push notifications"""
         if self.driver:
-            # Supports multi-device by fetching all tokens registered to this user
             devices = frappe.get_all(
                 "Nexus FCM Device", 
                 filters={"user": self.driver}, 
@@ -145,10 +140,6 @@ class VehicleDeliveryManifest(Document):
                         data_payload={"type": "new_manifest", "manifest_id": self.name},
                         queue="short"
                     )
-
-# =========================================================================
-# BACKGROUND WORKERS & UTILITIES
-# =========================================================================
 
 def send_fcm_push(token, title, body, data_payload):
     """
@@ -221,12 +212,9 @@ def process_financials_in_background(sales_order):
     except Exception as e:
         frappe.log_error(message=str(e), title=f"Auto-Invoice Failed for {sales_order}")
 
-# =========================================================================
-# WHITELISTED API METHODS
-# =========================================================================
-
 @frappe.whitelist()
 def start_trip_telemetry(manifest_name):
+    print(f"Executing start_trip_telemetry code logic...")
     doc = frappe.get_doc("Vehicle Delivery Manifest", manifest_name)
     doc.db_set("trip_status", "Dispatched")
     

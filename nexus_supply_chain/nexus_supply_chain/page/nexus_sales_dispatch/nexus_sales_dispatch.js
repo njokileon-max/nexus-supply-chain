@@ -104,20 +104,13 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             .theme-offline .status-badge { background-color: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
             .theme-offline .rep-name { color: #475569; }
 
-            /* 🚨 SMOOTH MARKER TRANSITIONS: GPU-accelerated, prevents map jank */
             .leaflet-marker-icon { transition: transform 0.8s linear !important; }
         </style>
     `);
 
-    // ─────────────────────────────────────────────────────────────
-    // 🚨 CORE STATE: Single source of truth for all rep data
-    // Decoupled from DOM — the render loop reads from here, not
-    // from WebSocket messages directly. This is the key architectural
-    // change that eliminates lag regardless of ping frequency.
-    // ─────────────────────────────────────────────────────────────
-    let latestSalesState = {};         // email -> rep data (latest from server)
-    let renderedSalesState = {};       // email -> last rendered snapshot (for diffing)
-    let cardElementCache = {};         // email -> jQuery card element (O(1) lookup)
+    let latestSalesState = {};
+    let renderedSalesState = {};
+    let cardElementCache = {};
     let map = null;
     let sales_markers = {};
     let ws = null;
@@ -128,12 +121,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/sales-ws";
     const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
-    // ─────────────────────────────────────────────────────────────
-    // 🚨 RENDER LOOP: Runs on fixed 250ms interval, not per-message.
-    // Compares latestSalesState against renderedSalesState and only
-    // touches the DOM when something actually changed.
-    // 250ms = 4 renders/sec — smooth for humans, trivial for the browser.
-    // ─────────────────────────────────────────────────────────────
     function startRenderLoop() {
         if (renderLoopId) clearInterval(renderLoopId);
         renderLoopId = setInterval(flushRenderQueue, 250);
@@ -146,7 +133,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             const rep = latestSalesState[email];
             const prev = renderedSalesState[email];
 
-            // Determine what changed
             const statusChanged = !prev || prev.status !== rep.status;
             const customerChanged = !prev || prev.current_customer !== rep.current_customer;
             const speedChanged = !prev || Math.abs((prev.speed || 0) - (rep.speed || 0)) > 0.5;
@@ -154,12 +140,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             const headingChanged = !prev || Math.abs((prev.heading || 0) - (rep.heading || 0)) > 2;
             const isNewRep = !prev;
 
-            // Nothing changed — skip entirely. Zero DOM cost.
             if (!isNewRep && !statusChanged && !customerChanged && !speedChanged && !positionChanged && !headingChanged) {
                 return;
             }
 
-            // Ensure card exists in DOM
             let $card = cardElementCache[email];
             if (!$card || $card.length === 0) {
                 const safe_name = rep.full_name || email || "Unknown Rep";
@@ -168,12 +152,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 $('#active-sales-container').append($card);
             }
 
-            // Move to active container if needed
             if ($card.parent().attr('id') !== 'active-sales-container') {
                 $('#active-sales-container').append($card);
             }
 
-            // Apply theme class only if status changed
             if (isNewRep || statusChanged) {
                 $card.removeClass('theme-offline theme-traveling theme-checked-in');
                 $card.addClass(rep.status === 'Checked-In' ? 'theme-checked-in' : 'theme-traveling');
@@ -182,13 +164,11 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 $card.find('.status-val').text(`● ${rep.status.toUpperCase()}`);
             }
 
-            // Update speed only if changed
             if (isNewRep || speedChanged) {
                 const speedKmh = Math.round((rep.speed || 0) * 3.6);
                 $card.find('.speed-val').text(`${speedKmh} km/h`);
             }
 
-            // Update customer only if changed
             if (isNewRep || customerChanged) {
                 const customerDisplay = rep.current_customer && rep.current_customer !== 'None'
                     ? rep.current_customer
@@ -196,21 +176,17 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 $card.find('.customer-val').text(customerDisplay);
             }
 
-            // Update map marker only if position or heading changed
             if (rep.lat && rep.lng && (isNewRep || positionChanged || headingChanged || statusChanged)) {
                 const color = rep.status === 'Checked-In' ? '#10b981' : '#3b82f6';
                 const heading = rep.heading || 0;
 
                 if (sales_markers[email]) {
-                    // Smooth position update — Leaflet handles the CSS transition
                     sales_markers[email].setLatLng([rep.lat, rep.lng]);
 
-                    // Only rebuild the icon if color or heading changed significantly
                     if (isNewRep || statusChanged || headingChanged) {
                         const newIcon = build_marker_icon(color, heading);
                         sales_markers[email].setIcon(newIcon);
                     } else {
-                        // Just rotate the arrow without rebuilding the icon
                         const iconEl = sales_markers[email].getElement();
                         if (iconEl) {
                             const arrow = iconEl.querySelector('.direction-ring');
@@ -218,7 +194,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         }
                     }
                 } else {
-                    // New marker
                     const icon = build_marker_icon(color, heading);
                     const safe_popup_name = rep.full_name || email || "Unknown";
                     const popupText = `<b>${safe_popup_name}</b><br><span class="text-muted small">${rep.status}</span>`;
@@ -228,16 +203,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 }
             }
 
-            // Snapshot what we just rendered
             renderedSalesState[email] = { ...rep };
         });
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // 🚨 STALE CHECK LOOP: Runs every 5 seconds, not per-message.
-    // Moves offline reps to the standby panel and removes their markers.
-    // Decoupled from the hot render path entirely.
-    // ─────────────────────────────────────────────────────────────
     function startStaleCheckLoop() {
         if (staleCheckId) clearInterval(staleCheckId);
         staleCheckId = setInterval(function() {
@@ -248,7 +217,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     const $card = cardElementCache[email];
                     if (!$card || $card.length === 0) return;
 
-                    // Move to standby if not already there
                     if ($card.parent().attr('id') !== 'standby-sales-container') {
                         $('#standby-sales-container').append($card);
                     }
@@ -260,22 +228,17 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     $card.find('.status-val').text('● OFFLINE');
                     $card.find('.customer-val').text('None');
 
-                    // Remove map marker
                     if (sales_markers[email]) {
                         map.removeLayer(sales_markers[email]);
                         delete sales_markers[email];
                     }
 
-                    // Clear rendered snapshot so next login triggers full re-render
                     delete renderedSalesState[email];
                 }
             });
         }, 5000);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HELPER: Build marker icon (extracted to avoid duplication)
-    // ─────────────────────────────────────────────────────────────
     function build_marker_icon(color, heading) {
         const htmlIcon = `
             <div style="position:relative;width:34px;height:34px;">
@@ -293,9 +256,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         return L.divIcon({ className: '', html: htmlIcon, iconSize: [34, 34], iconAnchor: [17, 17] });
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HELPER: Create card HTML and return jQuery element
-    // ─────────────────────────────────────────────────────────────
     function create_card_html(email, full_name) {
         const lower_name = full_name ? full_name.toLowerCase() : "";
         const display_email = email ? email.toLowerCase() : "";
@@ -321,9 +281,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         `);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // BASELINE LOAD: Populate standby panel from ERPNext on page load
-    // ─────────────────────────────────────────────────────────────
     function refresh_sales_data() {
         frappe.call({
             method: "nexus_supply_chain.nexus_supply_chain.page.nexus_sales_dispatch.nexus_sales_dispatch.get_sales_team",
@@ -356,11 +313,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // WEBSOCKET: Only writes to latestSalesState (the data buffer).
-    // Never touches the DOM. The render loop handles all DOM work.
-    // This is the critical separation that eliminates lag.
-    // ─────────────────────────────────────────────────────────────
     function connectTelemetryWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
@@ -381,24 +333,17 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         };
 
         ws.onmessage = (event) => {
-            // 🚨 THIS IS THE ENTIRE ONMESSAGE HANDLER.
-            // It only parses JSON and writes to the state buffer.
-            // No DOM access, no jQuery, no map calls — zero.
-            // All rendering is handled by flushRenderQueue() on its
-            // own 250ms timer, completely independent of message rate.
             try {
                 const data = JSON.parse(event.data);
                 if (data.action === "pong") return;
 
                 const raw_team = data.sales_team || {};
                 
-                // Normalize all keys to lowercase and write to buffer
                 const incoming = {};
                 Object.keys(raw_team).forEach(k => {
                     incoming[k.toLowerCase()] = raw_team[k];
                 });
 
-                // Replace the entire state snapshot atomically
                 latestSalesState = incoming;
 
             } catch (e) {
@@ -418,9 +363,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         ws.onerror = () => { ws.close(); };
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // SEARCH: Unchanged logic, still works because cards stay in DOM
-    // ─────────────────────────────────────────────────────────────
     function applySearch(inputId, containerId) {
         $(inputId).on('keyup', function() {
             const val = $(this).val().toLowerCase();
@@ -434,9 +376,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     applySearch('#sales-search-active', '#active-sales-container');
     applySearch('#sales-search-standby', '#standby-sales-container');
 
-    // ─────────────────────────────────────────────────────────────
-    // CARD CLICK: Fly to rep on map
-    // ─────────────────────────────────────────────────────────────
     $(wrapper).on('click', '.sales-card', function() {
         const email = $(this).attr('data-tid');
         $('.sales-card').removeClass('active-selection');
@@ -450,9 +389,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // ─────────────────────────────────────────────────────────────
-    // BOOT SEQUENCE: Load assets, then start all loops
-    // ─────────────────────────────────────────────────────────────
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css",
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -468,16 +404,12 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             attribution: '© Sovereign Nexus Maps'
         }).addTo(map);
 
-        // Load baseline team roster from ERPNext
         refresh_sales_data();
 
-        // Connect the WebSocket data feed
         connectTelemetryWebSocket();
 
-        // Start the 250ms render loop (4 renders/sec, human-imperceptible latency)
         startRenderLoop();
 
-        // Start the 5-second stale/offline cleanup loop
         startStaleCheckLoop();
     });
 };

@@ -5,8 +5,6 @@ from frappe.utils import flt
 
 @frappe.whitelist()
 def get_planning_data(**kwargs):
-    # 1. High-Speed Cache Check
-    # Sort keys to ensure the same filters always generate the same hash
     filter_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode()).hexdigest()
     cache_key = f"planner_cache_{filter_hash}"
     all_keys_registry = "nexus_planner_all_keys"
@@ -15,7 +13,6 @@ def get_planning_data(**kwargs):
     if cached_res:
         return cached_res
 
-    # 2. Build SQL Conditions
     conditions = ["docstatus = 1", "status NOT IN ('Completed', 'Closed', 'Cancelled')"]
     values = {}
     
@@ -123,18 +120,17 @@ def get_planning_data(**kwargs):
     for si in so_items:
         explode(si.item_code, si.qty, si.parent, si.item_code, 0)
 
-    # REVISED READINESS LOGIC
     so_status = {}
     for s in so_names:
         shortages = so_shortages.get(s, [])
         total_items = so_total_items_count.get(s, 0)
         
         if not shortages:
-            so_status[s] = "green" # Ready
+            so_status[s] = "green"
         elif len(shortages) < total_items:
-            so_status[s] = "orange" # Partial Shortage
+            so_status[s] = "orange"
         else:
-            so_status[s] = "red" # Full Shortage
+            so_status[s] = "red"
 
     result = {
         "sos": sos, "fgs": fgs, "subs": subs, "rms": rms, "stock": stock_map, 
@@ -150,10 +146,6 @@ def get_planning_data(**kwargs):
     frappe.cache().set_value(cache_key, result, expires_in_sec=300)
     return result
 
-# ────────────────────────────────────────────────────────────────────────────────
-# BACKGROUND CACHE CLEARING LOGIC
-# ────────────────────────────────────────────────────────────────────────────────
-
 def enqueue_clear_planner_cache(doc=None, method=None):
     """
     Called by hooks.py. Offloads the heavy cache clearing to a background worker.
@@ -163,7 +155,7 @@ def enqueue_clear_planner_cache(doc=None, method=None):
         queue='default',
         timeout=300,
         is_async=True,
-        at_front=True # Priority handling to keep the planner data fresh
+        at_front=True
     )
 
 def clear_planner_cache():
@@ -174,12 +166,7 @@ def clear_planner_cache():
     keys_to_clear = frappe.cache().get_value(all_keys_registry)
     
     if keys_to_clear:
-        # Clear each individual filter-hashed key
         for key in keys_to_clear:
             frappe.cache().delete_value(key)
         
-        # Clear the registry itself
         frappe.cache().delete_value(all_keys_registry)
-        
-    # Optional: Log the activity for background job monitoring
-    # frappe.logger().info("Nexus Planner Cache Cleared via Background Job")

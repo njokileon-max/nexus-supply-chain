@@ -1,15 +1,12 @@
-# apps/nexus_supply_chain/nexus_supply_chain/page/nexus_load_optimizer/nexus_load_optimizer.py
-
 import frappe
 import requests
 import json
 from frappe.utils import flt, getdate, add_to_date, now_datetime
 from datetime import datetime
 
-# Import the cost utils for theoretical cost computation
 from nexus_supply_chain.utils.cost_utils import compute_total_theoretical_cost_for_orders
 
-API_URL = "http://nexus-brain:8001"  # Nexus Brain FastAPI (Local server-to-server is perfect here)
+API_URL = "http://nexus-brain:8001"
 TARGET_WAREHOUSE = "Finished Goods - CAL"
 
 @frappe.whitelist()
@@ -31,7 +28,6 @@ def run_optimizer(filters=None):
     if not company_name or not vehicle_type:
         frappe.throw("Company and Vehicle Type are mandatory to run optimization.")
 
-    # 1. Strict Dynamic Origin Validation (No Fallbacks)
     factory_lat = flt(frappe.db.get_value("Company", company_name, "custom_latitude"))
     factory_lng = flt(frappe.db.get_value("Company", company_name, "custom_longitude"))
 
@@ -41,17 +37,14 @@ def run_optimizer(filters=None):
             title="Routing Configuration Error"
         )
 
-    # 2. Fetch Regional Radii Map for "Strict Mode" Validation
     regions = frappe.get_all("Delivery Region", fields=["name", "custom_optimization_radius"])
     radius_map = {r.name: flt(r.custom_optimization_radius) for r in regions}
 
-    # 3. Define Base Conditions (Unplanned Orders for specific Company)
     conditions = [
         ["docstatus", "=", 1],
         ["company", "=", company_name]
     ]
 
-    # Exclude Sales Orders already assigned to active Load Plans
     planned_sos = frappe.db.sql("""
         SELECT so.sales_order 
         FROM `tabNexus Load Plan Sales Order` so
@@ -63,7 +56,6 @@ def run_optimizer(filters=None):
         planned_so_names = [d.sales_order for d in planned_sos]
         conditions.append(["name", "not in", planned_so_names])
 
-    # Apply UI Filters
     if filters.get("customer"): conditions.append(["customer", "=", filters.get("customer")])
     if filters.get("sales_order_status"): conditions.append(["status", "=", filters.get("sales_order_status")])
     if filters.get("territory"): conditions.append(["territory", "=", filters.get("territory")])
@@ -76,7 +68,6 @@ def run_optimizer(filters=None):
         try: conditions.append(["transaction_date", "<", add_to_date(getdate(filters["to_date"]), days=1)])
         except: pass
 
-    # Fetch raw Sales Order data
     sos = frappe.get_all(
         "Sales Order", 
         filters=conditions, 
@@ -86,7 +77,6 @@ def run_optimizer(filters=None):
     if not sos:
         return {"groups": [], "message": "No matching un-planned Sales Orders found."}
 
-    # 4. Batch Fetch Customer Coordinates
     customer_ids = list(set([so.customer for so in sos]))
     customers_data = frappe.get_all(
         "Customer", 
@@ -100,7 +90,6 @@ def run_optimizer(filters=None):
         } for c in customers_data
     }
 
-    # 5. Build Payload for External API
     payload_orders = []
     for so in sos:
         region = so.custom_delivery_region
@@ -154,7 +143,6 @@ def run_optimizer(filters=None):
         "is_on_collection": filters.get("transport_mode") == "On-Collection"
     }
 
-    # 6. Execute Remote Optimization
     try:
         resp = requests.post(f"{API_URL}/optimize", json=payload, timeout=60)
         resp.raise_for_status()
@@ -184,7 +172,6 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     plan = frappe.new_doc("Nexus Load Plan")
     plan.company = company or frappe.defaults.get_user_default("Company")
     
-    # Safety Check: Ensure we have a company before proceeding
     if not plan.company:
         frappe.throw("A valid Company is required to create a Load Plan.")
 
@@ -196,14 +183,12 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     plan.max_capacity = flt(group.get("max_capacity", 0))
     plan.reservation_status = "Soft" 
 
-    # 🚨 FIX: Server-Side Map Orchestration (Bypass the frontend payload entirely)
     factory_lat = flt(frappe.db.get_value("Company", plan.company, "custom_latitude"))
     factory_lng = flt(frappe.db.get_value("Company", plan.company, "custom_longitude"))
 
     if not factory_lat or not factory_lng:
         frappe.throw(f"Missing GPS Coordinates for Company '{plan.company}'. Please configure 'custom_latitude' and 'custom_longitude' in the Company record.")
 
-    # Construct coordinate array: Start at Factory -> Stops -> End at Factory
     FACTORY_COORDS = [factory_lng, factory_lat]
     route_coords = [FACTORY_COORDS]
 
@@ -211,7 +196,6 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         lat = flt(so.get("latitude", 0.0))
         lng = flt(so.get("longitude", 0.0))
         
-        # Build the document child table
         plan.append("sales_orders", {
             "sales_order": so.get("sales_order"),
             "customer": so.get("customer"),
@@ -231,7 +215,6 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
 
     route_coords.append(FACTORY_COORDS)
 
-    # Automatically fetch and lock the route from VROOM
     if len(route_coords) >= 3:
         try:
             resp = requests.post(
@@ -246,18 +229,13 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         except Exception as e:
             frappe.log_error(str(e), "Load Plan Route Generation Failed")
 
-    # ------------------------------------------------------------------
-    # NEW: Compute and store margin analytics (theoretical cost, overhead, profit)
-    # ------------------------------------------------------------------
     sales_orders_data = group.get("sales_orders", [])
     total_order_value = flt(group.get("total_amount", 0))
     if not total_order_value and sales_orders_data:
         total_order_value = sum(flt(so.get("amount", 0)) for so in sales_orders_data)
 
-    # 1. Total theoretical production cost (BOM rollup)
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders_data)
 
-    # 2. Daily overhead from Single DocType
     daily_overhead = 0.0
     try:
         overhead_doc = frappe.get_single("Company Overhead Settings")
@@ -265,18 +243,15 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     except Exception:
         frappe.log_error("Company Overhead Settings not found – using 0 overhead.", "Load Plan Margin")
 
-    # 3. Profit / Loss and margin %
     profit_loss = total_order_value - total_theoretical_cost - daily_overhead
     margin_percentage = (profit_loss / total_order_value * 100) if total_order_value > 0 else 0.0
     profitability_status = "Profitable" if profit_loss >= 0 else "Loss"
 
-    # 4. Assign to the document
     plan.total_theoretical_cost = total_theoretical_cost
     plan.daily_overhead_allocated = daily_overhead
     plan.profit_loss = profit_loss
     plan.profitability_status = profitability_status
     plan.margin_percentage = margin_percentage
-    # ------------------------------------------------------------------
 
     plan.insert(ignore_permissions=True)
 
@@ -284,7 +259,6 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         frappe.db.commit()
         return {"status": "success", "message": f"Load Plan {plan.name} created successfully with optimized routing."}
 
-    # action == "reserve": Create a Draft Inventory Reservation linked to this plan
     res_doc = frappe.new_doc("Nexus Inventory Reservation")
     res_doc.nexus_load_plan = plan.name
     
@@ -318,17 +292,14 @@ def reanalyze_load_plan(load_plan_name):
     """
     plan = frappe.get_doc("Nexus Load Plan", load_plan_name)
     
-    # Do not reanalyze if a reservation is already submitted (Docstatus 1)
     existing_res = frappe.db.get_value("Nexus Inventory Reservation", 
         {"nexus_load_plan": plan.name, "docstatus": 1}, "name")
     
     if existing_res:
         return {"status": "exists", "message": "A submitted reservation already exists for this plan."}
 
-    # Clear old drafts
     frappe.db.sql("DELETE FROM `tabNexus Inventory Reservation` WHERE nexus_load_plan = %s AND docstatus = 0", (load_plan_name,))
 
-    # Re-create draft from current Sales Order items
     res_doc = frappe.new_doc("Nexus Inventory Reservation")
     res_doc.nexus_load_plan = plan.name
     
@@ -346,17 +317,12 @@ def reanalyze_load_plan(load_plan_name):
     res_doc.expiry_date = add_to_date(now_datetime(), hours=expiry_hours)
     res_doc.insert(ignore_permissions=True)
     
-    # Sync visual status for UI
     from nexus_supply_chain.reservation_hooks import sync_load_plan_status
     sync_load_plan_status(plan.name)
     
     frappe.db.commit()
     return {"status": "success", "message": "Reanalysis complete. Fresh stock check applied."}
 
-
-# ----------------------------------------------------------------------
-# NEW: Margin analysis for a load group (Theoretical Cost + Overhead)
-# ----------------------------------------------------------------------
 
 @frappe.whitelist()
 def get_group_margin_data(group, company_name=None):
@@ -375,21 +341,15 @@ def get_group_margin_data(group, company_name=None):
     if not sales_orders:
         return {"error": "No sales orders in this group."}
 
-    # 1. Total order value (already present in the group)
     total_order_value = flt(group.get("total_amount", 0))
-    # Fallback: sum from orders if missing
     if not total_order_value:
         total_order_value = sum(flt(so.get("amount", 0)) for so in sales_orders)
 
-    # 2. Compute total theoretical production cost (using cached BOM explosion)
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders)
 
-    # 3. Fetch daily overhead for the company
     if not company_name:
-        # Try to get from first sales order's company (if stored) or from group
         company_name = group.get("company")
     if not company_name and sales_orders:
-        # Attempt to retrieve from the first sales order document
         first_so_name = sales_orders[0].get("sales_order")
         if first_so_name:
             company_name = frappe.db.get_value("Sales Order", first_so_name, "company")
@@ -398,16 +358,10 @@ def get_group_margin_data(group, company_name=None):
     if company_name:
         try:
             overhead_doc = frappe.get_single("Company Overhead Settings")
-            # If the Single DocType has a field that stores daily overhead per company,
-            # we can extend it. For simplicity, we assume a single global daily overhead.
-            # To make it company‑specific, you can later add a child table.
-            # Here we use a simple field `daily_overhead` in the Single DocType.
             daily_overhead = flt(overhead_doc.daily_overhead)
         except Exception:
-            # Single DocType may not exist yet – fallback to 0 and log a warning
             frappe.log_error("Company Overhead Settings not found. Please create the Single DocType.", "Margin Analysis")
 
-    # 4. Calculate profit / loss
     profit_loss = total_order_value - total_theoretical_cost - daily_overhead
     profit_percentage = (profit_loss / total_order_value * 100) if total_order_value > 0 else 0.0
 
