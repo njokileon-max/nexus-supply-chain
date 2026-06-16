@@ -53,7 +53,7 @@ def execute_external_geocode_call(doc_name, url):
             }
         }
 
-        fastapi_url = "http://nexus-brain:8001/queue-geocode"
+        fastapi_url = "https://crystal-api.crystalapps.dev/queue-geocode"
         
         requests.post(fastapi_url, json=payload, timeout=10)
 

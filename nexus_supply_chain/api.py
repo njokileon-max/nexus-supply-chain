@@ -9,7 +9,7 @@ def extract_and_set_coords(doc, method):
     if doc.custom_google_maps_link and doc.has_value_changed("custom_google_maps_link"):
         try:
             response = requests.post(
-                "http://nexus-brain:8001/extract-coordinates",
+                "https://crystal-api.crystalapps.dev/extract-coordinates",
                 json={"url": doc.custom_google_maps_link},
                 timeout=15  
             )
@@ -139,7 +139,7 @@ def get_nexus_live_inventory():
         "reservations": reservations
     }
 
-    fastapi_url = "http://nexus-brain:8001/api/v1/live-inventory" 
+    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/live-inventory" 
     
     try:
         response = requests.post(fastapi_url, json=payload, timeout=15)
@@ -871,7 +871,7 @@ def register_sales_check_in(customer, lat, lng):
 
     try:
         requests.post(
-            "http://nexus-brain:8001/telemetry/sales-check-in",
+            "https://crystal-api.crystalapps.dev/telemetry/sales-check-in",
             json={"sales_rep": frappe.session.user, "customer": customer},
             timeout=2
         )
@@ -1036,7 +1036,7 @@ def trigger_app_customer_refresh(doc, method=None):
     if affected_emails:
         try:
             requests.post(
-                "http://nexus-brain:8001/telemetry/force-app-refresh",
+                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
                 json={"emails": list(affected_emails), "command": "FORCE_REFRESH_CUSTOMERS"},
                 timeout=3
             )
@@ -1065,7 +1065,7 @@ def trigger_app_catalog_refresh(doc, method=None):
     if affected_emails:
         try:
             requests.post(
-                "http://nexus-brain:8001/telemetry/force-app-refresh",
+                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
                 json={"emails": list(affected_emails), "command": "FORCE_VAULT_SYNC"},
                 timeout=3
             )
@@ -1166,7 +1166,7 @@ def trigger_financial_refresh(doc, method=None):
     if affected_emails:
         try:
             requests.post(
-                "http://nexus-brain:8001/telemetry/force-app-refresh",
+                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
                 json={
                     "emails": list(affected_emails), 
                     "command": "PAYMENT_RECEIVED",
@@ -1211,7 +1211,7 @@ def trigger_order_status_update(doc, method=None):
             
     try:
         requests.post(
-            "http://nexus-brain:8001/telemetry/force-app-refresh",
+            "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
             json={
                 "emails": [doc.owner], 
                 "command": "UPDATE_ORDER_STATUS",
@@ -1251,7 +1251,7 @@ def trigger_sales_person_update(doc, method=None):
         
     try:
         requests.post(
-            "http://nexus-brain:8001/telemetry/force-app-refresh",
+            "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
             json={
                 "emails": [user_email], 
                 "command": "FORCE_VAULT_SYNC"
@@ -1549,7 +1549,7 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
                 fcm_tokens[row.user].append(row.fcm_token)
 
         requests.post(
-            "http://nexus-brain:8001/api/v1/cache/invalidate",
+            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
             json={
                 "emails": list(affected_emails), 
                 "fcm_tokens": fcm_tokens,

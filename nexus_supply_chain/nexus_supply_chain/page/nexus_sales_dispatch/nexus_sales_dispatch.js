@@ -118,8 +118,8 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let renderLoopId = null;
     let staleCheckId = null;
 
-    const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/sales-ws";
-    const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
+    const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/sales-ws";
+    const TILE_SERVER_URL = "https://crystal-map.crystalapps.dev/styles/basic-preview/style.json";
 
     function startRenderLoop() {
         if (renderLoopId) clearInterval(renderLoopId);
