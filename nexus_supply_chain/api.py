@@ -5,29 +5,139 @@ import math
 from datetime import datetime
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime
 
-def extract_and_set_coords(doc, method):
-    if doc.custom_google_maps_link and doc.has_value_changed("custom_google_maps_link"):
+def queue_customer_geocoding(doc, method=None):
+    """
+    🚨 STRATEGY A: Eventual Consistency Model (0-Lag)
+    Triggered on Customer after_insert and on_change.
+    Evaluates conditions in memory, then hands off to a background worker.
+    """
+    if getattr(frappe.flags, "in_import", False):
+        return
+
+    link = doc.get("custom_google_maps_link")
+    if not link:
+        return
+
+    is_new = doc.is_new()
+    link_changed = doc.has_value_changed("custom_google_maps_link")
+
+    try:
+        lat = float(doc.custom_latitude or 0.0)
+        lng = float(doc.custom_longitude or 0.0)
+        missing_coords = (lat == 0.0 and lng == 0.0)
+    except (TypeError, ValueError):
+        missing_coords = True
+
+    if not (is_new or link_changed or missing_coords):
+        return
+
+    frappe.enqueue(
+        "nexus_supply_chain.api.execute_external_geocode_call",
+        doc_name=doc.name,
+        link=link,
+        queue="short",
+        timeout=300,
+        enqueue_after_commit=True
+    )
+
+def execute_external_geocode_call(doc_name, link):
+    """
+    Executed out-of-band by Frappe background workers.
+    Submits the link to FastAPI, waits for the coordinates, and writes them to the DB.
+    Zero auth issues because the DB write happens locally inside Frappe!
+    """
+    try:
+        fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
+        
+        response = requests.post(fastapi_url, json={"url": link}, timeout=15)
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                lat = float(data.get("lat"))
+                lng = float(data.get("lng"))
+                combined = data.get("combined_coordinates")
+
+                update_dict = {
+                    "custom_latitude": lat,
+                    "custom_longitude": lng
+                }
+                if combined:
+                    update_dict["custom_combined_coordinates"] = combined
+
+                frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
+                frappe.db.commit() 
+                
+                frappe.publish_realtime('doc_update', message={'doctype': 'Customer', 'name': doc_name})
+                
+                frappe.logger().info(f"[Nexus Geocode] {doc_name} synced successfully via background worker.")
+            else:
+                frappe.log_error(title="FastAPI Geocode Failed", message=data.get("message"))
+        else:
+            frappe.log_error(title="FastAPI Unreachable", message=f"Status: {response.status_code}")
+
+    except Exception as e:
+        frappe.log_error(message=str(e), title="Frappe Background Geocode Error")
+
+def process_bulk_geocoding_queue():
+    """
+    Scheduled cron job (runs every 10 minutes).
+    Finds up to 20 customers who have a Google Maps link but no coordinates.
+    Processes them one by one with a random sleep to evade bot detection.
+    """
+    import time
+    import random
+    
+    targets = frappe.db.sql("""
+        SELECT name, custom_google_maps_link 
+        FROM `tabCustomer`
+        WHERE custom_google_maps_link IS NOT NULL 
+        AND custom_google_maps_link != ''
+        AND (custom_latitude = 0.0 OR custom_latitude IS NULL OR custom_latitude = '')
+        LIMIT 20
+    """, as_dict=True)
+    
+    if not targets:
+        return
+
+    frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher starting for {len(targets)} customers.")
+    
+    fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
+    successful_updates = 0
+
+    for target in targets:
+        doc_name = target.name
+        link = target.custom_google_maps_link
+        
         try:
-            response = requests.post(
-                "https://crystal-api.crystalapps.dev/extract-coordinates",
-                json={"url": doc.custom_google_maps_link},
-                timeout=15  
-            )
+            response = requests.post(fastapi_url, json={"url": link}, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
                 if data.get("status") == "success":
-                    doc.custom_latitude = data.get("lat")
-                    doc.custom_longitude = data.get("lng")
-                    if data.get("combined_coordinates"):
-                        doc.custom_combined_coordinates = data.get("combined_coordinates")
-                else:
-                    frappe.msgprint(f"Nexus Brain Warning: {data.get('message')}")
-            else:
-                frappe.log_error(title="Nexus Brain API Down", message=f"Status: {response.status_code}")
-                
+                    lat = float(data.get("lat"))
+                    lng = float(data.get("lng"))
+                    combined = data.get("combined_coordinates")
+
+                    update_dict = {
+                        "custom_latitude": lat,
+                        "custom_longitude": lng
+                    }
+                    if combined:
+                        update_dict["custom_combined_coordinates"] = combined
+
+                    frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
+                    frappe.db.commit()
+                    successful_updates += 1
+        
         except Exception as e:
-            frappe.log_error(title="Coord Extraction Failed", message=str(e))
+            frappe.log_error(message=str(e), title=f"Slow-Drip Geocode Error: {doc_name}")
+            
+        time.sleep(random.uniform(4.0, 7.0))
+        
+    if successful_updates > 0:
+        frappe.cache().set_value('nexus_needs_sync', True)
+        frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher finished. Synced {successful_updates} customers.")
 
 @frappe.whitelist()
 def check_mobile_app_access():
@@ -223,7 +333,7 @@ def get_nexus_production_data():
     """, tuple_items, as_dict=True)
 
     payload = {"bips": bips, "fgs": fgs, "stock": stock, "sales_orders": sales_orders, "reservations": reservations}
-    fastapi_url = "http://nexus-brain:8001/api/v1/production-cards" 
+    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/production-cards" 
     
     try:
         response = requests.post(fastapi_url, json=payload, timeout=15)
@@ -291,7 +401,7 @@ def get_my_active_manifests_and_context():
             ["driver", "=", driver_email],
             ["trip_status", "in", ["Ready", "Dispatched", "Completed", "Returning"]]
         ],
-        fields=["name", "vehicle", "trip_status", "route_geojson"]
+        fields=["name", "vehicle", "trip_status", "route_geojson", "cumulative_additional_fuel_cost"]
     )
     
     manifests = []
@@ -362,6 +472,61 @@ def get_my_active_manifests_and_context():
     }
 
 @frappe.whitelist()
+def log_driver_additional_fuel(manifest_id, amount):
+    """
+    Secure endpoint allowing field drivers to log fuel expenses during a trip.
+    Performs server-side addition to prevent mobile client race conditions,
+    and recalculates the Net Profit & Margin instantly.
+    """
+    try:
+        if not frappe.db.exists("Vehicle Delivery Manifest", manifest_id):
+            return {"status": "error", "message": "Manifest not found."}
+
+        try:
+            fuel_amount_to_add = float(amount)
+            if fuel_amount_to_add <= 0:
+                return {"status": "error", "message": "Fuel amount must be greater than zero."}
+        except (ValueError, TypeError):
+            return {"status": "error", "message": "Invalid fuel amount format."}
+
+        current_fuel = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "cumulative_additional_fuel_cost") or 0.0
+        current_profit = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "profit_loss") or 0.0
+        
+        load_plan_id = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "load_plan")
+        total_order_value = frappe.db.get_value("Nexus Load Plan", load_plan_id, "total_amount") if load_plan_id else 0.0
+
+        new_cumulative_fuel = float(current_fuel) + fuel_amount_to_add
+        
+        new_profit_loss = float(current_profit) - fuel_amount_to_add
+        
+        new_net_margin = (new_profit_loss / float(total_order_value) * 100) if total_order_value and float(total_order_value) > 0 else 0.0
+        
+        new_profitability_status = "Profitable" if new_profit_loss >= 0 else "Loss"
+
+        update_dict = {
+            "cumulative_additional_fuel_cost": new_cumulative_fuel,
+            "profit_loss": new_profit_loss,
+            "net_margin": new_net_margin,
+            "profitability_status": new_profitability_status
+        }
+        
+        frappe.db.set_value("Vehicle Delivery Manifest", manifest_id, update_dict, update_modified=False)
+        frappe.db.commit()
+
+        frappe.publish_realtime('doc_update', message={'doctype': 'Vehicle Delivery Manifest', 'name': manifest_id})
+
+        return {
+            "status": "success", 
+            "message": "Fuel expense logged successfully.",
+            "new_cumulative_total": new_cumulative_fuel
+        }
+
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(title="Refuel Logging Error", message=str(e))
+        return {"status": "error", "message": f"Server Error: {str(e)}"}
+
+@frappe.whitelist()
 def save_fcm_token(fcm_token):
     user = frappe.session.user
     if user == "Guest":
@@ -425,6 +590,7 @@ def get_authorized_sales_persons(user_email):
     
     return [sp[0] for sp in authorized_sps] if authorized_sps else []
 
+
 @frappe.whitelist()
 def get_sales_dashboard_data():
     user = frappe.session.user
@@ -445,31 +611,13 @@ def get_sales_dashboard_data():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    sales_target = 0.0
-    collection_target = 0.0
+    targets = frappe.db.sql(f"""
+        SELECT SUM(custom_sales_target) as sales_target, SUM(custom_collections_target) as collection_target
+        FROM `tabSales Person` WHERE name IN ({format_sps})
+    """,  tuple_sps, as_dict=True)[0]
     
-    employee_id = frappe.db.get_value("Employee", {"user_id": user}, "name")
-    root_sp = get_root_sales_person(user)
-    
-    cascade_path = [
-        ("User", user),
-        ("Employee", employee_id),
-        ("Sales Person", root_sp)
-    ]
-    
-    for doctype, docname in cascade_path:
-        if not docname: continue
-        
-        if sales_target == 0.0 and frappe.db.has_column(doctype, "custom_sales_target"):
-            val = frappe.db.get_value(doctype, docname, "custom_sales_target")
-            if val: sales_target = float(val)
-            
-        if collection_target == 0.0 and frappe.db.has_column(doctype, "custom_collection_target"):
-            val = frappe.db.get_value(doctype, docname, "custom_collection_target")
-            if val: collection_target = float(val)
-            
-        if sales_target > 0.0 and collection_target > 0.0:
-            break
+    sales_target = targets.get("sales_target") or 0.0
+    collection_target = targets.get("collection_target") or 0.0
 
     assigned_customers = frappe.db.sql(f"""
         SELECT DISTINCT parent FROM `tabSales Team` 
@@ -522,6 +670,7 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
+
 @frappe.whitelist()
 def get_sales_context():
     """
@@ -537,16 +686,14 @@ def get_sales_context():
     tuple_sps = tuple(auth_sps)
 
     customers = frappe.db.sql(f"""
-        SELECT
-            c.name as name,
-            c.customer_name,
-            c.default_price_list,
+        SELECT 
+            c.name as name, 
+            c.customer_name, 
+            c.default_price_list, 
             c.payment_terms,
-            COALESCE(c.custom_phone_number, c.mobile_no) as mobile_no,
-            c.custom_location,
+            c.mobile_no,
             c.custom_latitude,
             c.custom_longitude,
-            c.custom_combined_coordinates,
             c.custom_google_maps_link,
             c.name as customer_id,
             (SELECT MAX(posting_date) FROM `tabSales Invoice` WHERE customer = c.name AND docstatus = 1) as last_invoiced_date
@@ -555,7 +702,7 @@ def get_sales_context():
         WHERE st.sales_person IN ({format_sps}) AND c.disabled = 0
         GROUP BY c.name
     """, tuple_sps, as_dict=True)
-    
+
     customer_ids = [c['name'] for c in customers]
 
     items = frappe.db.sql("""
@@ -702,32 +849,13 @@ def get_sales_context():
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
-    user = frappe.session.user
-    sales_target = 0.0
-    collection_target = 0.0
+    targets = frappe.db.sql(f"""
+        SELECT SUM(custom_sales_target) as sales_target, SUM(custom_collections_target) as collection_target
+        FROM `tabSales Person` WHERE name IN ({format_sps})
+    """, tuple_sps, as_dict=True)[0]
     
-    employee_id = frappe.db.get_value("Employee", {"user_id": user}, "name")
-    root_sp = get_root_sales_person(user)
-    
-    cascade_path = [
-        ("User", user),
-        ("Employee", employee_id),
-        ("Sales Person", root_sp)
-    ]
-    
-    for doctype, docname in cascade_path:
-        if not docname: continue
-        
-        if sales_target == 0.0 and frappe.db.has_column(doctype, "custom_sales_target"):
-            val = frappe.db.get_value(doctype, docname, "custom_sales_target")
-            if val: sales_target = float(val)
-            
-        if collection_target == 0.0 and frappe.db.has_column(doctype, "custom_collection_target"):
-            val = frappe.db.get_value(doctype, docname, "custom_collection_target")
-            if val: collection_target = float(val)
-            
-        if sales_target > 0.0 and collection_target > 0.0:
-            break
+    sales_target = targets.get("sales_target") or 0.0
+    collection_target = targets.get("collection_target") or 0.0
 
     mtd_sales = 0.0
     mtd_collections = 0.0
@@ -778,6 +906,7 @@ def get_sales_context():
         }
     }
 
+
 @frappe.whitelist()
 def get_invoice_details_for_order(order_id):
     """
@@ -792,6 +921,7 @@ def get_invoice_details_for_order(order_id):
     """, (order_id,), as_dict=True)
     
     return {"status": "success", "data": items}
+
 
 @frappe.whitelist()
 def submit_sales_order_from_app(payload):
@@ -841,6 +971,7 @@ def submit_sales_order_from_app(payload):
     except Exception as e:
         frappe.log_error(title="App Order Submission Failed", message=str(e))
         return {"status": "error", "message": f"Failed to create order: {str(e)}"}
+
 
 @frappe.whitelist()
 def register_sales_check_in(customer, lat, lng):
@@ -918,6 +1049,7 @@ def register_sales_check_out(customer):
 
     return {"status": "success", "message": "Checked out successfully.", "duration_minutes": duration_minutes}
 
+
 @frappe.whitelist()
 def get_extended_sales_reports(report_type):
     """
@@ -992,11 +1124,16 @@ def get_extended_sales_reports(report_type):
 
     return {"status": "success", "data": data}
 
+
 def trigger_app_customer_refresh(doc, method=None):
     old_doc = doc.get_doc_before_save()
     if not old_doc: return
 
-    monitored_fields = ['customer_name', 'default_price_list', 'payment_terms', 'mobile_no', 'custom_latitude', 'custom_longitude']
+    monitored_fields = [
+        'customer_name', 'default_price_list', 'payment_terms',
+        'mobile_no', 'custom_phone_number', 'custom_location',
+        'custom_latitude', 'custom_longitude', 'custom_combined_coordinates'
+    ]
     vault_data_changed = any(doc.get(field) != old_doc.get(field) for field in monitored_fields)
 
     old_sales_persons = set([row.sales_person for row in old_doc.get("sales_team", []) if row.sales_person])
@@ -1030,8 +1167,8 @@ def trigger_app_customer_refresh(doc, method=None):
                 user_email = frappe.db.get_value("Employee", sp.employee, "user_id")
                 if user_email:
                     affected_emails.add(user_email)
-            elif "@" in sp.employee: 
-                affected_emails.add(sp.employee)
+                elif "@" in sp.employee: 
+                    affected_emails.add(sp.employee)
 
     if affected_emails:
         try:
@@ -1072,12 +1209,8 @@ def trigger_app_catalog_refresh(doc, method=None):
         except Exception as e:
             frappe.log_error(title="App Catalog Refresh Trigger Failed", message=str(e))
 
+
 def trigger_financial_refresh(doc, method=None):
-    """
-    🚨 FIX: Triggered on Payment Entry.
-    Traces Payment -> Sales Invoice -> Sales Order, recalculates payment status,
-    and ships the updated_orders array and increment_collection to the mobile app for 0-lag badging.
-    """
     if doc.party_type != 'Customer' or not doc.party:
         return
 
@@ -1160,8 +1293,8 @@ def trigger_financial_refresh(doc, method=None):
                 user_email = frappe.db.get_value("Employee", sp.employee, "user_id")
                 if user_email:
                     affected_emails.add(user_email)
-            elif "@" in sp.employee: 
-                affected_emails.add(sp.employee)
+                elif "@" in sp.employee: 
+                    affected_emails.add(sp.employee)
 
     if affected_emails:
         try:
@@ -1180,11 +1313,8 @@ def trigger_financial_refresh(doc, method=None):
         except Exception:
             pass
 
+
 def trigger_order_status_update(doc, method=None):
-    """
-    🚨 FIX: Triggered on Sales Order update.
-    Extracts invoice_id and determines 'Paid' / 'Unpaid' status before pushing to UI.
-    """
     if not doc.owner or "@" not in doc.owner:
         return
         
@@ -1226,17 +1356,13 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
-    """
-    🚨 NEW HOOK: Triggered on Sales Person update.
-    Checks if targets changed, and forces a silent background vault sync for that specific rep.
-    """
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
         
     targets_changed = (
         doc.get("custom_sales_target") != old_doc.get("custom_sales_target") or 
-        doc.get("custom_collection_target") != old_doc.get("custom_collection_target")
+        doc.get("custom_collections_target") != old_doc.get("custom_collections_target")
     )
     
     if not targets_changed:
@@ -1261,6 +1387,7 @@ def trigger_sales_person_update(doc, method=None):
     except Exception as e:
         frappe.log_error(title="App Sales Person Trigger Failed", message=str(e))
 
+
 def _add_sp_and_ancestors(sales_person, affected_emails):
     sp_doc = frappe.db.get_value("Sales Person", sales_person, ["lft", "rgt"], as_dict=True)
     if not sp_doc: return
@@ -1272,20 +1399,14 @@ def _add_sp_and_ancestors(sales_person, affected_emails):
             elif "@" in a.employee: affected_emails.add(a.employee)
 
 def _get_all_sales_rep_emails():
-    """
-    Returns a set of all active sales rep emails (from Sales Person -> Employee -> User).
-    Used for global metadata changes (Customer Group, Territory, Currency, Tax Category).
-    """
     emails = set()
     reps = frappe.db.sql("""
-        SELECT e.user_id
-        FROM `tabSales Person` sp
+        SELECT e.user_id FROM `tabSales Person` sp
         JOIN `tabEmployee` e ON sp.employee = e.name
         WHERE sp.enabled = 1 AND e.user_id IS NOT NULL AND e.user_id != ''
     """, as_dict=True)
     for r in reps:
-        if r.user_id:
-            emails.add(r.user_id)
+        if r.user_id: emails.add(r.user_id)
     
     fallback = frappe.db.sql("""
         SELECT employee FROM `tabSales Person`
@@ -1293,13 +1414,9 @@ def _get_all_sales_rep_emails():
     """, as_dict=True)
     for f in fallback:
         emails.add(f.employee)
-    
-    return emails
+    return list(emails)
 
 def trigger_cache_eviction_and_notify(doc, method=None):
-    """
-    Centralized Webhook Runner: Fires to FastAPI to drop the cache and notify mobile units.
-    """
     try:
         if getattr(frappe.flags, 'in_import', False):
             return
@@ -1307,33 +1424,23 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
             return
 
+        bulk_doctypes = ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note", "Customer Group", "Territory", "Currency", "Tax Category"]
+        
+        if doc.doctype in bulk_doctypes:
+            if doc.doctype == "Item Price" and doc.price_list not in ["Nairobi Prices", "Other Regions"]:
+                return
+            frappe.cache().set_value('nexus_needs_sync', True)
+            return
+
         affected_emails = set()
         
-        if doc.doctype in ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note"]:
-            reps = frappe.db.sql("""
-                SELECT e.user_id, sp.employee 
-                FROM `tabSales Person` sp
-                LEFT JOIN `tabEmployee` e ON sp.employee = e.name
-                WHERE sp.enabled = 1
-            """, as_dict=True)
-            for r in reps:
-                if r.user_id: affected_emails.add(r.user_id)
-                elif r.employee and "@" in r.employee: affected_emails.add(r.employee)
-                
-        elif doc.doctype == "Customer":
+        if doc.doctype == "Customer":
             for row in doc.get("sales_team", []):
-                if row.sales_person: 
-                    _add_sp_and_ancestors(row.sales_person, affected_emails)
-                
+                if row.sales_person: _add_sp_and_ancestors(row.sales_person, affected_emails)
             if doc.name and frappe.db.exists("Customer", doc.name):
-                old_team = frappe.db.get_all(
-                    "Sales Team", 
-                    filters={"parent": doc.name, "parenttype": "Customer"}, 
-                    fields=["sales_person"]
-                )
+                old_team = frappe.db.get_all("Sales Team", filters={"parent": doc.name, "parenttype": "Customer"}, fields=["sales_person"])
                 for old_row in old_team:
-                    if old_row.get("sales_person"):
-                        _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
+                    if old_row.get("sales_person"): _add_sp_and_ancestors(old_row["sales_person"], affected_emails)
 
         elif doc.doctype in ["Sales Order", "Sales Invoice", "Payment Entry"]:
             customer_field = doc.party if doc.doctype == "Payment Entry" else doc.customer
@@ -1349,46 +1456,62 @@ def trigger_cache_eviction_and_notify(doc, method=None):
                 user_email = frappe.db.get_value("Employee", doc.employee, "user_id")
                 if user_email: affected_emails.add(user_email)
 
-        elif doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
-            affected_emails = _get_all_sales_rep_emails()
-
         if not affected_emails:
-            frappe.log_error(
-                title="Nexus Cache: No Emails Found",
-                message=f"Doctype: {doc.doctype}, Docname: {doc.name}"
-            )
             return
 
-        command = "FORCE_VAULT_SYNC"
-        if doc.doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
-            command = "FORCE_METADATA_REFRESH"
-            
         frappe.enqueue(
             "nexus_supply_chain.api.execute_fastapi_webhook",
             queue="short",
             affected_emails=list(affected_emails),
             doctype=doc.doctype,
             docname=doc.name,
-            command=command,
+            command="FORCE_VAULT_SYNC",
             enqueue_after_commit=True
         )
+        
     except Exception as e:
-        frappe.log_error(
-            title="Nexus Cache Eviction Failed",
-            message=f"Doctype: {doc.doctype}, Docname: {doc.name}, Error: {str(e)}"
+        frappe.log_error(title="Nexus Cache Eviction Flag Failed", message=f"Doctype: {doc.doctype}, Error: {str(e)}")
+
+def execute_fastapi_webhook(affected_emails, doctype, docname, command):
+    import requests
+    import frappe
+    
+    try:
+        fcm_tokens = {}
+        if affected_emails:
+            format_emails = ','.join(['%s'] * len(affected_emails))
+            tokens_data = frappe.db.sql(f"""
+                SELECT user, fcm_token 
+                FROM `tabNexus FCM Device` 
+                WHERE user IN ({format_emails})
+            """, tuple(affected_emails), as_dict=True)
+            
+            for row in tokens_data:
+                if row.user not in fcm_tokens:
+                    fcm_tokens[row.user] = []
+                fcm_tokens[row.user].append(row.fcm_token)
+
+        requests.post(
+            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
+            json={
+                "emails": affected_emails, 
+                "fcm_tokens": fcm_tokens,
+                "doctype": doctype, 
+                "docname": docname,
+                "command": command
+            },
+            timeout=5
         )
+    except Exception as e:
+        frappe.log_error(title="Cache Eviction API Failed", message=str(e))
 
 @frappe.whitelist()
 def create_mobile_customer(payload):
-    """
-    Accepts frontend payload from React Native to dynamically create a customer.
-    Stores phone number in custom_phone_number and location text in custom_location.
-    """
     if isinstance(payload, str):
         payload = json.loads(payload)
         
     phone_number = payload.get("phone_number")
-    location_text = payload.get("location_text") 
+    location_text = payload.get("location_text")  
     customer_name = payload.get("customer_name")
     
     if not customer_name:
@@ -1447,36 +1570,57 @@ def create_mobile_customer(payload):
 
 @frappe.whitelist()
 def update_customer_coordinates(customer, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None):
-    """
-    Polymorphic injection target: allows direct coordinate saving bypassing web scrapers.
-    🚨 FIX: Uses doc.save() instead of set_value to guarantee Redis Cache Eviction hooks fire!
-    """
     try:
-        if frappe.db.exists("Customer", customer):
-            doc = frappe.get_doc("Customer", customer)
-            doc.custom_latitude = str(latitude)
-            doc.custom_longitude = str(longitude)
-            
-            if custom_combined_coordinates:
-                doc.custom_combined_coordinates = custom_combined_coordinates
-                
-            if google_maps_link:
-                doc.custom_google_maps_link = google_maps_link
-                
-            doc.flags.ignore_permissions = True
-            doc.save()
-            
-            return {"status": "success", "message": "Location updated successfully.", "lat": latitude, "lng": longitude}
-        return {"status": "error", "message": "Customer not found."}
+        if not frappe.db.exists("Customer", customer):
+            return {"status": "error", "message": "Customer not found."}
+
+        try:
+            lat_float = float(latitude)
+            lng_float = float(longitude)
+        except (TypeError, ValueError) as e:
+            frappe.log_error(
+                title="Coord Update: Invalid Values",
+                message=f"Customer {customer} received non-numeric coords: lat={latitude}, lng={longitude} | {e}"
+            )
+            return {"status": "error", "message": f"Invalid coordinate values: {e}"}
+
+        if not (-90.0 <= lat_float <= 90.0) or not (-180.0 <= lng_float <= 180.0):
+            frappe.log_error(
+                title="Coord Update: Out of Bounds",
+                message=f"Customer {customer}: lat={lat_float}, lng={lng_float} are outside geographic bounds."
+            )
+            return {"status": "error", "message": "Coordinates out of valid geographic range."}
+
+        update_dict = {
+            "custom_latitude": lat_float,
+            "custom_longitude": lng_float,
+        }
+
+        if custom_combined_coordinates:
+            update_dict["custom_combined_coordinates"] = custom_combined_coordinates
+
+        if google_maps_link:
+            update_dict["custom_google_maps_link"] = google_maps_link
+
+        frappe.db.set_value("Customer", customer, update_dict, update_modified=False)
+
+        frappe.logger().info(
+            f"[Nexus Geocode] update_customer_coordinates: {customer} → lat={lat_float}, lng={lng_float}"
+        )
+
+        return {
+            "status": "success",
+            "message": "Location updated successfully.",
+            "lat": lat_float,
+            "lng": lng_float
+        }
+
     except Exception as e:
         frappe.log_error(title="Customer Location Update Failed", message=str(e))
         return {"status": "error", "message": str(e)}
 
 @frappe.whitelist()
 def register_sales_check_in_correction(visit_id, distance_m):
-    """
-    Corrects the variance tracking distance after a mobile map update
-    """
     try:
         if frappe.db.exists("Nexus Sales Visit", visit_id):
             frappe.db.set_value("Nexus Sales Visit", visit_id, "distance_from_target_meters", float(distance_m))
@@ -1485,13 +1629,8 @@ def register_sales_check_in_correction(visit_id, distance_m):
     except Exception as e:
         frappe.log_error(title="Distance Correction Failed", message=str(e))
         return {"status": "error", "message": str(e)}
-
+    
 def trigger_post_import_cache_eviction(doc, method=None):
-    """
-    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
-    Prevents the thundering herd problem by waiting until all rows are saved,
-    then issuing a single global sweep command.
-    """
     try:
         if doc.status not in ["Success", "Partial Success"]:
             return
@@ -1503,61 +1642,46 @@ def trigger_post_import_cache_eviction(doc, method=None):
         if not doc.has_value_changed("status"):
             return
             
-        affected_emails = _get_all_sales_rep_emails()
-        if not affected_emails:
-            return
-            
-        command = "FORCE_VAULT_SYNC"
-        if doc.reference_doctype in ["Customer Group", "Territory", "Currency", "Tax Category"]:
-            command = "FORCE_METADATA_REFRESH"
-
-        frappe.enqueue(
-            "nexus_supply_chain.api.execute_fastapi_webhook",
-            queue="short",
-            affected_emails=list(affected_emails),
-            doctype=doc.reference_doctype,
-            docname=f"Bulk_Import_{doc.name}",
-            command=command,
-            enqueue_after_commit=True
-        )
-        
-        frappe.log_error(title="Nexus Bulk Import Sweep", message=f"Successfully queued global cache eviction for {doc.reference_doctype} import.")
+        frappe.cache().set_value('nexus_needs_sync', True)
+        frappe.log_error(title="Nexus Bulk Import Sweep", message=f"Successfully flagged debounce sync for {doc.reference_doctype} import.")
         
     except Exception as e:
         frappe.log_error(title="Nexus Post-Import Eviction Failed", message=f"Error: {str(e)}")
 
-def execute_fastapi_webhook(affected_emails, doctype, docname, command):
+def publish_catalog_update(doc, method):
+    frappe.publish_realtime('nexus_catalog_sync', message={'status': 'updated'})
+
+def process_debounced_cache_eviction():
     import requests
     import frappe
-    import time
-    
-    time.sleep(3.0)
     
     try:
-        fcm_tokens = {}
-        if affected_emails:
-            format_emails = ','.join(['%s'] * len(affected_emails))
-            tokens_data = frappe.db.sql(f"""
-                SELECT user, fcm_token 
-                FROM `tabNexus FCM Device` 
-                WHERE user IN ({format_emails})
-            """, tuple(affected_emails), as_dict=True)
+        if frappe.cache().get_value('nexus_needs_sync'):
+            requests.post(
+                "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
+                json={
+                    "command": "GLOBAL_DEBOUNCED_SYNC",
+                    "doctype": "System",
+                    "docname": "Scheduled Sync"
+                },
+                timeout=5
+            )
             
-            for row in tokens_data:
-                if row.user not in fcm_tokens:
-                    fcm_tokens[row.user] = []
-                fcm_tokens[row.user].append(row.fcm_token)
-
-        requests.post(
-            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
-            json={
-                "emails": list(affected_emails), 
-                "fcm_tokens": fcm_tokens,
-                "doctype": doctype, 
-                "docname": docname,
-                "command": command
-            },
-            timeout=5
-        )
+            frappe.cache().set_value('nexus_needs_sync', False)
     except Exception as e:
-        frappe.log_error(title="Cache Eviction API Failed", message=str(e))
+        frappe.log_error(title="Scheduled Orchestrator Sync Failed", message=str(e))
+
+@frappe.whitelist()
+def get_active_companies_for_dispatch():
+    try:
+        companies = frappe.db.sql("""
+            SELECT name, custom_latitude, custom_longitude 
+            FROM `tabCompany`
+            WHERE custom_latitude IS NOT NULL AND custom_longitude IS NOT NULL
+            AND custom_latitude != '' AND custom_longitude != ''
+        """, as_dict=True)
+        
+        return {"status": "success", "data": companies}
+    except Exception as e:
+        frappe.log_error(title="Company Coordinates Fetch Failed", message=str(e))
+        return {"status": "error", "message": str(e)}

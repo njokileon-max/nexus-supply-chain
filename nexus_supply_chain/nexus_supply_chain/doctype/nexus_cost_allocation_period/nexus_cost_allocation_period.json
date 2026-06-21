@@ -1,0 +1,139 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "{month}.##",
+ "creation": "2026-06-10 11:19:51.909397",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_lcpd",
+  "month",
+  "year",
+  "is_active",
+  "section_break_pfxr",
+  "total_labour_pool",
+  "total_energy_pool",
+  "total_admin_pool",
+  "column_break_zeqb",
+  "total_global_overheads",
+  "total_net_yield",
+  "total_invoiced_sales",
+  "section_break_rzav",
+  "allocation_matrix",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_lcpd",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "month",
+   "fieldtype": "Select",
+   "label": "Month",
+   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember"
+  },
+  {
+   "fieldname": "year",
+   "fieldtype": "Data",
+   "label": "Year",
+   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "section_break_pfxr",
+   "fieldtype": "Section Break",
+   "label": "Overhead Distribution"
+  },
+  {
+   "fieldname": "total_labour_pool",
+   "fieldtype": "Float",
+   "label": "Total Labour Pool"
+  },
+  {
+   "fieldname": "total_energy_pool",
+   "fieldtype": "Float",
+   "label": "Total Energy Pool"
+  },
+  {
+   "fieldname": "total_admin_pool",
+   "fieldtype": "Float",
+   "label": "Total Admin Pool"
+  },
+  {
+   "fieldname": "total_net_yield",
+   "fieldtype": "Float",
+   "label": "Total Net Yield"
+  },
+  {
+   "fieldname": "section_break_rzav",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "allocation_matrix",
+   "fieldtype": "Table",
+   "label": "Allocation Matrix",
+   "options": "Nexus Costing Matrix Row"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Nexus Cost Allocation Period",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_zeqb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_global_overheads",
+   "fieldtype": "Float",
+   "label": "Total Global Overheads"
+  },
+  {
+   "fieldname": "total_invoiced_sales",
+   "fieldtype": "Float",
+   "label": "Total Invoiced Sales"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-06-19 10:32:25.796679",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Cost Allocation Period",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

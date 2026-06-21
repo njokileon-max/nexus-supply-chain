@@ -1,0 +1,70 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-10 11:07:59.458045",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_group",
+  "labour_allocation",
+  "energy_allocation",
+  "volume_yield",
+  "admin_allocation",
+  "rate_per_kg"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Group",
+   "options": "Item Group"
+  },
+  {
+   "fieldname": "labour_allocation",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Labour Allocation (%)"
+  },
+  {
+   "fieldname": "energy_allocation",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Energy Allocation (%)"
+  },
+  {
+   "fieldname": "volume_yield",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Volume Yield (%)"
+  },
+  {
+   "fieldname": "admin_allocation",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Admin Allocation"
+  },
+  {
+   "fieldname": "rate_per_kg",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Rate per Kg"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-13 12:08:13.075978",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Costing Matrix Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

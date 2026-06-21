@@ -1,3 +1,5 @@
+# apps/nexus_supply_chain/nexus_supply_chain/doctype/nexus_load_plan/nexus_load_plan.py
+
 import frappe
 from frappe.model.document import Document
 
@@ -24,6 +26,15 @@ def make_delivery_manifest(source_name):
     
     target.load_plan = source.name
     target.trip_status = "Manifested"
+    
+    target.profit_loss = source.profit_loss
+    target.gross_margin = source.margin_percentage
+    target.net_margin = source.net_margin
+    target.approximate_total_distance_km = source.approximate_total_distance_km
+    target.approximate_fuel_consumption_ltrs = source.approximate_fuel_consumption_ltrs
+    target.approximate_fuel_cost = source.approximate_fuel_cost
+    target.actual_fuel_fuelled = source.actual_fuel_fuelled
+    target.profitability_status = source.profitability_status
     
     for so_row in source.sales_orders:
         so_doc = frappe.get_doc("Sales Order", so_row.sales_order)

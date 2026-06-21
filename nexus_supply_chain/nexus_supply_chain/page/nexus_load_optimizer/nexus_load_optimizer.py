@@ -1,3 +1,5 @@
+# apps/nexus_supply_chain/nexus_supply_chain/page/nexus_load_optimizer/nexus_load_optimizer.py
+
 import frappe
 import requests
 import json
@@ -6,7 +8,7 @@ from datetime import datetime
 
 from nexus_supply_chain.utils.cost_utils import compute_total_theoretical_cost_for_orders
 
-API_URL = "http://nexus-brain:8001"
+API_URL = "https://crystal-api.crystalapps.dev"
 TARGET_WAREHOUSE = "Finished Goods - CAL"
 
 @frappe.whitelist()
@@ -195,7 +197,7 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     for so in group.get("sales_orders", []):
         lat = flt(so.get("latitude", 0.0))
         lng = flt(so.get("longitude", 0.0))
-        
+
         plan.append("sales_orders", {
             "sales_order": so.get("sales_order"),
             "customer": so.get("customer"),
@@ -215,6 +217,10 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
 
     route_coords.append(FACTORY_COORDS)
 
+    approximate_total_distance_km = 0.0
+    approximate_fuel_consumption_ltrs = 0.0
+    approximate_fuel_cost = 0.0
+
     if len(route_coords) >= 3:
         try:
             resp = requests.post(
@@ -226,8 +232,30 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
                 data = resp.json()
                 if "features" in data:
                     plan.route_geojson = json.dumps(data)
+                    
+                    try:
+                        distance_m = flt(data["features"][0]["properties"]["summary"]["distance"])
+                        approximate_total_distance_km = distance_m / 1000.0
+                    except (KeyError, IndexError):
+                        pass
         except Exception as e:
             frappe.log_error(str(e), "Load Plan Route Generation Failed")
+
+    if plan.vehicle_type:
+        try:
+            vt = frappe.get_doc("Vehicle Type", plan.vehicle_type)
+            km_per_ltr = flt(vt.consumption_km_per_ltr)
+            litre_cost = flt(vt.litre_cost)
+            
+            if km_per_ltr > 0:
+                approximate_fuel_consumption_ltrs = approximate_total_distance_km / km_per_ltr
+                approximate_fuel_cost = approximate_fuel_consumption_ltrs * litre_cost
+        except Exception as e:
+            frappe.log_error(str(e), "Load Plan Fuel Economic Calculation Failed")
+
+    plan.approximate_total_distance_km = approximate_total_distance_km
+    plan.approximate_fuel_consumption_ltrs = approximate_fuel_consumption_ltrs
+    plan.approximate_fuel_cost = approximate_fuel_cost
 
     sales_orders_data = group.get("sales_orders", [])
     total_order_value = flt(group.get("total_amount", 0))
@@ -236,22 +264,40 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
 
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders_data)
 
-    daily_overhead = 0.0
+    absorbed_overhead = 0.0
     try:
-        overhead_doc = frappe.get_single("Company Overhead Settings")
-        daily_overhead = flt(overhead_doc.daily_overhead)
+        active_period = frappe.get_all(
+            "Nexus Cost Allocation Period",
+            filters={"is_active": 1, "docstatus": 1},
+            fields=["total_global_overheads", "total_invoiced_sales"],
+            limit=1
+        )
+        if active_period:
+            period = active_period[0]
+            total_oh = flt(period.total_global_overheads)
+            total_sales = flt(period.total_invoiced_sales)
+            
+            if total_sales > 0:
+                overhead_ratio = total_oh / total_sales
+                absorbed_overhead = total_order_value * overhead_ratio
     except Exception:
-        frappe.log_error("Company Overhead Settings not found – using 0 overhead.", "Load Plan Margin")
+        frappe.log_error("Failed to calculate absorbed overhead. Check Cost Allocation Period.", "Load Plan Margin")
 
-    profit_loss = total_order_value - total_theoretical_cost - daily_overhead
-    margin_percentage = (profit_loss / total_order_value * 100) if total_order_value > 0 else 0.0
-    profitability_status = "Profitable" if profit_loss >= 0 else "Loss"
+    gross_profit = total_order_value - total_theoretical_cost
+    gross_margin_pct = (gross_profit / total_order_value * 100) if total_order_value > 0 else 0.0
+    
+    net_profit = gross_profit - absorbed_overhead - approximate_fuel_cost
+    net_margin_pct = (net_profit / total_order_value * 100) if total_order_value > 0 else 0.0
+    
+    profitability_status = "Profitable" if net_profit >= 0 else "Loss"
 
     plan.total_theoretical_cost = total_theoretical_cost
-    plan.daily_overhead_allocated = daily_overhead
-    plan.profit_loss = profit_loss
+    plan.daily_overhead_allocated = absorbed_overhead 
+    plan.profit_loss = net_profit
+    plan.margin_percentage = gross_margin_pct
+    plan.net_margin = net_margin_pct
     plan.profitability_status = profitability_status
-    plan.margin_percentage = margin_percentage
+    # ------------------------------------------------------------------
 
     plan.insert(ignore_permissions=True)
 
@@ -323,16 +369,16 @@ def reanalyze_load_plan(load_plan_name):
     frappe.db.commit()
     return {"status": "success", "message": "Reanalysis complete. Fresh stock check applied."}
 
-
 @frappe.whitelist()
-def get_group_margin_data(group, company_name=None):
+def get_group_margin_data(group, route_geojson=None, vehicle_type=None):
     """
-    Receives a load group (sales orders with items) and returns:
-    - total_order_value (sum of sales order amounts)
-    - total_theoretical_cost (rolled‑up material cost)
-    - daily_overhead (from Company Overhead Settings)
-    - profit_margin (order value - cost - overhead)
-    - profit_margin_percentage
+    Receives a load group and dynamic UI parameters to return:
+    - total_order_value
+    - total_theoretical_cost
+    - gross_profit & gross_margin_percentage
+    - overhead_ratio & absorbed_overhead
+    - approximate fuel metrics
+    - net_profit & net_margin_percentage
     """
     if isinstance(group, str):
         group = frappe.parse_json(group)
@@ -347,29 +393,72 @@ def get_group_margin_data(group, company_name=None):
 
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders)
 
-    if not company_name:
-        company_name = group.get("company")
-    if not company_name and sales_orders:
-        first_so_name = sales_orders[0].get("sales_order")
-        if first_so_name:
-            company_name = frappe.db.get_value("Sales Order", first_so_name, "company")
+    gross_profit = total_order_value - total_theoretical_cost
+    gross_margin_pct = (gross_profit / total_order_value * 100) if total_order_value > 0 else 0.0
 
-    daily_overhead = 0.0
-    if company_name:
+    overhead_ratio = 0.0
+    absorbed_overhead = 0.0
+    
+    try:
+        active_period = frappe.get_all(
+            "Nexus Cost Allocation Period",
+            filters={"is_active": 1, "docstatus": 1},
+            fields=["total_global_overheads", "total_invoiced_sales"],
+            limit=1
+        )
+        if active_period:
+            period = active_period[0]
+            total_oh = flt(period.total_global_overheads)
+            total_sales = flt(period.total_invoiced_sales)
+            
+            if total_sales > 0:
+                overhead_ratio = (total_oh / total_sales) * 100
+                absorbed_overhead = total_order_value * (total_oh / total_sales)
+    except Exception:
+        frappe.log_error("Failed to fetch active Cost Allocation Period.", "Margin Analysis UI")
+
+    approximate_total_distance_km = 0.0
+    if route_geojson:
         try:
-            overhead_doc = frappe.get_single("Company Overhead Settings")
-            daily_overhead = flt(overhead_doc.daily_overhead)
+            if isinstance(route_geojson, str):
+                route_data = json.loads(route_geojson)
+            else:
+                route_data = route_geojson
+                
+            distance_m = flt(route_data.get("features", [{}])[0].get("properties", {}).get("summary", {}).get("distance", 0))
+            approximate_total_distance_km = distance_m / 1000.0
         except Exception:
-            frappe.log_error("Company Overhead Settings not found. Please create the Single DocType.", "Margin Analysis")
+            pass
 
-    profit_loss = total_order_value - total_theoretical_cost - daily_overhead
-    profit_percentage = (profit_loss / total_order_value * 100) if total_order_value > 0 else 0.0
+    approximate_fuel_consumption_ltrs = 0.0
+    approximate_fuel_cost = 0.0
+
+    if vehicle_type:
+        try:
+            vt = frappe.get_doc("Vehicle Type", vehicle_type)
+            km_per_ltr = flt(vt.consumption_km_per_ltr)
+            litre_cost = flt(vt.litre_cost)
+            
+            if km_per_ltr > 0:
+                approximate_fuel_consumption_ltrs = approximate_total_distance_km / km_per_ltr
+                approximate_fuel_cost = approximate_fuel_consumption_ltrs * litre_cost
+        except Exception:
+            pass
+
+    net_profit = gross_profit - absorbed_overhead - approximate_fuel_cost
+    net_margin_pct = (net_profit / total_order_value * 100) if total_order_value > 0 else 0.0
 
     return {
         "total_order_value": total_order_value,
         "total_theoretical_cost": total_theoretical_cost,
-        "daily_overhead": daily_overhead,
-        "profit_loss": profit_loss,
-        "profit_percentage": round(profit_percentage, 2),
+        "gross_profit": round(gross_profit, 2),
+        "gross_margin_percentage": round(gross_margin_pct, 2),
+        "overhead_ratio_percentage": round(overhead_ratio, 2),
+        "absorbed_overhead": round(absorbed_overhead, 2),
+        "approximate_total_distance_km": round(approximate_total_distance_km, 2),
+        "approximate_fuel_consumption_ltrs": round(approximate_fuel_consumption_ltrs, 2),
+        "approximate_fuel_cost": round(approximate_fuel_cost, 2),
+        "net_profit": round(net_profit, 2),
+        "net_margin_percentage": round(net_margin_pct, 2),
         "currency": frappe.defaults.get_user_default("currency") or "KES"
     }

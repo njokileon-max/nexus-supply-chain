@@ -2,10 +2,6 @@ import frappe
 from frappe.utils import flt, now_datetime
 
 def sync_load_plan_status(load_plan_name):
-    """
-    Analyzes all reservations for a Load Plan and sets the definitive status.
-    Triggers the Insight Engine to update shortfall notes.
-    """
     if not load_plan_name: return
     
     _update_shortfall_notes(load_plan_name)
@@ -44,10 +40,6 @@ def sync_load_plan_status(load_plan_name):
 
 
 def _update_shortfall_notes(load_plan_name):
-    """
-    Actionable Shortfall Intelligence: Identifies missing stock and 
-    finds the 'Active' Last-in-Line or reports True Stockouts.
-    """
     items = frappe.db.sql("""
         SELECT ri.item_code, SUM(ri.required_qty) as qty 
         FROM `tabNexus Inventory Reservation Item` ri
@@ -93,7 +85,6 @@ def _update_shortfall_notes(load_plan_name):
 
 
 def _eval_consumed_state(reservation_name):
-    """Strict state machine for Delivery Note satisfaction."""
     so_list = frappe.db.sql("SELECT DISTINCT sales_order FROM `tabNexus Inventory Reservation Item` WHERE parent = %s", (reservation_name,))
     if not so_list: return
     
@@ -110,7 +101,6 @@ def _eval_consumed_state(reservation_name):
 
 
 def _eval_dispatch_status(load_plan_name):
-    """Calculates if all orders in a Load Plan have submitted Delivery Notes"""
     plan = frappe.get_doc("Nexus Load Plan", load_plan_name)
     if plan.docstatus != 1: return
     
@@ -136,10 +126,6 @@ def _eval_dispatch_status(load_plan_name):
 
 
 def prepare_reservation_submission(doc, method):
-    """
-    PRE-FLIGHT HOOK: Runs the exact moment the user clicks 'Submit'.
-    Prepares the document to be mathematically evaluated by the Waterfall Engine.
-    """
     if doc.reservation_status in ["Draft", "", None]:
         doc.reservation_status = "Waiting for Stock"
         
@@ -148,13 +134,11 @@ def prepare_reservation_submission(doc, method):
 
 
 def validate_reservation_cancel(doc, method):
-    """Enforce mandatory Release Reason on manual cancellation."""
     if not doc.release_reason and doc.reservation_status != "Expired":
         frappe.throw("<b>Release Reason</b> is mandatory before cancelling a reservation.")
 
 
 def _reallocate_fifo_stock(item_code):
-    """Waterfall Engine: Updates Active/Waiting statuses based on 'Finished Goods - CAL' levels."""
     actual_qty = frappe.db.sql("""
         SELECT SUM(actual_qty) FROM `tabBin` 
         WHERE item_code = %s AND warehouse = 'Finished Goods - CAL'
@@ -192,10 +176,6 @@ def _reallocate_fifo_stock(item_code):
 
 
 def validate_delivery_note_submission(doc, method):
-    """
-    Active-Pool Logic: Blocks delivery ONLY if an older reservation 
-    is 'Waiting for Stock' (FIFO Starvation).
-    """
     for item in doc.items:
         if not getattr(item, 'against_sales_order', None): continue
             
@@ -244,7 +224,6 @@ def process_delivery_note_cancel(doc, method):
 
 
 def process_sales_order_update(doc, method):
-    """If SO is cancelled, release its linked active reservations."""
     if doc.docstatus == 2:
         reservations = frappe.get_all("Nexus Inventory Reservation Item", filters={"sales_order": doc.name}, fields=["parent", "item_code"])
         for r in reservations:
@@ -257,7 +236,6 @@ def process_sales_order_update(doc, method):
 
 
 def process_reservation_update(doc, method):
-    """Triggered on save or submission of a reservation."""
     sync_load_plan_status(doc.nexus_load_plan)
     
     if doc.docstatus == 1 and doc.reservation_status in ["Active", "Waiting for Stock"]:
@@ -265,7 +243,6 @@ def process_reservation_update(doc, method):
 
 
 def process_reservation_cancel(doc, method):
-    """Cleanup and Waterfall trigger upon manual cancellation."""
     if doc.reservation_status != "Expired":
         doc.db_set("reservation_status", "Released")
     
@@ -274,7 +251,6 @@ def process_reservation_cancel(doc, method):
 
 
 def process_stock_movement(doc, method):
-    """Triggered by Purchase Receipts or Stock Entries to the CAL warehouse."""
     items = {i.item_code for i in doc.items if getattr(i, 'item_code', None)}
     for code in items: _reallocate_fifo_stock(code)
 
@@ -284,7 +260,6 @@ def process_stock_movement_cancel(doc, method):
 
 
 def check_and_expire_reservations():
-    """Daily job to clear timed-out reservations and re-distribute stock."""
     expired = frappe.get_all("Nexus Inventory Reservation", 
         filters={
             "expiry_date": ["<", now_datetime()], 

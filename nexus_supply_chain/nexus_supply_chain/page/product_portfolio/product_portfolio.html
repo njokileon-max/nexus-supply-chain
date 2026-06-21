@@ -1,36 +1,49 @@
 <style>
-	.portfolio-dashboard {
-		padding: 15px;
-		background-color: var(--bg-color);
-	}
-	.portfolio-table-wrapper {
-		margin-top: 20px;
-		background: var(--card-bg);
-		border-radius: var(--border-radius);
-		box-shadow: var(--card-shadow);
-		padding: 15px;
-		border: 1px solid var(--border-color);
-		min-height: 400px;
-	}
-	.summary-banner {
-		padding: 10px 15px;
-		background-color: var(--gray-100);
-		border-left: 4px solid var(--blue-500);
-		margin-bottom: 15px;
-		border-radius: 4px;
-	}
+    .portfolio-wrapper {
+        padding: 15px;
+        background-color: #f8fafc;
+        border-radius: 8px;
+        min-height: 80vh;
+    }
+    .portfolio-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        padding-bottom: 15px;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    .variance-positive { color: #16a34a; font-weight: bold; }
+    .variance-negative { color: #ef4444; font-weight: bold; }
+    #portfolio-datatable {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    /* Frappe DataTable Overrides for cleaner look */
+    .dt-cell__content { font-size: 13px; }
+    .dt-header { background-color: #f1f5f9 !important; font-weight: bold; }
 </style>
 
-<div class="portfolio-dashboard">
-	<div class="summary-banner">
-		<h4 class="mb-1">Operational Variance Analysis</h4>
-		<p class="text-muted text-small mb-0">
-			This engine queries all active items under Finished Goods and WIP, recursively exploding their default BOMs down to the raw material leaves to calculate the <b>True Theoretical Cost</b>. 
-			It compares this against the <b>System Recorded Valuation Rate</b>. 
-			<br><i>A positive (red) variance indicates the theoretical recipe cost is higher than current ledger valuation.</i>
-		</p>
-	</div>
-	
-	<div class="portfolio-table-wrapper">
-		</div>
+<div class="portfolio-wrapper">
+    <div class="portfolio-header">
+        <div>
+            <h3 class="mb-1 fw-bold text-dark"><i class="fa fa-cubes me-2 text-primary"></i> Product Portfolio Analytics</h3>
+            <div class="text-muted small">Real-time memory-mapped theoretical cost and variance analysis</div>
+        </div>
+        <div class="actions d-flex gap-2">
+            <button class="btn btn-primary fw-bold px-4" id="refresh-portfolio-btn">
+                <i class="fa fa-refresh me-2"></i> Sync & Recalculate Matrix
+            </button>
+        </div>
+    </div>
+
+    <div id="portfolio-datatable">
+        <div class="text-center py-5 text-muted">
+            <i class="fa fa-spinner fa-spin fa-2x mb-3 text-primary"></i>
+            <p>Initializing Memory Graph...</p>
+        </div>
+    </div>
 </div>

@@ -2,11 +2,6 @@ import frappe
 import requests
 
 def queue_customer_geocoding(doc, method=None):
-    """
-    Triggered every time a Customer is saved or imported (before_save hook).
-    Evaluates synchronously if the link changed, then safely hands off to a 
-    background worker AFTER the database commits to prevent row locks.
-    """
     link = doc.get("custom_google_maps_link")
     if not link:
         return
@@ -34,10 +29,6 @@ def queue_customer_geocoding(doc, method=None):
     )
 
 def execute_external_geocode_call(doc_name, url):
-    """
-    Executed blindly and safely out-of-band by background workers. 
-    Submits the URL payload to the FastAPI gateway for advanced extraction.
-    """
     try:
         api_key = "1f2418fc036348f"
         api_secret = "2536cd1f5256d41"

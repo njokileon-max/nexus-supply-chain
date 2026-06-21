@@ -39,7 +39,7 @@ def queue_customer_geocoding(doc, method):
             }
         }
 
-        fastapi_url = "http://nexus-brain:8001/queue-geocode"
+        fastapi_url = "http://127.0.0.1:8001/queue-geocode"
         
         # We use a tiny 2-second timeout. If FastAPI is offline, ERPNext ignores it 
         # and saves the customer anyway without lagging the UI.

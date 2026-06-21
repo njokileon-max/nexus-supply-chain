@@ -3,23 +3,30 @@ app_title = "Nexus Supply Chain"
 app_publisher = "leon"
 app_description = "Nexus Supply Chain"
 app_email = "gnleon29@gmail.com"
-app_license = "mit"
+app_license = ""
 
 doc_events = {
     "Customer": {
-        "before_save": [
-            "nexus_supply_chain.utils.geocoding.queue_customer_geocoding",
+        "after_insert": [
+            "nexus_supply_chain.api.queue_customer_geocoding",
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+        ],
+        "on_change": [
+            "nexus_supply_chain.api.queue_customer_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
     
     "Item": {
-        "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+        "on_update": [
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.api.publish_catalog_update"
+        ]
     },
     "Item Price": {
         "on_update": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-            "nexus_supply_chain.api.trigger_portfolio_cache_invalidation" 
+            "nexus_supply_chain.api.publish_catalog_update"
         ]
     },
 
@@ -66,11 +73,13 @@ doc_events = {
     "Stock Entry": {
         "on_submit": [
             "nexus_supply_chain.reservation_hooks.process_stock_movement",
-            "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
         ],
         "on_cancel": [
             "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
-            "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
         ]
     },
     
@@ -123,5 +132,17 @@ doc_events = {
 
     "Data Import": {
         "on_update": "nexus_supply_chain.api.trigger_post_import_cache_eviction"
+    }
+}
+
+scheduler_events = {
+    "cron": {
+        "* * * * *": [
+            "nexus_supply_chain.api.process_debounced_cache_eviction"
+        ],
+        
+        "*/10 * * * *": [
+            "nexus_supply_chain.api.process_bulk_geocoding_queue"
+        ]
     }
 }

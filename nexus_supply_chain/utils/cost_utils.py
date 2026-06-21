@@ -1,12 +1,12 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2026, Nexus Supply Chain
+# For license information, please see license.txt
+
 import frappe
 from frappe.utils import cint, flt
 from typing import Dict, List, Optional, Tuple, Any
 
 def get_theoretical_cost(item_code: str, use_cache: bool = True) -> float:
-    """
-    Returns the true rolled‑up material cost per unit for an item.
-    If use_cache is True, the result is cached for 1 hour (TTL = 3600 sec).
-    """
     if not item_code:
         return 0.0
 
@@ -19,16 +19,13 @@ def get_theoretical_cost(item_code: str, use_cache: bool = True) -> float:
     cost = _compute_item_theoretical_cost(item_code)
 
     if use_cache:
+        # Cache for 1 hour (3600 seconds)
         frappe.cache().set_value(cache_key, cost, expires_in_sec=3600)
 
     return cost
 
 
 def get_multiple_theoretical_costs(item_codes: List[str], use_cache: bool = True) -> Dict[str, float]:
-    """
-    Batch version – returns a dict {item_code: cost}.
-    Useful for pre‑loading costs for many finished goods.
-    """
     result = {}
     to_compute = []
 
@@ -61,6 +58,7 @@ def _compute_item_theoretical_cost(item_code: str) -> float:
         "name"
     )
 
+
     if not bom_name:
         return _get_item_valuation_rate(item_code)
 
@@ -74,6 +72,7 @@ def _compute_item_theoretical_cost(item_code: str) -> float:
         if bom_item_code in visited:
             frappe.throw(f"Circular reference detected in BOM for item: {bom_item_code}")
         visited.add(bom_item_code)
+
 
         child_bom = frappe.db.get_value(
             "BOM",
@@ -127,11 +126,12 @@ def _get_item_valuation_rate(item_code: str) -> float:
         return flt(bin_rate)
 
     item_rate = frappe.db.get_value("Item", item_code, "valuation_rate")
-    if item_rate milestone and flt(item_rate) > 0:
+    if item_rate and flt(item_rate) > 0:
         return flt(item_rate)
 
     return 0.0
 
+-------
 
 def compute_total_theoretical_cost_for_orders(sales_orders: List[Dict]) -> float:
     """
@@ -140,6 +140,7 @@ def compute_total_theoretical_cost_for_orders(sales_orders: List[Dict]) -> float
     Uses caching per item.
     """
     total = 0.0
+    # Collect all distinct finished goods first
     fg_codes = set()
     order_item_map = {}
 

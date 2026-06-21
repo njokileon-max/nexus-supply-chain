@@ -1,0 +1,163 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-05 12:48:18.620779",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_y6vl",
+  "amended_from",
+  "sec_setup",
+  "month",
+  "year",
+  "company",
+  "fetch_erp_data",
+  "sec_apportion",
+  "working_days",
+  "total_production_kg",
+  "total_monthly_overhead",
+  "col_apportion",
+  "overhead_rate_per_day",
+  "overhead_rate_per_kg",
+  "fetched_gl_expenses_section",
+  "table_zgwz",
+  "sec_manual",
+  "manual_entries"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_y6vl",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Nexus Monthly Overhead Ledger",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "sec_setup",
+   "fieldtype": "Section Break",
+   "label": "Document Setup"
+  },
+  {
+   "fieldname": "month",
+   "fieldtype": "Select",
+   "label": "Month",
+   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember"
+  },
+  {
+   "description": "e.g., 2026",
+   "fieldname": "year",
+   "fieldtype": "Data",
+   "label": "Year"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "fetch_erp_data",
+   "fieldtype": "Button",
+   "label": "Fetch ERP Data"
+  },
+  {
+   "fieldname": "sec_manual",
+   "fieldtype": "Section Break",
+   "label": "Manual Adjustments"
+  },
+  {
+   "fieldname": "manual_entries",
+   "fieldtype": "Table",
+   "label": "Ad-hoc Expenses",
+   "options": "Nexus Overhead Manual Entry"
+  },
+  {
+   "fieldname": "sec_apportion",
+   "fieldtype": "Section Break",
+   "label": "Apportionment Strategy"
+  },
+  {
+   "default": "26",
+   "fieldname": "working_days",
+   "fieldtype": "Int",
+   "label": "Working Days in Month"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_production_kg",
+   "fieldtype": "Float",
+   "label": "Total Production Vol (Kg)"
+  },
+  {
+   "bold": 1,
+   "fieldname": "total_monthly_overhead",
+   "fieldtype": "Currency",
+   "label": "Total Monthly Overhead",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_apportion",
+   "fieldtype": "Column Break"
+  },
+  {
+   "bold": 1,
+   "fieldname": "overhead_rate_per_day",
+   "fieldtype": "Currency",
+   "label": "Overhead Rate Per Day",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "fieldname": "overhead_rate_per_kg",
+   "fieldtype": "Currency",
+   "label": "Overhead Rate Per Kg",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fetched_gl_expenses_section",
+   "fieldtype": "Section Break",
+   "label": "Fetched GL Expenses"
+  },
+  {
+   "fieldname": "table_zgwz",
+   "fieldtype": "Table",
+   "options": "Nexus Overhead Account Detail"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-06-06 11:01:28.397603",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Monthly Overhead Ledger",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

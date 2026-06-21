@@ -10,7 +10,7 @@ app = FastAPI(title="Nexus Fleet Telemetry Gateway")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # In strict production, replace "*" with your ERPNext domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,11 +43,8 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast_fleet_state(self):
-        """
-        Cleans up dead trucks and blasts the active state to the dashboard.
-        """
         current_time = time.time()
-        
+
         stale_keys = [
             tracking_id for tracking_id, data in active_fleet.items() 
             if current_time - data.get("server_received_time", 0) > 60
@@ -64,7 +61,6 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
-
 
 @app.post("/telemetry/ping")
 async def receive_ping(ping: TelemetryPing):
@@ -134,7 +130,6 @@ async def receive_driver_login(payload: Dict = Body(...)):
         print(f"🌅 Telemetry Resurrected: {driver_email} cleared from graveyard.")
     return {"status": "resurrected"}
 
-
 @app.websocket("/telemetry/ws")
 async def fleet_telemetry_stream(websocket: WebSocket):
     """
@@ -145,6 +140,7 @@ async def fleet_telemetry_stream(websocket: WebSocket):
         while True:
             await manager.broadcast_fleet_state()
             
+
             await asyncio.sleep(1)
             
     except WebSocketDisconnect:
@@ -160,5 +156,5 @@ if __name__ == "__main__":
         port=8001, 
         loop="uvloop", 
         workers=1,
-        log_level="warning"
+        log_level="warning" # Suppresses standard HTTP logs to save disk space
     )

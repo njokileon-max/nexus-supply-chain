@@ -1,8 +1,9 @@
+# apps/nexus_supply_chain/nexus_supply_chain/page/customer_spatial_map/customer_spatial_map.py
+
 import frappe
 
 @frappe.whitelist()
 def get_mapped_customers():
-    """Fetches all customers who have valid GPS coordinates."""
     customers = frappe.get_all(
         "Customer",
         filters={

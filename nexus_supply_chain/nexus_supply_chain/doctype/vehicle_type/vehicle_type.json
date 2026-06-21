@@ -8,6 +8,9 @@
  "field_order": [
   "vehicle_type",
   "max_tonnage",
+  "consumption_km_per_ltr",
+  "fuel_type",
+  "litre_cost",
   "description",
   "is_active"
  ],
@@ -35,12 +38,28 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active"
+  },
+  {
+   "fieldname": "consumption_km_per_ltr",
+   "fieldtype": "Float",
+   "label": "Consumption (Km/Ltr)"
+  },
+  {
+   "fieldname": "fuel_type",
+   "fieldtype": "Select",
+   "label": "Fuel Type",
+   "options": "Petrol\nDiesel"
+  },
+  {
+   "fieldname": "litre_cost",
+   "fieldtype": "Float",
+   "label": "Litre Cost"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-03 16:41:02.506961",
+ "modified": "2026-06-18 14:12:03.276922",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Vehicle Type",

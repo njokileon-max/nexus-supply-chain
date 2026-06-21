@@ -11,6 +11,15 @@
   "driver",
   "vehicle",
   "trip_status",
+  "profit_loss",
+  "gross_margin",
+  "net_margin",
+  "approximate_total_distance_km",
+  "approximate_fuel_consumption_ltrs",
+  "approximate_fuel_cost",
+  "actual_fuel_fuelled",
+  "cumulative_additional_fuel_cost",
+  "profitability_status",
   "stops",
   "returned_items",
   "route_map_html",
@@ -44,7 +53,6 @@
    "options": "Vehicle In Transit"
   },
   {
-   "default": "Manifested",
    "fieldname": "trip_status",
    "fieldtype": "Select",
    "label": "Trip Status",
@@ -83,13 +91,60 @@
    "fieldtype": "Table",
    "label": "Returned Items",
    "options": "Manifest Returned Item"
+  },
+  {
+   "fieldname": "profit_loss",
+   "fieldtype": "Currency",
+   "label": "Profit / Loss (Net)"
+  },
+  {
+   "fieldname": "gross_margin",
+   "fieldtype": "Percent",
+   "label": "Gross Margin (%)"
+  },
+  {
+   "fieldname": "net_margin",
+   "fieldtype": "Percent",
+   "label": "Net Margin (%)"
+  },
+  {
+   "fieldname": "approximate_total_distance_km",
+   "fieldtype": "Float",
+   "label": "Approximate Total Distance (Km)"
+  },
+  {
+   "fieldname": "approximate_fuel_consumption_ltrs",
+   "fieldtype": "Float",
+   "label": "Approximate Fuel Consumption (Ltrs)"
+  },
+  {
+   "fieldname": "approximate_fuel_cost",
+   "fieldtype": "Currency",
+   "label": "Approximate Fuel Cost"
+  },
+  {
+   "fieldname": "actual_fuel_fuelled",
+   "fieldtype": "Currency",
+   "label": "Actual Fuel Fueled (In Company Floor)"
+  },
+  {
+   "fieldname": "cumulative_additional_fuel_cost",
+   "fieldtype": "Currency",
+   "label": "Cumulative Additional Fuel Cost"
+  },
+  {
+   "fieldname": "profitability_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Profitability Status",
+   "options": "Profitable\nLoss"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-23 22:25:39.866681",
+ "modified": "2026-06-19 11:50:27.671408",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Vehicle Delivery Manifest",

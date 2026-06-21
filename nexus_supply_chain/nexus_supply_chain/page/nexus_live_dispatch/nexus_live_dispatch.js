@@ -1,10 +1,11 @@
+// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_live_dispatch/nexus_live_dispatch.js
+
 frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({
         parent: wrapper,
         title: 'Nexus Fleet Command Center',
         single_column: true 
     });
-
     $(wrapper).find('.layout-main-section').html(`
         <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
             <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
@@ -108,7 +109,7 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             .card-meta { font-size: 13px; margin-bottom: 8px; opacity: 0.95; display: flex; align-items: center; }
             .card-meta-icon { margin-right: 8px; opacity: 0.7; width: 16px; text-align: center; }
 
-            .card-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); padding: 10px 15px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: center; width: 100%; font-weight: 700; margin-top: 15px; transition: background 0.2s; }
+            .card-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); padding: 10px 15px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: center; width: 100%; font-weight: 700; transition: background 0.2s; }
             .card-btn:hover { background: rgba(255,255,255,0.25); }
 
             .ping-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; position: relative; }
@@ -116,6 +117,7 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             .ping-offline { background: #9ca3af; opacity: 0.5; }
             @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.7; } 100% { transform: scale(0.9); opacity: 1; } }
 
+            /* 🚨 Deep Enterprise Colors */
             .theme-transit { background-color: #064e3b; border-left-color: #10b981; color: #ecfdf5; }
             .theme-transit .status-badge { background-color: #047857; color: #ffffff; }
             
@@ -142,9 +144,10 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
     
     let last_math_calc = {}; 
     let ws = null;
+    let map_reset_timer = null;
+    window.current_stop_markers = null;
     
-    const FASTAPI_WS_URL = "wss://api.crystalapps.dev/telemetry/ws";
-    
+    const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/ws";
     const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
     frappe.require([
@@ -163,6 +166,11 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             style: TILE_SERVER_URL,
             attribution: '© Sovereign Nexus Maps'
         }).addTo(map);
+        
+        setTimeout(() => {
+            map.invalidateSize();
+            console.log("🗺️ [Nexus Dispatch] Map rendered and size invalidated.");
+        }, 500);
         
         refresh_dispatch_data();
         connectTelemetryWebSocket();
@@ -215,9 +223,16 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         vehicles.forEach(v => {
             let status = v.current_status ? v.current_status.toUpperCase() : 'IDLE';
             let m = manifestMap[v.name];
-            
-            if (m && m.trip_status === 'Ready') {
-                status = 'LOADING';
+
+            if (m) {
+                if (m.trip_status === 'Ready') {
+                    status = 'LOADING';
+                } else if (m.trip_status === 'Dispatched') {
+                    status = 'EN ROUTE';
+                } else if (m.trip_status === 'Completed') {
+                    status = 'IDLE';
+                    m = null; 
+                }
             }
             
             if (status === 'IDLE' || status === 'MAINTENANCE') {
@@ -237,7 +252,7 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                     let parsedGeoJSON = JSON.parse(m.route_geojson);
                     let staticLayer = L.geoJSON(parsedGeoJSON, {
                         style: { color: '#9ca3af', weight: 4, opacity: 0.5, dashArray: '5, 5' }
-                    }).addTo(map);
+                    });
                     static_route_layers[v.name] = staticLayer;
 
                     if (parsedGeoJSON.features && parsedGeoJSON.features.length > 0) {
@@ -249,7 +264,7 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
 
                     let activeLayer = L.geoJSON(null, {
                         style: { color: '#2563eb', weight: 5, opacity: 0.9 }
-                    }).addTo(map);
+                    });
                     active_route_layers[v.name] = activeLayer;
                 } catch(e) {
                     console.warn(`Failed to parse GeoJSON for vehicle ${v.name}`);
@@ -265,54 +280,193 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         render_group(standbyContainer, 'Maintenance', groups['MAINTENANCE'], manifestMap, 'theme-maintenance');
     }
 
-	function render_group(container, title, items, manifestMap, themeClass) {
-		if (items.length === 0) return;
-		
-		container.append(`<div class="status-group-header">${title}</div>`);
-		
-		items.forEach(v => {
-			let m = manifestMap[v.name];
-			if (title === 'Idle' || title === 'Maintenance') {
-				m = null; 
-			}
+    function render_group(container, title, items, manifestMap, themeClass) {
+        if (items.length === 0) return;
+        
+        container.append(`<div class="status-group-header">${title}</div>`);
+        
+        items.forEach(v => {
+            let m = manifestMap[v.name];
+            if (title === 'Idle' || title === 'Maintenance') {
+                m = null; 
+            }
 
-			let manifestText = m 
-				? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
-				: `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
-			
-			let driver_email = v.current_driver || "Unknown_Driver";
-			let vehicle_id = v.name || "Idle";
-			let trackingKey = `${driver_email}::${vehicle_id}`;
+            let manifestText = m 
+                ? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
+                : `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
+            
+            let driver_email = (v.current_driver || "Unknown_Driver").toLowerCase();
+            let vehicle_id = v.name || "Idle";
 
-			let btnHtml = m && m.trip_status !== 'Ready' ? `
-				<button class="card-btn btn-gmaps" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="color: inherit;">
-					<i class="fa fa-traffic-light me-2 text-warning"></i> View Live Traffic & ETA
-				</button>` : '';
+            if (!m) {
+                vehicle_id = "Idle";
+            }
 
-			container.append(`
-				<div class="vehicle-card ${themeClass}" data-vehicle="${v.name}" data-tid="${trackingKey}">
-					<div class="card-header">
-						<span class="plate-number">${v.name}</span>
-						<span class="speed-indicator speed-val" data-tid="${trackingKey}">0 km/h</span>
-					</div>
-					<div class="status-badge">● ${title}</div>
-					<div class="card-meta"><span class="card-meta-icon">👤</span> Operator: ${v.current_driver || 'Unassigned'}</div>
-					${manifestText}
-					${btnHtml}
-					<div class="mt-3 d-flex align-items-center small rounded" style="background: rgba(0,0,0,0.2); padding: 8px;">
-						<span class="ping-dot ping-offline" data-tid="${trackingKey}"></span>
-						<span class="stat-text" data-tid="${trackingKey}" style="opacity: 0.9;">Offline</span>
-					</div>
-				</div>
-			`);
-		});
-	}
+            let trackingKey = `${driver_email}::${vehicle_id}`;
+            let safeManifestId = m ? m.name : '';
+
+            let btnHtml = m && m.trip_status !== 'Ready' ? `
+                <div style="display: flex; gap: 8px; margin-top: 15px;">
+                    <button class="card-btn btn-route" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="flex: 1; margin-top: 0; background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.4); color: #fff;">
+                        <i class="fa fa-map-signs me-1"></i> Route
+                    </button>
+                    <button class="card-btn btn-gmaps" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="flex: 1; margin-top: 0; background: rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.4); color: #fff;">
+                        <i class="fa fa-location-arrow me-1"></i> ETA
+                    </button>
+                </div>` : '';
+
+            container.append(`
+                <div class="vehicle-card ${themeClass}" data-vehicle="${v.name}" data-tid="${trackingKey}" data-status="${title}" data-manifest="${safeManifestId}">
+                    <div class="card-header">
+                        <span class="plate-number">${v.name}</span>
+                        <span class="speed-indicator speed-val" data-tid="${trackingKey}">0 km/h</span>
+                    </div>
+                    <div class="status-badge">● ${title}</div>
+                    <div class="card-meta"><span class="card-meta-icon">👤</span> Operator: ${v.current_driver || 'Unassigned'}</div>
+                    ${manifestText}
+                    ${btnHtml}
+                    <div class="mt-3 d-flex align-items-center small rounded" style="background: rgba(0,0,0,0.2); padding: 8px;">
+                        <span class="ping-dot ping-offline" data-tid="${trackingKey}"></span>
+                        <span class="stat-text" data-tid="${trackingKey}" style="opacity: 0.9;">Offline</span>
+                    </div>
+                </div>
+            `);
+        });
+    }
+
+    function clearTemporaryMapLayers() {
+        if (map_reset_timer) {
+            clearTimeout(map_reset_timer);
+            map_reset_timer = null;
+        }
+        Object.values(static_route_layers).forEach(l => map.removeLayer(l));
+        Object.values(active_route_layers).forEach(l => map.removeLayer(l));
+        if (window.current_stop_markers) {
+            map.removeLayer(window.current_stop_markers);
+            window.current_stop_markers = null;
+        }
+    }
+
+    function setGlobalZoomTimeout() {
+        if (map_reset_timer) clearTimeout(map_reset_timer);
+        map_reset_timer = setTimeout(() => {
+            clearTemporaryMapLayers();
+                        let globalGroup = new L.featureGroup();
+            Object.values(vehicle_markers).forEach(m => globalGroup.addLayer(m));
+            if (globalGroup.getLayers().length > 0) {
+                map.fitBounds(globalGroup.getBounds(), { padding: [50, 50], duration: 1.2 });
+            } else {
+                map.setView([-1.2921, 36.8219], 12);
+            }
+        }, 5000);
+    }
+
+    $(wrapper).on('click', '.vehicle-card', function(e) {
+        if ($(e.target).closest('.btn-gmaps, .btn-route').length) return; 
+
+        let tid = $(this).attr('data-tid'); 
+        let v_name = $(this).attr('data-vehicle'); 
+        
+        $('.vehicle-card').removeClass('active-selection');
+        $(this).addClass('active-selection');
+
+        if (vehicle_markers[tid]) {
+            map.flyTo(vehicle_markers[tid].getLatLng(), 15, { duration: 1.2 });
+            vehicle_markers[tid].openPopup();
+        } else if (static_route_layers[v_name]) {
+            map.fitBounds(static_route_layers[v_name].getBounds(), { padding: [50, 50], duration: 1.2 });
+        }
+    });
+
+    $(wrapper).on('click', '.btn-route', function(e) {
+        e.stopPropagation();
+        let btn = $(this);
+        let manifest_id = btn.attr('data-manifest-id');
+        let vehicle_id = btn.attr('data-vehicle-id');
+        let trackingKey = btn.attr('data-tid');
+        
+        let original_html = btn.html();
+        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+
+        clearTemporaryMapLayers();
+
+        let featureGroup = L.featureGroup();
+        
+        if (static_route_layers[vehicle_id]) {
+            static_route_layers[vehicle_id].addTo(map);
+            featureGroup.addLayer(static_route_layers[vehicle_id]);
+        }
+        if (active_route_layers[vehicle_id]) {
+            active_route_layers[vehicle_id].addTo(map);
+            featureGroup.addLayer(active_route_layers[vehicle_id]);
+        }
+        if (vehicle_markers[trackingKey]) {
+            featureGroup.addLayer(vehicle_markers[trackingKey]);
+        }
+
+        frappe.call({
+            method: 'frappe.client.get',
+            args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
+            callback: function(r) {
+                btn.prop('disabled', false).html(original_html);
+                if (!r.message) return;
+                
+                let stops = r.message.stops || [];
+                window.current_stop_markers = L.featureGroup().addTo(map);
+                
+                stops.forEach(s => {
+                    let lat = s.custom_latitude || s.latitude;
+                    let lng = s.custom_longitude || s.longitude;
+                    if (!lat || !lng) return;
+
+                    let total = s.grand_total || 0;
+                    let bg_color, border_color, text_color, desc;
+                    
+                    if (s.delivery_status === 'Delivered') {
+                        bg_color = '#dcfce7'; border_color = '#22c55e'; text_color = '#166534';
+                        desc = `Delivered<br><b>Order amount: KES ${total.toLocaleString()}</b>`;
+                    } else if (s.delivery_status === 'Failed' || s.delivery_status === 'Cancelled') {
+                        bg_color = '#fee2e2'; border_color = '#ef4444'; text_color = '#991b1b';
+                        desc = `Cancelled<br><b>Returning amount: KES ${total.toLocaleString()}</b>`;
+                    } else if (s.delivery_status === 'Partially Delivered') {
+                        bg_color = '#fef08a'; border_color = '#eab308'; text_color = '#854d0e';
+                        desc = `Partially Delivered<br><b>Order amount: KES ${total.toLocaleString()}</b>`;
+                    } else {
+                        bg_color = '#f1f5f9'; border_color = '#94a3b8'; text_color = '#475569';
+                        desc = `Not yet delivered<br><b>Order amount: KES ${total.toLocaleString()}</b>`;
+                    }
+
+                    let htmlIcon = `
+                        <div style="background:${bg_color}; border: 2px solid ${border_color}; border-radius: 8px; padding: 4px 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); white-space: nowrap; text-align: center; transform: translate(-50%, -100%); margin-top: -10px;">
+                            <div style="font-size: 11px; font-weight: 800; color: ${text_color}; text-transform: uppercase;">${s.customer_name || s.customer}</div>
+                            <div style="font-size: 10px; color: ${text_color}; opacity: 0.9;">${desc}</div>
+                            <div style="position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 6px solid ${border_color};"></div>
+                        </div>
+                    `;
+
+                    let icon = L.divIcon({ className: '', html: htmlIcon, iconSize: [0, 0] });
+                    let marker = L.marker([lat, lng], { icon: icon });
+                    
+                    window.current_stop_markers.addLayer(marker);
+                    featureGroup.addLayer(marker);
+                });
+
+                if (featureGroup.getLayers().length > 0) {
+                    map.fitBounds(featureGroup.getBounds(), { padding: [50, 50], duration: 1.2 });
+                }
+                
+                setGlobalZoomTimeout();
+            },
+            error: function() {
+                btn.prop('disabled', false).html(original_html);
+            }
+        });
+    });
 
     $(wrapper).on('click', '.btn-gmaps', function(e) {
         e.stopPropagation(); 
         let btn = $(this);
         let manifest_id = btn.attr('data-manifest-id');
-        let vehicle_id = btn.attr('data-vehicle-id');
         let trackingKey = btn.attr('data-tid');
 
         if (!localStorage.getItem('nexus_google_educated')) {
@@ -333,18 +487,18 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 primary_action: function(values) {
                     if (values.dont_show_again) localStorage.setItem('nexus_google_educated', 'true');
                     d.hide();
-                    triggerDeepLinkGenerator(manifest_id, vehicle_id, trackingKey, btn);
+                    triggerDeepLinkGenerator(manifest_id, trackingKey, btn);
                 }
             });
             d.show();
         } else {
-            triggerDeepLinkGenerator(manifest_id, vehicle_id, trackingKey, btn);
+            triggerDeepLinkGenerator(manifest_id, trackingKey, btn);
         }
     });
 
-    function triggerDeepLinkGenerator(manifest_id, vehicle_id, trackingKey, btn) {
+    function triggerDeepLinkGenerator(manifest_id, trackingKey, btn) {
         let original_html = btn.html();
-        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin me-2"></i> Syncing...');
+        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
 
         let marker = vehicle_markers[trackingKey];
         let current_pos = marker ? marker.getLatLng() : null;
@@ -356,38 +510,45 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         }
 
         frappe.call({
-            method: 'frappe.client.get_list',
-            args: {
-                doctype: 'In Transit-Delivery Stop',
-                filters: { parent: manifest_id, delivery_status: 'Pending' },
-                fields: ['latitude', 'longitude'],
-                order_by: 'idx asc'
-            },
+            method: 'frappe.client.get',
+            args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
             callback: function(r) {
-                let stops = r.message || [];
+                let manifest = r.message;
+                if (!manifest) {
+                    btn.prop('disabled', false).html(original_html);
+                    return;
+                }
                 
+                let stops = manifest.stops || [];
                 let origin = `${current_pos.lat},${current_pos.lng}`;
                 let waypoints = [];
                 let destination = "";
+                let pending_stops = stops.filter(s => s.delivery_status === 'Pending' && (s.custom_latitude || s.latitude) && (s.custom_longitude || s.longitude));
 
-                stops.forEach((s, i) => {
-                    if (s.latitude && s.longitude) {
-                        if (i === stops.length - 1) {
-                            destination = `${s.latitude},${s.longitude}`;
-                        } else {
-                            waypoints.push(`${s.latitude},${s.longitude}`);
+                let company_coords = null;
+                if (manifest.route_geojson) {
+                    try {
+                        let geo = JSON.parse(manifest.route_geojson);
+                        let line = geo.features.find(f => f.geometry.type === 'LineString');
+                        if (line && line.geometry.coordinates.length > 0) {
+                            let first_pt = line.geometry.coordinates[0]; 
+                            company_coords = `${first_pt[1]},${first_pt[0]}`; 
                         }
-                    }
+                    } catch(e) {}
+                }
+
+                pending_stops.forEach((s) => {
+                    let lat = s.custom_latitude || s.latitude;
+                    let lng = s.custom_longitude || s.longitude;
+                    waypoints.push(`${lat},${lng}`);
                 });
 
-                if (!destination) {
-                    let remaining = unvisited_waypoints[vehicle_id];
-                    if (remaining && remaining.length > 0) {
-                        let final_pt = remaining[remaining.length - 1];
-                        destination = `${final_pt[1]},${final_pt[0]}`; 
-                    } else {
-                        destination = origin; 
-                    }
+                if (company_coords) {
+                    destination = company_coords;
+                } else if (waypoints.length > 0) {
+                    destination = waypoints.pop(); 
+                } else {
+                    destination = origin;
                 }
 
                 let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
@@ -397,6 +558,9 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
 
                 window.open(url, '_blank');
                 setTimeout(() => btn.prop('disabled', false).html(original_html), 3000);
+            },
+            error: function() {
+                btn.prop('disabled', false).html(original_html);
             }
         });
     }
@@ -407,6 +571,7 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         ws = new WebSocket(FASTAPI_WS_URL);
 
         ws.onopen = () => {
+            console.log("✅ [Nexus Dispatch] WebSocket Connected Successfully.");
             $('#conn-stat').text('WS Live').removeClass('text-danger border-danger').addClass('text-success border-success');
         };
 
@@ -414,6 +579,13 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             requestAnimationFrame(() => {
                 try {
                     const data = JSON.parse(event.data);
+                    
+                    if (data.command === "REFRESH_MANIFESTS") {
+                        console.log("🔄 Background Invalidation Push Received. Redrawing map state...");
+                        refresh_dispatch_data();
+                        return; 
+                    }
+
                     const fleet = data.fleet || {};
                     const now = Date.now();
 
@@ -433,7 +605,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         $speed.text(`${speedKmh} km/h`);
 
                         let heading = v.heading || 0;
-                        
                         let color = '#2563eb'; 
                         let cardColor = $(`.vehicle-card[data-tid="${safe_tid}"]`).css('border-left-color');
                         if (cardColor) color = cardColor;
@@ -515,12 +686,10 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                                     map.removeLayer(active_route_layers[physical_vehicle]);
                                     delete active_route_layers[physical_vehicle];
                                 }
-                                
                                 if(static_route_layers[physical_vehicle]) {
                                     map.removeLayer(static_route_layers[physical_vehicle]);
                                     delete static_route_layers[physical_vehicle];
                                 }
-
                                 delete unvisited_waypoints[physical_vehicle];
                                 delete last_math_calc[physical_vehicle];
                             }
@@ -539,27 +708,14 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         };
 
         ws.onclose = () => {
+            console.warn("⚠️ [Nexus Dispatch] WebSocket Disconnected.");
             $('#conn-stat').text('Reconnecting...').removeClass('text-success border-success').addClass('text-danger border-danger');
             setTimeout(connectTelemetryWebSocket, 3000); 
         };
 
-        ws.onerror = () => { ws.close(); };
+        ws.onerror = (e) => { 
+            console.error("❌ [Nexus Dispatch] WebSocket Error:", e);
+            ws.close(); 
+        };
     }
-
-    $(wrapper).on('click', '.vehicle-card', function(e) {
-        if ($(e.target).closest('.btn-gmaps').length) return; 
-
-        let tid = $(this).attr('data-tid'); 
-        let v_name = $(this).attr('data-vehicle'); 
-        
-        $('.vehicle-card').removeClass('active-selection');
-        $(this).addClass('active-selection');
-
-        if (vehicle_markers[tid]) {
-            map.flyTo(vehicle_markers[tid].getLatLng(), 15, { duration: 1.2 });
-            vehicle_markers[tid].openPopup();
-        } else if (static_route_layers[v_name]) {
-            map.fitBounds(static_route_layers[v_name].getBounds(), { padding: [50, 50], duration: 1.2 });
-        }
-    });
 };

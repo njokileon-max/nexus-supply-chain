@@ -1,14 +1,14 @@
+// apps/nexus_supply_chain/nexus_supply_chain/doctype/vehicle_delivery_manifest/vehicle_delivery_manifest.js
+
 let wakeLock = null;
 
-const TILE_SERVER_URL = "https://from-trunk-debug-sufficient.trycloudflare.com/styles/basic-preview/style.json";
+const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
 frappe.ui.form.on('Vehicle Delivery Manifest', {
     refresh: function(frm) {
-        
-        if (frm.fields_dict.route_map_html && frm.doc.route_geojson) {
+                if (frm.fields_dict.route_map_html && frm.doc.route_geojson) {
             render_manifest_map(frm);
         }
-
         if (localStorage.getItem('tracking_' + frm.doc.name) === 'true' && frm.doc.trip_status === 'Dispatched') {
             frm.set_intro(__("GPS Tracking is currently LIVE via Native App."), "blue");
         }
@@ -39,6 +39,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                 }
             });
         }
+
 
         if (!frm.is_new() && frm.doc.docstatus === 1) {
             
@@ -132,7 +133,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                             { fieldtype: 'Section Break' },
                             { 
                                 label: 'Delivery Status', fieldname: 'delivery_status', fieldtype: 'Select', reqd: 1,
-                                options: 'Delivered\nPartially Delivered\nFailed',
+                                options: 'Delivered\nPartially Delivered\nFailed', // 🚨 Removed 'Returned'
                                 onchange: function() {
                                     let is_partial = this.value === 'Partially Delivered';
                                     d.set_df_property('return_reason', 'hidden', !is_partial);
@@ -211,7 +212,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                         if (qty_returned > max_qty) {
                                             frappe.msgprint(`Quantity returned cannot exceed the ordered quantity (${max_qty}).`);
                                             validation_failed = true;
-                                            return false;
+                                            return false; 
                                         }
 
                                         returned_data.push({
@@ -221,7 +222,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                     }
                                 });
 
-                                if (validation_failed) return;
+                                if (validation_failed) return; 
                                 
                                 if (returned_data.length === 0) {
                                     frappe.msgprint("Please select at least one item to return for a Partially Delivered status.");
@@ -250,10 +251,10 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
                                         manifest_name: frm.doc.name,
                                         stops: JSON.stringify(payload)
                                     },
-                                    callback: function(res) {
+                                    callback: function(res) { 
                                         if(res.message && res.message.status === "success") {
-                                            d.hide();
-                                            frm.reload_doc();
+                                            d.hide(); 
+                                            frm.reload_doc(); 
                                         }
                                     },
                                     error: function() {
@@ -300,6 +301,7 @@ frappe.ui.form.on('Vehicle Delivery Manifest', {
     }
 });
 
+
 function render_manifest_map(frm) {
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css", 
@@ -311,8 +313,8 @@ function render_manifest_map(frm) {
         let $wrapper = frm.get_field('route_map_html').$wrapper;
         $wrapper.empty().append('<div id="manifest-map" style="height: 400px; border-radius: 8px; border: 1px solid #cbd5e1; margin-top: 10px;"></div>');
         
-        let map = L.map('manifest-map').setView([-1.2921, 36.8219], 12);
-
+        let map = L.map('manifest-map').setView([-1.2921, 36.8219], 12); 
+        
         L.maplibreGL({
             style: TILE_SERVER_URL,
             attribution: '&copy; Sovereign Nexus Maps'

@@ -1,0 +1,71 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "creation": "2026-06-15 04:28:33.005867",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "theoretical_bom_cost",
+  "overhead_rate",
+  "true_landed_cost"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "theoretical_bom_cost",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Theoretical BOM Cost",
+   "options": "Item"
+  },
+  {
+   "fieldname": "overhead_rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Overhead Rate",
+   "options": "Item"
+  },
+  {
+   "fieldname": "true_landed_cost",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "True Landed Cost",
+   "options": "Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-15 04:32:38.431400",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Item Costing",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

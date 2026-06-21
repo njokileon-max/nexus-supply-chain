@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-06-07 13:12:00.230789",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-06-13 10:23:07.442091",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "nexus_daily_overhead",
+ "owner": "Administrator",
+ "page_name": "nexus_daily_overhead",
+ "roles": [],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Daily Overhead Command"
+}

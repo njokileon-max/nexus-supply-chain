@@ -20,6 +20,11 @@
   "profit_loss",
   "profitability_status",
   "margin_percentage",
+  "net_margin",
+  "approximate_total_distance_km",
+  "approximate_fuel_consumption_ltrs",
+  "approximate_fuel_cost",
+  "actual_fuel_fuelled",
   "custom_inventory_shortfall_notes",
   "sales_orders",
   "route_geojson",
@@ -148,13 +153,43 @@
    "label": "Profitability Status",
    "options": "Profitable\nLoss",
    "read_only": 1
+  },
+  {
+   "fieldname": "approximate_total_distance_km",
+   "fieldtype": "Float",
+   "label": "Approximate Total Distance (Km)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approximate_fuel_consumption_ltrs",
+   "fieldtype": "Float",
+   "label": "Approximate Fuel Consumption (Litres)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approximate_fuel_cost",
+   "fieldtype": "Currency",
+   "label": "Approximate Fuel Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actual_fuel_fuelled",
+   "fieldtype": "Float",
+   "label": "Actual Fuel Fueled (In Factory Floor)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_margin",
+   "fieldtype": "Percent",
+   "label": "Net Margin (%)",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-05-26 08:45:46.032119",
+ "modified": "2026-06-19 11:00:05.839694",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus Load Plan",
