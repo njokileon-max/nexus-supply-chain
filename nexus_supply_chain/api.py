@@ -1,3 +1,5 @@
+# apps/nexus_supply_chain/nexus_supply_chain/api.py
+
 import frappe
 import requests
 import json
@@ -6,11 +8,7 @@ from datetime import datetime
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime
 
 def queue_customer_geocoding(doc, method=None):
-    """
-    🚨 STRATEGY A: Eventual Consistency Model (0-Lag)
-    Triggered on Customer after_insert and on_change.
-    Evaluates conditions in memory, then hands off to a background worker.
-    """
+
     if getattr(frappe.flags, "in_import", False):
         return
 
@@ -66,7 +64,7 @@ def execute_external_geocode_call(doc_name, link):
                     update_dict["custom_combined_coordinates"] = combined
 
                 frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
-                frappe.db.commit() 
+                frappe.db.commit() # Essential in background jobs
                 
                 frappe.publish_realtime('doc_update', message={'doctype': 'Customer', 'name': doc_name})
                 
@@ -88,6 +86,7 @@ def process_bulk_geocoding_queue():
     import time
     import random
     
+
     targets = frappe.db.sql("""
         SELECT name, custom_google_maps_link 
         FROM `tabCustomer`
@@ -129,7 +128,7 @@ def process_bulk_geocoding_queue():
                     frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
                     frappe.db.commit()
                     successful_updates += 1
-        
+            
         except Exception as e:
             frappe.log_error(message=str(e), title=f"Slow-Drip Geocode Error: {doc_name}")
             
@@ -259,6 +258,7 @@ def get_nexus_live_inventory():
         frappe.log_error(message=str(e), title="Nexus Live Inventory Sync Failed")
         return []
     
+
 @frappe.whitelist()
 def get_nexus_production_data():
     sales_orders = frappe.db.sql("""
@@ -566,6 +566,7 @@ def get_driver_context():
         "manifest_id": manifest or "No_Active_Manifest"
     }
 
+
 def get_root_sales_person(user_email):
     employee_name = frappe.db.get_value("Employee", {"user_id": user_email}, "name")
     if employee_name:
@@ -669,7 +670,6 @@ def get_sales_dashboard_data():
 
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
-
 
 @frappe.whitelist()
 def get_sales_context():
@@ -1049,7 +1049,6 @@ def register_sales_check_out(customer):
 
     return {"status": "success", "message": "Checked out successfully.", "duration_minutes": duration_minutes}
 
-
 @frappe.whitelist()
 def get_extended_sales_reports(report_type):
     """
@@ -1123,7 +1122,6 @@ def get_extended_sales_reports(report_type):
             d['items'] = item_map.get(d.invoice_id, [])
 
     return {"status": "success", "data": data}
-
 
 def trigger_app_customer_refresh(doc, method=None):
     old_doc = doc.get_doc_before_save()
@@ -1211,6 +1209,11 @@ def trigger_app_catalog_refresh(doc, method=None):
 
 
 def trigger_financial_refresh(doc, method=None):
+    """
+    🚨 FIX: Triggered on Payment Entry.
+    Traces Payment -> Sales Invoice -> Sales Order, recalculates payment status,
+    and ships the updated_orders array and increment_collection to the mobile app for 0-lag badging.
+    """
     if doc.party_type != 'Customer' or not doc.party:
         return
 
@@ -1315,6 +1318,10 @@ def trigger_financial_refresh(doc, method=None):
 
 
 def trigger_order_status_update(doc, method=None):
+    """
+    🚨 FIX: Triggered on Sales Order update.
+    Extracts invoice_id and determines 'Paid' / 'Unpaid' status before pushing to UI.
+    """
     if not doc.owner or "@" not in doc.owner:
         return
         
@@ -1356,6 +1363,10 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
+    """
+    🚨 NEW HOOK: Triggered on Sales Person update.
+    Checks if targets changed, and forces a silent background vault sync for that specific rep.
+    """
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
@@ -1417,6 +1428,11 @@ def _get_all_sales_rep_emails():
     return list(emails)
 
 def trigger_cache_eviction_and_notify(doc, method=None):
+    """
+    Hybrid State Webhook Runner:
+    - Sets flag for bulk metadata to be handled by 1-min Orchestrator.
+    - Queues high-priority transactions directly to execute_fastapi_webhook.
+    """
     try:
         if getattr(frappe.flags, 'in_import', False):
             return
@@ -1473,6 +1489,10 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         frappe.log_error(title="Nexus Cache Eviction Flag Failed", message=f"Doctype: {doc.doctype}, Error: {str(e)}")
 
 def execute_fastapi_webhook(affected_emails, doctype, docname, command):
+    """
+    Executed out-of-band by Frappe background workers.
+    🚨 NO THREAD BLOCKING / NO time.sleep(3.0). Enqueue handles timing perfectly.
+    """
     import requests
     import frappe
     
@@ -1507,6 +1527,10 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
 
 @frappe.whitelist()
 def create_mobile_customer(payload):
+    """
+    Accepts frontend payload from React Native to dynamically create a customer.
+    Stores phone number in custom_phone_number and location text in custom_location.
+    """
     if isinstance(payload, str):
         payload = json.loads(payload)
         
@@ -1549,6 +1573,7 @@ def create_mobile_customer(payload):
         if payload.get("google_maps_link"):
             doc.custom_google_maps_link = payload.get("google_maps_link")
 
+        # Route Assignment
         sales_person = payload.get("sales_person") or get_root_sales_person(frappe.session.user)
         if sales_person:
             doc.append("sales_team", {
@@ -1570,6 +1595,10 @@ def create_mobile_customer(payload):
 
 @frappe.whitelist()
 def update_customer_coordinates(customer, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None):
+    """
+    Strategy D: Direct db.set_value write for background coordinate updates.
+    Bypasses doc.save() to prevent recursive on_change webhook loops.
+    """
     try:
         if not frappe.db.exists("Customer", customer):
             return {"status": "error", "message": "Customer not found."}
@@ -1631,6 +1660,10 @@ def register_sales_check_in_correction(visit_id, distance_m):
         return {"status": "error", "message": str(e)}
     
 def trigger_post_import_cache_eviction(doc, method=None):
+    """
+    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
+    Simply sets the debounce flag to let the 1-minute orchestrator handle it safely.
+    """
     try:
         if doc.status not in ["Success", "Partial Success"]:
             return
@@ -1652,6 +1685,11 @@ def publish_catalog_update(doc, method):
     frappe.publish_realtime('nexus_catalog_sync', message={'status': 'updated'})
 
 def process_debounced_cache_eviction():
+    """
+    Scheduled Orchestrator: Runs every 1 minute.
+    Reads the Redis debounce flag. If True, fires a single lightweight webhook to FastAPI.
+    FastAPI will handle the heavy lifting of tree calculations and FCM pushes.
+    """
     import requests
     import frappe
     
@@ -1673,6 +1711,10 @@ def process_debounced_cache_eviction():
 
 @frappe.whitelist()
 def get_active_companies_for_dispatch():
+    """
+    Fetches all companies with valid GPS coordinates to serve as the final 
+    yard/destination for returning drivers.
+    """
     try:
         companies = frappe.db.sql("""
             SELECT name, custom_latitude, custom_longitude 
