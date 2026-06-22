@@ -662,6 +662,7 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
+# 🚨 RESTORED & ENHANCED: get_sales_context 
 @frappe.whitelist()
 def get_sales_context():
     """
@@ -669,6 +670,9 @@ def get_sales_context():
     Optimized via Nested Sets to pull all customers for the rep's authorized branch.
     Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
     """
+    # 🚨 FIX: Extract the actual sales rep email from the FastAPI proxy headers.
+    # If the request comes from the proxy, frappe.session.user evaluates to the API user.
+    # We must explicitly use the header sent by the mobile app.
     target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
     
     auth_sps = get_authorized_sales_persons(target_email)
@@ -678,6 +682,7 @@ def get_sales_context():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
+    # 1. Scoped Customers (Rep's Route Only) + 🚨 INJECTED last_invoiced_date
     customers = frappe.db.sql(f"""
         SELECT 
             c.name as name, 
@@ -696,8 +701,10 @@ def get_sales_context():
         GROUP BY c.name
     """, tuple_sps, as_dict=True)
 
+    # 🚨 FIX: customer_ids must exist before it's used in debt_snapshot / dashboard_stats below
     customer_ids = [c['name'] for c in customers]
 
+    # 2. Global Items via Nested Sets (All descendants of 'Finished Goods')
     items = frappe.db.sql("""
         SELECT i.name as name, i.item_code, i.item_name
         FROM `tabItem` i
@@ -707,11 +714,13 @@ def get_sales_context():
         AND ig.rgt <= (SELECT rgt FROM `tabItem Group` WHERE name = 'Finished Goods')
     """, as_dict=True)
 
+    # 3. Global Prices
     prices = frappe.db.sql("""
         SELECT item_code, price_list, price_list_rate
         FROM `tabItem Price`
     """, as_dict=True)
 
+    # 4. Actual Qty from Bins (Restricted to the target warehouse)
     bins = frappe.db.sql("""
         SELECT item_code, SUM(actual_qty) as actual_qty
         FROM `tabBin`
@@ -719,11 +728,13 @@ def get_sales_context():
         GROUP BY item_code
     """, as_dict=True)
 
+    # 5. Delivery Regions (Safe fallback)
     try:
         regions = frappe.db.sql("""SELECT name FROM `tabDelivery Region`""", as_dict=True)
     except Exception:
         regions = [{"name": "Default Center"}]
 
+    # 🚨 5.1 Metadata Arrays for Mobile Dropdowns
     try:
         customer_groups = frappe.db.sql("""SELECT name FROM `tabCustomer Group`""", as_dict=True)
     except Exception:
@@ -754,6 +765,7 @@ def get_sales_context():
     except Exception:
         tax_categories = []
 
+    # 🚨 6. ORDER RECOVERY ENGINE (Last 30 Days strictly for this User)
     thirty_days_ago = add_days(today(), -30)
     recent_orders = frappe.db.sql("""
         SELECT name as id, customer_name as customer, custom_delivery_region as region, 
@@ -761,7 +773,7 @@ def get_sales_context():
         FROM `tabSales Order`
         WHERE docstatus < 2 AND owner = %s AND transaction_date >= %s
         ORDER BY creation DESC
-    """, (frappe.session.user, thirty_days_ago), as_dict=True)
+    """, (target_email, thirty_days_ago), as_dict=True) # 🚨 Also updated owner check to target_email
     
     if recent_orders:
         order_names = [o.id for o in recent_orders]
@@ -811,6 +823,7 @@ def get_sales_context():
     else:
         recent_orders = []
 
+    # 🚨 7. DEBT SNAPSHOT (Outstanding Invoices strictly for Assigned Customers)
     debt_snapshot = []
     if customer_ids:
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -839,6 +852,7 @@ def get_sales_context():
             
             debt_snapshot = unpaid_invoices
 
+    # 🚨 8. DASHBOARD STATS (Targets & MTD Performance)
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
