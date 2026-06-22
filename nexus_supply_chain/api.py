@@ -662,7 +662,6 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
-
 @frappe.whitelist()
 def get_sales_context():
     """
@@ -670,7 +669,9 @@ def get_sales_context():
     Optimized via Nested Sets to pull all customers for the rep's authorized branch.
     Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
     """
-    auth_sps = get_authorized_sales_persons(frappe.session.user)
+    target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
+    
+    auth_sps = get_authorized_sales_persons(target_email)
     if not auth_sps:
         return {"status": "error", "message": "No assigned sales profile hierarchy."}
 
