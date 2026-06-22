@@ -39,11 +39,7 @@ def queue_customer_geocoding(doc, method=None):
     )
 
 def execute_external_geocode_call(doc_name, link):
-    """
-    Executed out-of-band by Frappe background workers.
-    Submits the link to FastAPI, waits for the coordinates, and writes them to the DB.
-    Zero auth issues because the DB write happens locally inside Frappe!
-    """
+
     try:
         fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
         
@@ -78,15 +74,10 @@ def execute_external_geocode_call(doc_name, link):
         frappe.log_error(message=str(e), title="Frappe Background Geocode Error")
 
 def process_bulk_geocoding_queue():
-    """
-    Scheduled cron job (runs every 10 minutes).
-    Finds up to 20 customers who have a Google Maps link but no coordinates.
-    Processes them one by one with a random sleep to evade bot detection.
-    """
+
     import time
     import random
     
-
     targets = frappe.db.sql("""
         SELECT name, custom_google_maps_link 
         FROM `tabCustomer`
@@ -671,6 +662,7 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
+
 @frappe.whitelist()
 def get_sales_context():
     """
@@ -925,10 +917,7 @@ def get_invoice_details_for_order(order_id):
 
 @frappe.whitelist()
 def submit_sales_order_from_app(payload):
-    """
-    Takes the cart payload and securely routes it through Frappe's ORM.
-    Handles pricing, taxes, and permissions natively before saving as a Draft.
-    """
+
     if isinstance(payload, str):
         payload = json.loads(payload)
 
@@ -953,7 +942,12 @@ def submit_sales_order_from_app(payload):
                 "description": payload.get("notes", "") 
             })
 
-        sales_person = get_root_sales_person(frappe.session.user)
+        # 🚨 Auto-assign the Sales Person to the Sales Team child table
+        # We explicitly use the rep's email sent from the mobile payload
+        # rather than frappe.session.user (which resolves to the API user).
+        target_email = payload.get("sales_rep_email") or frappe.session.user
+        sales_person = get_root_sales_person(target_email)
+        
         if sales_person:
             so.append("sales_team", {
                 "sales_person": sales_person,
@@ -1209,11 +1203,7 @@ def trigger_app_catalog_refresh(doc, method=None):
 
 
 def trigger_financial_refresh(doc, method=None):
-    """
-    🚨 FIX: Triggered on Payment Entry.
-    Traces Payment -> Sales Invoice -> Sales Order, recalculates payment status,
-    and ships the updated_orders array and increment_collection to the mobile app for 0-lag badging.
-    """
+
     if doc.party_type != 'Customer' or not doc.party:
         return
 
@@ -1318,10 +1308,7 @@ def trigger_financial_refresh(doc, method=None):
 
 
 def trigger_order_status_update(doc, method=None):
-    """
-    🚨 FIX: Triggered on Sales Order update.
-    Extracts invoice_id and determines 'Paid' / 'Unpaid' status before pushing to UI.
-    """
+
     if not doc.owner or "@" not in doc.owner:
         return
         
@@ -1397,7 +1384,6 @@ def trigger_sales_person_update(doc, method=None):
         )
     except Exception as e:
         frappe.log_error(title="App Sales Person Trigger Failed", message=str(e))
-
 
 def _add_sp_and_ancestors(sales_person, affected_emails):
     sp_doc = frappe.db.get_value("Sales Person", sales_person, ["lft", "rgt"], as_dict=True)

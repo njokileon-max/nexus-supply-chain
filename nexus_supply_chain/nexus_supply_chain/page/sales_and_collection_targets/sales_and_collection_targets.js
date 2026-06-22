@@ -1,4 +1,5 @@
-// gnleon29@gmail.com
+// Copyright (c) 2026, Nexus Supply Chain and contributors
+// For license information, please see license.txt
 
 frappe.pages['sales-and-collection-targets'].on_page_load = function(wrapper) {
     var page = frappe.ui.make_app_page({
@@ -24,39 +25,48 @@ frappe.pages['sales-and-collection-targets'].on_page_load = function(wrapper) {
 
 function inject_styles() {
     frappe.dom.set_style(`
+        /* Skeleton & Toolbars */
         .nexus-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
         .nexus-search { padding: 8px 12px; border: 1px solid #d1d8dd; border-radius: 4px; width: 300px; font-size: 13px; }
         .nexus-badge { background: #e2e8f0; color: #1e293b; padding: 4px 10px; border-radius: 20px; font-weight: 700; font-size: 12px; }
         
+        /* KPI Cards with Sub-Metrics */
         .nexus-kpi-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
         .nexus-kpi-card { padding: 20px; border-radius: 8px; color: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.08); display: flex; flex-direction: column; justify-content: space-between; }
         .kpi-title { font-size: 13px; text-transform: uppercase; font-weight: 700; opacity: 0.9; margin-bottom: 8px; }
         .kpi-value { font-size: 26px; font-weight: 800; }
-        .kpi-subtext { font-size: 12.5px; margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2); font-weight: 600; opacity: 0.95; }
+        /* 🚨 INCREASED VISIBILITY & FONT SIZE FOR SUBTEXT */
+        .kpi-subtext { font-size: 14.5px; margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.3); font-weight: 800; opacity: 1; text-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         
         .bg-sales { background: #1e3a8a; }
         .bg-coll { background: #064e3b; }
         .bg-var-pos { background: #0369a1; }
         .bg-var-neg { background: #991b1b; }
 
+        /* Meta Text */
         .nexus-meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 16px; padding: 15px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
         .nexus-meta-item { font-size: 15px; color: #334155; }
         .nexus-meta-item span { font-weight: 800; color: #0f172a; }
 
+        /* Table & DOUBLE-AXIS Scroll Lock Logic */
         .nexus-table-wrapper { width: 100%; max-height: calc(100vh - 350px); overflow-y: auto; overflow-x: auto; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; position: relative; }
         .nexus-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; min-width: 1600px; }
         .nexus-table th, .nexus-table td { border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; padding: 12px; text-align: right; white-space: nowrap; }
         
+        /* Sticky Headers - Y-Axis */
         .nexus-table thead tr:nth-child(1) th { position: sticky; top: 0; background-color: #f1f5f9; font-weight: 800; color: #334155; z-index: 50; border-top: 1px solid #cbd5e1; border-bottom: 2px solid #cbd5e1; }
         .nexus-table thead tr:nth-child(2) th { position: sticky; top: 43px; background-color: #f1f5f9; font-weight: 800; color: #334155; z-index: 49; border-bottom: 2px solid #cbd5e1; cursor: pointer; }
         .nexus-table thead tr:nth-child(2) th:hover { background-color: #e2e8f0; }
 
+        /* Sticky Columns - X-Axis */
         .col-sp { position: sticky; left: 0; width: 220px; min-width: 220px; max-width: 220px; background: #ffffff !important; z-index: 30; text-align: left !important; font-weight: 700; border-right: 1px solid #e2e8f0;}
         .col-terr { position: sticky; left: 220px; width: 140px; min-width: 140px; max-width: 140px; background: #ffffff !important; z-index: 30; text-align: left !important; box-shadow: 4px 0 8px -2px rgba(0,0,0,0.08); border-right: 1px solid #cbd5e1;}
         
+        /* The Intersection Lock (Top-Left Corner) */
         .nexus-table thead tr:nth-child(1) th.col-sp, 
         .nexus-table thead tr:nth-child(1) th.col-terr { z-index: 70; background: #f1f5f9 !important; }
 
+        /* Light Professional Percentage Highlights */
         .light-pct-green { background-color: #d1fae5 !important; color: #065f46 !important; font-weight: 800; text-align: center !important; }
         .light-pct-yellow { background-color: #fef3c7 !important; color: #92400e !important; font-weight: 800; text-align: center !important; }
         .light-pct-red { background-color: #fee2e2 !important; color: #991b1b !important; font-weight: 800; text-align: center !important; }
@@ -65,6 +75,7 @@ function inject_styles() {
         .val-red { color: #b91c1c; font-weight: 700; }
         .text-heavy { font-weight: 800; color: #0f172a; }
 
+        /* Glossary */
         .nexus-glossary { margin-top: 30px; padding: 20px; background: #f8fafc; border-left: 4px solid #334155; border-radius: 4px; font-size: 13px; color: #475569; line-height: 1.6; }
         .nexus-glossary strong { color: #0f172a; }
     `);
@@ -141,11 +152,11 @@ function render_core_ui(page) {
     let dates = page.nexus_dates;
     
     let t_sales = data.reduce((sum, row) => sum + row.actual_sales, 0);
-    let t_sales_target = data.reduce((sum, row) => sum + row.target_prorated_sales, 0);
+    let t_sales_target = data.reduce((sum, row) => sum + row.sales_target, 0);
     let global_sales_pct = t_sales_target ? ((t_sales / t_sales_target) * 100).toFixed(1) : 0.0;
 
     let t_coll = data.reduce((sum, row) => sum + row.actual_collections, 0);
-    let t_coll_target = data.reduce((sum, row) => sum + row.target_prorated_coll, 0);
+    let t_coll_target = data.reduce((sum, row) => sum + row.collection_target, 0);
     let global_coll_pct = t_coll_target ? ((t_coll / t_coll_target) * 100).toFixed(1) : 0.0;
 
     let t_var = t_coll - t_sales;
@@ -182,10 +193,10 @@ function render_core_ui(page) {
             
             <div class="nexus-kpi-card ${t_var >= 0 ? 'bg-var-pos' : 'bg-var-neg'}">
                 <div>
-                    <div class="kpi-title">Net Cash Position</div>
-                    <div class="kpi-value">${format_curr(t_var)}</div>
+                    <div class="kpi-title">Total Ledger Outstanding</div>
+                    <div class="kpi-value">${format_curr(t_outstanding)}</div>
                 </div>
-                <div class="kpi-subtext">📊 Total Ledger Outstanding: ${format_curr(t_outstanding)}</div>
+                <div class="kpi-subtext">📊 Net Cash Position: ${format_curr(t_var)}</div>
             </div>
             
             <div class="nexus-kpi-card" style="background: #0f172a;">

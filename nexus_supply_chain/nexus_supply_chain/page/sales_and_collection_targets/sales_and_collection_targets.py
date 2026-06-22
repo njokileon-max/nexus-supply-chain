@@ -1,4 +1,5 @@
-# gnleon29@gmail.com
+# Copyright (c) 2026, Nexus Supply Chain and contributors
+# For license information, please see license.txt
 
 import frappe
 import calendar
@@ -118,7 +119,7 @@ def get_dashboard_data(start_date=None, end_date=None):
                 sales_person_name, 
                 COALESCE(custom_territory_assigned, 'Unassigned') as territory,
                 COALESCE(custom_sales_target, 0) as custom_sales_target, 
-                COALESCE(custom_collection_target, 0) as custom_collection_target
+                COALESCE(custom_collections_target, 0) as custom_collections_target
             FROM `tabSales Person`
             WHERE name IN %s
         """, (tuple(sp_keys),), as_dict=True)
@@ -129,7 +130,7 @@ def get_dashboard_data(start_date=None, end_date=None):
                 continue
                 
             st = float(sp.custom_sales_target)
-            ct = float(sp.custom_collection_target)
+            ct = float(sp.custom_collections_target)
 
             rep["sales_person_name"] = sp.sales_person_name or sp.name
             rep["territory"] = sp.territory
