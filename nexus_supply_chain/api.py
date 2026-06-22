@@ -131,10 +131,7 @@ def process_bulk_geocoding_queue():
 
 @frappe.whitelist()
 def check_mobile_app_access():
-    """
-    Strictly checks the user's native ERPNext Role Profile against the allowed 
-    roles in Nexus App Settings. No hardcoded admin bypasses.
-    """
+
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "denied", "message": "Please log in first."}
@@ -464,11 +461,7 @@ def get_my_active_manifests_and_context():
 
 @frappe.whitelist()
 def log_driver_additional_fuel(manifest_id, amount):
-    """
-    Secure endpoint allowing field drivers to log fuel expenses during a trip.
-    Performs server-side addition to prevent mobile client race conditions,
-    and recalculates the Net Profit & Margin instantly.
-    """
+
     try:
         if not frappe.db.exists("Vehicle Delivery Manifest", manifest_id):
             return {"status": "error", "message": "Manifest not found."}
@@ -665,14 +658,8 @@ def get_sales_dashboard_data():
 # 🚨 RESTORED & ENHANCED: get_sales_context 
 @frappe.whitelist()
 def get_sales_context():
-    """
-    Fetches the App's core operational data in ONE call for FastAPI to hash.
-    Optimized via Nested Sets to pull all customers for the rep's authorized branch.
-    Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
-    """
-    # 🚨 FIX: Extract the actual sales rep email from the FastAPI proxy headers.
-    # If the request comes from the proxy, frappe.session.user evaluates to the API user.
-    # We must explicitly use the header sent by the mobile app.
+
+
     target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
     
     auth_sps = get_authorized_sales_persons(target_email)
@@ -682,7 +669,6 @@ def get_sales_context():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
-    # 1. Scoped Customers (Rep's Route Only) + 🚨 INJECTED last_invoiced_date
     customers = frappe.db.sql(f"""
         SELECT 
             c.name as name, 
@@ -701,10 +687,8 @@ def get_sales_context():
         GROUP BY c.name
     """, tuple_sps, as_dict=True)
 
-    # 🚨 FIX: customer_ids must exist before it's used in debt_snapshot / dashboard_stats below
     customer_ids = [c['name'] for c in customers]
 
-    # 2. Global Items via Nested Sets (All descendants of 'Finished Goods')
     items = frappe.db.sql("""
         SELECT i.name as name, i.item_code, i.item_name
         FROM `tabItem` i
@@ -714,13 +698,11 @@ def get_sales_context():
         AND ig.rgt <= (SELECT rgt FROM `tabItem Group` WHERE name = 'Finished Goods')
     """, as_dict=True)
 
-    # 3. Global Prices
     prices = frappe.db.sql("""
         SELECT item_code, price_list, price_list_rate
         FROM `tabItem Price`
     """, as_dict=True)
 
-    # 4. Actual Qty from Bins (Restricted to the target warehouse)
     bins = frappe.db.sql("""
         SELECT item_code, SUM(actual_qty) as actual_qty
         FROM `tabBin`
@@ -728,13 +710,11 @@ def get_sales_context():
         GROUP BY item_code
     """, as_dict=True)
 
-    # 5. Delivery Regions (Safe fallback)
     try:
         regions = frappe.db.sql("""SELECT name FROM `tabDelivery Region`""", as_dict=True)
     except Exception:
         regions = [{"name": "Default Center"}]
 
-    # 🚨 5.1 Metadata Arrays for Mobile Dropdowns
     try:
         customer_groups = frappe.db.sql("""SELECT name FROM `tabCustomer Group`""", as_dict=True)
     except Exception:
@@ -765,7 +745,6 @@ def get_sales_context():
     except Exception:
         tax_categories = []
 
-    # 🚨 6. ORDER RECOVERY ENGINE (Last 30 Days strictly for this User)
     thirty_days_ago = add_days(today(), -30)
     recent_orders = frappe.db.sql("""
         SELECT name as id, customer_name as customer, custom_delivery_region as region, 
@@ -823,7 +802,6 @@ def get_sales_context():
     else:
         recent_orders = []
 
-    # 🚨 7. DEBT SNAPSHOT (Outstanding Invoices strictly for Assigned Customers)
     debt_snapshot = []
     if customer_ids:
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -852,7 +830,6 @@ def get_sales_context():
             
             debt_snapshot = unpaid_invoices
 
-    # 🚨 8. DASHBOARD STATS (Targets & MTD Performance)
     start_of_month = get_first_day(today())
     end_of_month = get_last_day(today())
 
@@ -957,9 +934,6 @@ def submit_sales_order_from_app(payload):
                 "description": payload.get("notes", "") 
             })
 
-        # 🚨 Auto-assign the Sales Person to the Sales Team child table
-        # We explicitly use the rep's email sent from the mobile payload
-        # rather than frappe.session.user (which resolves to the API user).
         target_email = payload.get("sales_rep_email") or frappe.session.user
         sales_person = get_root_sales_person(target_email)
         

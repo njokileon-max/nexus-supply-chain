@@ -31,20 +31,20 @@ doc_events = {
     },
 
     "Nexus Inventory Reservation": {
-        "on_update": "nexus_supply_chain.reservation_hooks.process_reservation_update",
-        "before_submit": "nexus_supply_chain.reservation_hooks.prepare_reservation_submission",
-        "before_cancel": "nexus_supply_chain.reservation_hooks.validate_reservation_cancel",
-        "on_cancel": "nexus_supply_chain.reservation_hooks.process_reservation_cancel"
+        # "on_update": "nexus_supply_chain.reservation_hooks.process_reservation_update",
+        # "before_submit": "nexus_supply_chain.reservation_hooks.prepare_reservation_submission",
+        # "before_cancel": "nexus_supply_chain.reservation_hooks.validate_reservation_cancel",
+        # "on_cancel": "nexus_supply_chain.reservation_hooks.process_reservation_cancel"
     },
     
     "Delivery Note": {
-        "validate": "nexus_supply_chain.reservation_hooks.validate_delivery_note_submission",
+        # "validate": "nexus_supply_chain.reservation_hooks.validate_delivery_note_submission",
         "on_submit": [
-            "nexus_supply_chain.reservation_hooks.process_delivery_note",
+            # "nexus_supply_chain.reservation_hooks.process_delivery_note",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            "nexus_supply_chain.reservation_hooks.process_delivery_note_cancel",
+            # "nexus_supply_chain.reservation_hooks.process_delivery_note_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
@@ -55,7 +55,7 @@ doc_events = {
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            "nexus_supply_chain.reservation_hooks.process_sales_order_update",
+            # "nexus_supply_chain.reservation_hooks.process_sales_order_update",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
@@ -72,35 +72,35 @@ doc_events = {
     
     "Stock Entry": {
         "on_submit": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-            "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
+            # "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
         ],
         "on_cancel": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-            "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
+            # "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production"
         ]
     },
     
     "Stock Reconciliation": {
         "on_submit": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
     
     "Purchase Receipt": {
         "on_submit": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
+            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
