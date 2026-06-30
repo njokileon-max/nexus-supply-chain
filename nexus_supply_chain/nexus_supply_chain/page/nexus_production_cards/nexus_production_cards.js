@@ -1,5 +1,3 @@
-// gnleon29@gmail.com
-
 frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
     var page = frappe.ui.make_app_page({
         parent: wrapper,
@@ -11,10 +9,13 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
     let autoRefreshInterval;
     let currentlyOpenBip = null;
 
+    // 1. Inject Styles: "Dark Cards on White Canvas"
     $(page.main).html(`
         <style>
+            /* The White Canvas Wrapper */
             .nexus-prod-wrapper { padding: 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; min-height: 100vh;}
             
+            /* Light Search Bar & Toggles */
             .nexus-search-row { display: flex; gap: 20px; align-items: center; margin-bottom: 25px;}
             .nexus-search-input { flex-grow: 1; padding: 14px 20px; border-radius: 8px; border: 1px solid #cbd5e1; background-color: #ffffff; color: #1e293b; font-size: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); transition: all 0.2s ease;}
             .nexus-search-input:focus { outline: none; border-color: #38bdf8; box-shadow: 0 2px 8px rgba(56, 189, 248, 0.15); }
@@ -23,6 +24,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
             .nexus-toggle-label { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #475569; white-space: nowrap; cursor: pointer; user-select: none; background: #ffffff; padding: 12px 16px; border-radius: 8px; border: 1px solid #cbd5e1; box-shadow: 0 2px 4px rgba(0,0,0,0.02);}
             .nexus-toggle-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: #38bdf8;}
 
+            /* The Dark Cards */
             .nexus-bip-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; margin-bottom: 20px; overflow: hidden; box-shadow: 0 8px 15px rgba(0,0,0,0.1); transition: 0.3s;}
             .nexus-bip-header { padding: 20px 25px; display: flex; justify-content: space-between; align-items: center; background: #1e293b; cursor: pointer; transition: background 0.2s;}
             .nexus-bip-header:hover { background: #27354f; }
@@ -38,16 +40,19 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
             .nexus-btn-expand:hover { background: #0ea5e9; }
             .nexus-btn-close { background: #475569; color: #f8fafc; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px;}
             
+            /* Expanded Area & Inner Sub-Cards (Slightly Lighter Dark) */
             .nexus-expanded-area { padding: 0 25px 25px 25px; background: #1e293b; border-top: 1px solid #334155;}
             .nexus-summary-block { background: #334155; padding: 20px; border-radius: 8px; margin: 25px 0; border: 1px solid #475569; color: #f8fafc;}
             .nexus-sub-card { background: #334155; border-left: 4px solid #475569; padding: 18px 20px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); border-left-width: 4px; color: #f8fafc;}
             
+            /* Table Styling */
             .nexus-table-wrapper { max-height: 300px; overflow-y: auto; overflow-x: auto; margin-bottom: 25px; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
             .nexus-table { width: 100%; min-width: 1200px; border-collapse: collapse; text-align: left; background: #334155; }
             .nexus-table th { background-color: #0f172a; color: #94a3b8; font-size: 12px; font-weight: 700; text-transform: uppercase; padding: 14px; position: sticky; top: 0; z-index: 10;}
             .nexus-table td { padding: 14px; border-bottom: 1px solid #475569; color: #f8fafc; font-size: 14px;}
             .nexus-nowrap { white-space: nowrap; }
 
+            /* Hyperlink Styling for Sales Orders */
             .nexus-so-link { color: #38bdf8; font-weight: 700; text-decoration: none; transition: color 0.2s;}
             .nexus-so-link:hover { text-decoration: underline; color: #0ea5e9; }
         </style>
@@ -66,6 +71,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
         </div>
     `);
 
+    // 2. Data Fetching
     function fetchData() {
         frappe.call({
             method: "nexus_supply_chain.api.get_nexus_production_data",
@@ -80,6 +86,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
         });
     }
 
+    // 3. Sorting & Smart Filtering
     function processAndRender() {
         let searchString = $('#nexus-bip-search').val().toLowerCase();
         let hideStocked = $('#nexus-hide-stocked').is(':checked');
@@ -104,6 +111,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
     $('#nexus-bip-search').on('input', processAndRender);
     $('#nexus-hide-stocked').on('change', processAndRender);
 
+    // 4. Rendering Minimized Cards
     function renderMinimizedCards(data) {
         if(data.length === 0) {
             $('#nexus-bip-list-container').html(`<div style="text-align:center; padding: 50px; color: #64748b; font-weight: 600; font-size: 16px;">No batches meet the current filter criteria.</div>`);
@@ -136,6 +144,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
         }
     }
 
+    // 5. Accordion Logic
     window.toggleCard = function(bipCode, isSilentRefresh = false) {
         let expandContainer = $(`#expanded-${bipCode}`);
         let btn = $(`#btn-${bipCode}`);
@@ -165,11 +174,13 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
         currentlyOpenBip = bipCode;
     };
 
+    // Helper: Turns comma-separated SO strings into clickable anchor tags
     function formatSOLinks(soString) {
         if (!soString || soString === "None") return "None";
         return soString.split(', ').map(so => `<a href="/app/sales-order/${so}" target="_blank" class="nexus-so-link">${so}</a>`).join(', ');
     }
 
+    // 6. The Complex HTML Builder (3-Tier View)
     function buildInnerCardHtml(bip) {
         let fgs = bip.fgs;
         
@@ -178,6 +189,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
             return `&bull; <strong style="color:#38bdf8;">${f.pack_code}</strong> (${f.name}): <strong>${reqPack}</strong> total units required<br>`;
         }).join('');
 
+        // Tier 1 Logistics logic
         let tier1Html = '';
         let requiresProduction = fgs.filter(f => f.primary > 0);
         let satisfiedFromStock = fgs.filter(f => f.primary === 0 && f.gross > 0);
@@ -274,6 +286,7 @@ frappe.pages['nexus_production_cards'].on_page_load = function(wrapper) {
     page.set_primary_action('Refresh Now', fetchData);
     fetchData(); 
     
+    // Auto-Polling Engine (Every 5 Minutes / 300,000ms)
     autoRefreshInterval = setInterval(fetchData, 300000); 
     frappe.router.on('change', () => clearInterval(autoRefreshInterval));
 }

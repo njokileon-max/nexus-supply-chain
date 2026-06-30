@@ -13,6 +13,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
         toggle_custom_range();
     });
 
+    // --- Layout & Styles ---
     const layout_html = [
         "<style>",
         "    .exec-wrap { padding: 20px; background: #f8fafc; min-height: 85vh; font-family: 'Inter', sans-serif; }",
@@ -55,6 +56,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
 
     $(page.main).html(layout_html);
 
+    // --- Dynamic Working Days Auto-Calculator ---
     function update_days_count() {
         let start = $('#exec-start-date').val();
         let end = $('#exec-end-date').val();
@@ -63,7 +65,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
             let d2 = new Date(end);
             let days = 0;
             while (d1 <= d2) {
-                if (d1.getDay() !== 0) days++; 
+                if (d1.getDay() !== 0) days++; // 0 = Sunday
                 d1.setDate(d1.getDate() + 1);
             }
             $('#exec-working-days').val(days > 0 ? days : 1);
@@ -71,6 +73,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
     }
     $('#exec-start-date, #exec-end-date').on('change', update_days_count);
 
+    // --- State Management ---
     function toggle_custom_range() {
         let panel = $('#custom-date-panel');
         if(panel.is(':visible')) {
@@ -95,9 +98,11 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
         }
     }
 
+    // --- Helper Functions ---
     function fmt_curr(val) { return "KES " + parseFloat(val).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
     function fmt_num(val) { return parseFloat(val).toLocaleString('en-US', {minimumFractionDigits: 1, maximumFractionDigits: 1}); }
 
+    // --- Core Data Fetch & Render ---
     function trigger_fetch(start_date, end_date) {
         let custom_wd = page.is_custom ? $('#exec-working-days').val() : null;
 
@@ -122,6 +127,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
     function render_ui(data) {
         $('#period-label').html("Period: " + data.period + " <span class='ms-2 px-2' style='border-left: 2px solid #cbd5e1;'>" + data.working_days_computed + " Working Days</span>");
 
+        // Zone 1: Executive Ribbon (6 Cards)
         let ribbon_html = "" +
             "<div class='exec-ribbon'>" +
             "    <div class='kpi-card' style='border-top: 4px solid #3b82f6;'>" +
@@ -156,6 +162,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
             "    </div>" +
             "</div>";
 
+        // Zone 2: Capacity Distribution (Pure FG Layout + Auto-Fetched Landed Rates)
         let group_rows = "";
         data.item_group_distribution.forEach(row => {
             let rate_display = row.rate_per_kg > 0 ? fmt_curr(row.rate_per_kg) : "<span class='text-muted'>0.00</span>";
@@ -178,6 +185,7 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
                 "</tr>";
         }
 
+        // Zone 3: Live Feed Table
         let feed_rows = "";
         data.recent_stock_entries.forEach(row => {
             let entry_link = "<a href='/app/stock-entry/" + row.name + "' target='_blank' style='text-decoration:none; font-weight:800; color:#0284c7;'>" + row.name + "</a>";
@@ -220,12 +228,15 @@ frappe.pages['nexus_executive_command'].on_page_load = function(wrapper) {
         $('#dashboard-content').html(ribbon_html + grid_html);
     }
 
+    // --- WebSockets: The 0-Lag Auto Update Trigger ---
     frappe.realtime.on('nexus_production_sync', function(event_data) {
+        // Only trigger background refresh if we are in the default "Live MTD" view
         if(!page.is_custom) {
             trigger_fetch(null, null);
             frappe.show_alert({message: "Production Ledger Updated. Dashboard synced.", indicator: 'green'});
         }
     });
 
+    // Initial Load
     setTimeout(() => { trigger_fetch(null, null); }, 300);
 };

@@ -36,9 +36,11 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     let map_layers = [];
     let captured_route_data = {}; 
     
+    // 🚨 0-Lag State Management for Margin Analytics
     let active_margin_data = null;
     let is_car_hire_mode = false;
-
+    
+    // 🚨 FLEET TELEMETRY STATE
     const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/ws";
     const FASTAPI_URL = "https://crystal-api.crystalapps.dev";
     let fleetWS = null;
@@ -51,6 +53,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
         "https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js" 
     ], function() {
+        // Initialize the WebSocket engine as soon as the dependencies are loaded
         connectFleetWebSocket();
     });
 
@@ -174,6 +177,10 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     function closeMarginPanel() { $('#nexusMarginPanel').removeClass('open'); $('#nexusMarginBackdrop').fadeOut(200); }
     $('#closeMarginPanel, #nexusMarginBackdrop').on('click', closeMarginPanel);
 
+    // =========================================================================
+    // 🚨 0-LAG WEBSOCKET FLEET ENGINE (Live Tracking on Optimizer Map)
+    // =========================================================================
+
     function connectFleetWebSocket() {
         if (fleetWS && fleetWS.readyState === WebSocket.OPEN) return;
 
@@ -214,14 +221,14 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                 .addClass('text-danger border-danger bg-danger-subtle');
                 
             if (fleetPingInterval) clearInterval(fleetPingInterval);
-            setTimeout(connectFleetWebSocket, 3000);
+            setTimeout(connectFleetWebSocket, 3000); // Auto-reconnect
         };
 
         fleetWS.onerror = () => { fleetWS.close(); };
     }
 
     function build_truck_icon(heading) {
-        const color = '#ef4444';
+        const color = '#ef4444'; // Red Nexus Fleet Theme
         const htmlIcon = `
             <div style="position:relative;width:36px;height:36px;">
                 <div class="direction-ring" style="position:absolute;top:0;left:0;width:100%;height:100%;transform:rotate(${heading}deg);transition:transform 0.5s linear;">
@@ -237,7 +244,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     }
 
     function updateFleetMarkers() {
-        if (!route_map) return;
+        if (!route_map) return; // Prevent updates if map isn't open/rendered yet
 
         const currentActiveIds = new Set(Object.keys(LIVE_FLEET_STATE));
 
@@ -246,7 +253,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             if (!truck.lat || !truck.lng) return;
 
             if (fleet_markers[tracking_id]) {
-
+                // Update Location & Smooth Rotation
                 fleet_markers[tracking_id].setLatLng([truck.lat, truck.lng]);
                 
                 const iconEl = fleet_markers[tracking_id].getElement();
@@ -255,7 +262,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                     if (arrow) arrow.style.transform = `rotate(${truck.heading || 0}deg)`;
                 }
             } else {
-
+                // Generate New Truck Marker
                 const icon = build_truck_icon(truck.heading || 0);
                 const popupText = `<b>Driver: ${truck.driver.split('@')[0].toUpperCase()}</b><br><span class="text-muted small">Vehicle: <strong class="text-dark">${truck.vehicle}</strong></span><br><span class="text-muted small">Speed: ${Math.round((truck.speed||0)*3.6)} km/h</span>`;
                 
@@ -265,7 +272,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             }
         });
 
-
+        // 🚨 Ghost Truck Sweeper
         Object.keys(fleet_markers).forEach(tracking_id => {
             if (!currentActiveIds.has(tracking_id)) {
                 route_map.removeLayer(fleet_markers[tracking_id]);
@@ -273,6 +280,10 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             }
         });
     }
+
+    // =========================================================================
+    // 🚨 GROSS MARGIN CALCULATOR ENGINE
+    // =========================================================================
 
     function updateMarginMath() {
         if (!active_margin_data) return;
@@ -315,126 +326,143 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     }
 
     function renderMarginUI() {
-        if (!active_margin_data) return;
-        const data = active_margin_data;
-        const currency = data.currency || 'KES';
+    if (!active_margin_data) return;
+    const data = active_margin_data;
+    const currency = data.currency || 'KES';
+    
+    let car_hire_html = '';
+
+    if (is_car_hire_mode) {
+        $('#margin-panel-title').html('<i class="fa fa-truck me-2 text-warning"></i> Projected Net Contribution (External Fleet)');
+        $('#toggle-car-hire-btn').text('Switch to Company Fleet').removeClass('btn-outline-primary').addClass('btn-primary text-white border-0 me-2');
         
-        let car_hire_html = '';
-
-        if (is_car_hire_mode) {
-            $('#margin-panel-title').html('<i class="fa fa-truck me-2 text-warning"></i> Net Profit Analysis (External Fleet)');
-            $('#toggle-car-hire-btn').text('Switch to Company Fleet').removeClass('btn-outline-primary').addClass('btn-primary text-white border-0 me-2');
-            
-            car_hire_html = `
-                <div class="bg-white p-4 rounded-4 border mb-4 shadow-sm" style="border-left: 5px solid #f59e0b !important;">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h6 class="fw-bold mb-0 text-dark"><i class="fa fa-handshake me-2 text-warning"></i>Car Hire Parameters</h6>
+        car_hire_html = `
+            <div class="bg-white p-4 rounded-4 border mb-4 shadow-sm" style="border-left: 5px solid #f59e0b !important;">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="fw-bold mb-0 text-dark"><i class="fa fa-handshake me-2 text-warning"></i>Car Hire Parameters</h6>
+                </div>
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="small text-muted fw-bold">Number of Days for Hire</label>
+                        <input type="number" class="form-control form-control-lg fw-bold" id="hire-days" value="1" min="0">
                     </div>
-                    <div class="row g-3 align-items-end">
-                        <div class="col-md-4">
-                            <label class="small text-muted fw-bold">Number of Days for Hire</label>
-                            <input type="number" class="form-control form-control-lg fw-bold" id="hire-days" value="1" min="0">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="small text-muted fw-bold">Hire Cost per Day (${currency})</label>
-                            <input type="number" class="form-control form-control-lg fw-bold" id="hire-rate" value="0" min="0">
-                        </div>
-                        <div class="col-md-4 text-end">
-                            <div class="text-muted small fw-bold mb-1">Total Car Hire Cost</div>
-                            <div class="fs-3 text-warning" id="val-car-hire-cost" style="font-weight: 900 !important;">${currency} 0.00</div>
-                        </div>
+                    <div class="col-md-4">
+                        <label class="small text-muted fw-bold">Hire Cost per Day (${currency})</label>
+                        <input type="number" class="form-control form-control-lg fw-bold" id="hire-rate" value="0" min="0">
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <div class="text-muted small fw-bold mb-1">Total Car Hire Cost</div>
+                        <div class="fs-3 text-warning" id="val-car-hire-cost" style="font-weight: 900 !important;">${currency} 0.00</div>
                     </div>
                 </div>
-            `;
-        } else {
-            $('#margin-panel-title').html('<i class="fa fa-calculator me-2 text-primary"></i> Net Profit Analysis');
-            $('#toggle-car-hire-btn').text('Switch to Car Hire').removeClass('btn-primary text-white border-0').addClass('btn-outline-primary me-2');
-        }
-
-        let distance_warning = data.approximate_total_distance_km === 0 
-            ? `<span class="badge bg-danger ms-2">Map Not Updated</span>` : '';
-
-        let html = `
-            ${car_hire_html}
-            <div class="bg-white rounded-4 border p-4 shadow-sm">
-                <h5 class="border-bottom pb-3 mb-4 fw-bold text-dark">Enterprise Financial Summary</h5>
-                
-                <div class="row mb-4 g-4">
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Total Order Value</div>
-                        <div class="margin-value text-dark">${currency} ${data.total_order_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    </div>
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Theoretical Production Cost</div>
-                        <div class="margin-value text-secondary">${currency} ${data.total_theoretical_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    </div>
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Gross Profit</div>
-                        <div class="margin-value ${data.gross_profit >= 0 ? 'text-success' : 'text-danger'}">${currency} ${data.gross_profit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    </div>
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Gross Margin (%)</div>
-                        <div class="margin-value text-dark">${data.gross_margin_percentage.toFixed(2)}%</div>
-                    </div>
-                </div>
-
-                <div class="row mb-4 g-4 border-top pt-4 bg-light mx-0 p-2 rounded border shadow-sm">
-                    <div class="col-12">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">${is_car_hire_mode ? 'External Fleet Cost (Car Hire)' : 'Est. Fleet Fuel Cost'} ${distance_warning}</div>
-                        <div class="margin-value text-secondary" id="val-logistics-cost">
-                            </div>
-                        ${!is_car_hire_mode ? `
-                        <div class="small text-muted mt-1 fw-medium">
-                            <i class="fa fa-road me-1"></i> ${data.approximate_total_distance_km} km roundtrip &nbsp;|&nbsp; 
-                            <i class="fa fa-gas-pump me-1"></i> ${data.approximate_fuel_consumption_ltrs} Ltrs consumed
-                        </div>` : ''}
-                    </div>
-                </div>
-
-                <div class="row mb-4 g-4 border-top pt-4">
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Absorbed Company Overhead</div>
-                        <div class="margin-value text-secondary">${currency} ${data.absorbed_overhead.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    </div>
-                    <div class="col-6">
-                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Ledger Overhead Rate</div>
-                        <div class="margin-value text-secondary">${data.overhead_ratio_percentage.toFixed(2)}%</div>
-                        <div class="small text-muted mt-1 fw-medium"><i class="fa fa-info-circle me-1"></i> Over total invoiced sales</div>
-                    </div>
-                </div>
-
-                <div class="row mb-3 g-3 mt-4 border-top pt-4 bg-light rounded-bottom p-3 mx-0 shadow-sm border">
-                    <div class="col-12 text-center">
-                        <div class="text-muted small fw-bold text-uppercase tracking-wider mb-2">True Net Profit ${is_car_hire_mode ? '<span class="badge bg-warning text-dark ms-1">Incl. Car Hire</span>' : ''}</div>
-                        <div class="fs-1" id="val-net-profit" style="font-size: 3rem !important; font-weight: 900 !important;"></div>
-                    </div>
-                </div>
-
-                <div class="alert mt-4 text-center fs-4 border-2" id="val-margin-alert"></div>
-            </div>
-            
-            <div class="text-muted small mt-4 pt-3 text-center opacity-75">
-                <i class="fa fa-info-circle me-1"></i> Theoretical cost is computed from default BOMs. Overheads are absorbed dynamically based on the active Cost Allocation Period ratio. Fuel logistics are driven by VROOM spatial routing and the vehicle's economy profile.
             </div>
         `;
-        
-        $('#margin-panel-content').html(html);
-        updateMarginMath();
-
-        if (is_car_hire_mode) {
-            $('#hire-days, #hire-rate').off('input').on('input', function() {
-                if ($(this).val() < 0) {
-                    $(this).val(Math.abs($(this).val()));
-                }
-                updateMarginMath(); 
-            });
-        }
+    } else {
+        $('#margin-panel-title').html('<i class="fa fa-calculator me-2 text-primary"></i> Projected Net Contribution');
+        $('#toggle-car-hire-btn').text('Switch to Car Hire').removeClass('btn-primary text-white border-0').addClass('btn-outline-primary me-2');
     }
+
+    let distance_warning = data.approximate_total_distance_km === 0 
+        ? `<span class="badge bg-danger ms-2">Map Not Updated</span>` : '';
+
+    let html = `
+        ${car_hire_html}
+        <div class="bg-white rounded-4 border p-4 shadow-sm">
+            <h5 class="border-bottom pb-3 mb-4 fw-bold text-dark">Load Financial Summary <span class="badge bg-secondary ms-2" style="font-size:11px; font-weight:600;">Pre-Dispatch Projection</span></h5>
+            
+            <div class="row mb-4 g-4">
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Total Order Value</div>
+                    <div class="margin-value text-dark">${currency} ${data.total_order_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Theoretical Production Cost</div>
+                    <div class="margin-value text-secondary">${currency} ${data.total_theoretical_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                    <div class="small text-muted mt-1"><i class="fa fa-info-circle me-1"></i>Standard Buying price rollup</div>
+                </div>
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin</div>
+                    <div class="margin-value ${data.gross_profit >= 0 ? 'text-success' : 'text-danger'}">${currency} ${data.gross_profit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin (%)</div>
+                    <div class="margin-value text-dark">${data.gross_margin_percentage.toFixed(2)}%</div>
+                </div>
+            </div>
+
+            <div class="row mb-4 g-4 border-top pt-4 bg-light mx-0 p-2 rounded border shadow-sm">
+                <div class="col-12">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">${is_car_hire_mode ? 'External Fleet Cost (Car Hire)' : 'Est. Fleet Fuel Cost'} ${distance_warning}</div>
+                    <div class="margin-value text-secondary" id="val-logistics-cost"></div>
+                    ${!is_car_hire_mode ? `
+                    <div class="small text-muted mt-1 fw-medium">
+                        <i class="fa fa-road me-1"></i> ${data.approximate_total_distance_km} km roundtrip &nbsp;|&nbsp; 
+                        <i class="fa fa-gas-pump me-1"></i> ${data.approximate_fuel_consumption_ltrs} Ltrs consumed
+                    </div>` : ''}
+                </div>
+            </div>
+
+            <div class="row mb-4 g-4 border-top pt-4">
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Absorbed Company Overhead</div>
+                    <div class="margin-value text-secondary">${currency} ${data.absorbed_overhead.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                    <div class="small text-muted mt-1 fw-medium">
+                        <i class="fa fa-info-circle me-1"></i>
+                        ${data.overhead_ratio_percentage.toFixed(1)}% of order value absorbed
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Company Standard Overhead Rate</div>
+                    <div class="margin-value text-secondary">${data.overhead_ratio_percentage.toFixed(2)}%</div>
+                    <div class="small text-muted mt-1 fw-medium">
+                        <i class="fa fa-building me-1"></i>
+                        KES ${(data.overhead_standard_overheads || 26000000).toLocaleString()} OH
+                        &nbsp;/&nbsp;
+                        KES ${(data.overhead_standard_revenue || 80000000).toLocaleString()} avg monthly revenue
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mb-3 g-3 mt-4 border-top pt-4 bg-light rounded-bottom p-3 mx-0 shadow-sm border">
+                <div class="col-12 text-center">
+                    <div class="text-muted small fw-bold text-uppercase tracking-wider mb-1">
+                        Estimated Trip Net Contribution
+                        ${is_car_hire_mode ? '<span class="badge bg-warning text-dark ms-1">Incl. Car Hire</span>' : ''}
+                        <span class="badge bg-info text-dark ms-1" style="font-size:10px;">Pre-Dispatch Estimate</span>
+                    </div>
+                    <div class="fs-1" id="val-net-profit" style="font-size: 3rem !important; font-weight: 900 !important;"></div>
+                </div>
+            </div>
+
+            <div class="alert mt-4 text-center fs-4 border-2" id="val-margin-alert"></div>
+        </div>
+        
+        <div class="text-muted small mt-4 pt-3 text-center opacity-75">
+            <i class="fa fa-info-circle me-1"></i> All figures are pre-dispatch projections based on Standard Buying price BOM rollup. Realised margins are tracked in Dispatch Intelligence after delivery.
+        </div>
+    `;
+    
+    $('#margin-panel-content').html(html);
+    updateMarginMath();
+
+    if (is_car_hire_mode) {
+        $('#hire-days, #hire-rate').off('input').on('input', function() {
+            if ($(this).val() < 0) {
+                $(this).val(Math.abs($(this).val()));
+            }
+            updateMarginMath(); 
+        });
+    }
+}
 
     $('body').off('click', '#toggle-car-hire-btn').on('click', '#toggle-car-hire-btn', function() {
         is_car_hire_mode = !is_car_hire_mode;
         renderMarginUI();
     });
+
+    // =========================================================================
+    // 🚚 LOGISTICS DATA RENDERERS
+    // =========================================================================
 
     function format_weight(kg) {
         if (!kg || kg <= 0) return "0.0 T";
@@ -673,7 +701,8 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             let dist = (data.features[0].properties.summary.distance / 1000).toFixed(1);
             let time = Math.round(data.features[0].properties.summary.duration / 60);
             $('#route-distance-label').html(`<span class="text-primary me-4"><i class="fa fa-road me-2"></i>${dist} km Roundtrip</span> <span><i class="fa fa-clock me-2"></i>Est. ${time} mins</span>`);
-
+            
+            // Re-render live fleet trucks to place them on top of the newly drawn route
             updateFleetMarkers();
         })
         .catch(err => {
@@ -811,7 +840,8 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                 route_geojson: captured_route_data[idx] ? JSON.stringify(captured_route_data[idx]) : "",
                 vehicle_type: page_fields.vehicle_type.get_value(),
                 transport_mode: page_fields.transport_mode.get_value(),
-                company: page_fields.company.get_value()
+                company: page_fields.company.get_value(),
+                delivery_region: page_fields.delivery_region.get_value()
             },
             freeze: true,
             callback: (r) => {

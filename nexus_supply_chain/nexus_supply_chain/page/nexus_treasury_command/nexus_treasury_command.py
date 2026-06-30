@@ -1,16 +1,17 @@
-# gnleon29@gmail.com
+# apps/nexus_supply_chain/nexus_supply_chain/page/nexus_treasury_command/nexus_treasury_command.py
 
 import frappe
 from frappe.utils import flt, getdate, nowdate
 from datetime import timedelta
 
 def get_working_days(start_date, end_date):
+    """Calculates working days between two dates, strictly excluding Sundays."""
     start = getdate(start_date)
     end = getdate(end_date)
     days = 0
     curr = start
     while curr <= end:
-        if curr.weekday() != 6:
+        if curr.weekday() != 6:  # 6 represents Sunday
             days += 1
         curr += timedelta(days=1)
     return days if days > 0 else 1
@@ -34,6 +35,10 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
     if days_elapsed <= 0: 
         days_elapsed = 1
 
+    # =========================================================================
+    # 1. THE WAR CHEST (All-Time Liquid Cash & Bank Balances)
+    # Note: Bank balances are perpetual, so we don't use 'start_date' here.
+    # =========================================================================
     bank_accounts = frappe.db.sql("""
         SELECT 
             acc.account_name, 
@@ -50,6 +55,9 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
     
     total_liquid_cash = sum(flt(acc.balance) for acc in bank_accounts)
 
+    # =========================================================================
+    # 2. OPERATING CASH BURN (MTD Overheads - 100% Sync with Daily Overhead)
+    # =========================================================================
     gl_data = frappe.db.sql("""
         SELECT SUM(gl.debit) - SUM(gl.credit) AS net_expense
         FROM `tabGL Entry` gl
@@ -65,6 +73,10 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
     mtd_overhead = flt(gl_data[0].net_expense) if gl_data and gl_data[0].net_expense else 0.0
     daily_cash_burn = mtd_overhead / days_elapsed
 
+    # =========================================================================
+    # 3. ACCOUNTS RECEIVABLE (Money Owed to You)
+    # Fetching Customer ID and Customer Name separately
+    # =========================================================================
     sales_invoices = frappe.db.sql("""
         SELECT 
             name as id, customer as entity_id, customer_name as entity_name, posting_date, due_date, 
@@ -75,6 +87,10 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
         ORDER BY days_past_due DESC
     """, {"end": end_dt}, as_dict=True)
 
+    # =========================================================================
+    # 4. ACCOUNTS PAYABLE (Money You Owe)
+    # Fetching Supplier ID and Supplier Name separately
+    # =========================================================================
     purchase_invoices = frappe.db.sql("""
         SELECT 
             name as id, supplier as entity_id, supplier_name as entity_name, posting_date, due_date, 
@@ -85,6 +101,9 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
         ORDER BY days_past_due DESC
     """, {"end": end_dt}, as_dict=True)
 
+    # =========================================================================
+    # 5. DATA AGGREGATION & RATIOS
+    # =========================================================================
     total_ar = 0.0
     total_ap = 0.0
     top_debtors = {}
@@ -94,6 +113,7 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
         amt = flt(si.outstanding_amount)
         total_ar += amt
         if flt(si.days_past_due) > 0:
+            # Group by Name for the UI Matrix
             name_key = si.entity_name or si.entity_id
             top_debtors[name_key] = top_debtors.get(name_key, 0.0) + amt
 
@@ -104,9 +124,11 @@ def get_treasury_dashboard_data(start_date=None, end_date=None, custom_working_d
             name_key = pi.entity_name or pi.entity_id
             top_creditors[name_key] = top_creditors.get(name_key, 0.0) + amt
 
+    # Sort Top 5 Overdue Matrices
     sorted_debtors = sorted([{"entity_name": k, "amount": v} for k, v in top_debtors.items()], key=lambda x: x['amount'], reverse=True)[:5]
     sorted_creditors = sorted([{"entity_name": k, "amount": v} for k, v in top_creditors.items()], key=lambda x: x['amount'], reverse=True)[:5]
 
+    # Ratios
     cash_runway_days = (total_liquid_cash / daily_cash_burn) if daily_cash_burn > 0 else 999.0
     quick_ratio = ((total_liquid_cash + total_ar) / total_ap) if total_ap > 0 else 999.0
     net_cash_position = (total_liquid_cash + total_ar) - total_ap

@@ -4,6 +4,7 @@ import frappe
 
 @frappe.whitelist()
 def get_mapped_customers():
+    """Fetches all customers who have valid GPS coordinates."""
     customers = frappe.get_all(
         "Customer",
         filters={

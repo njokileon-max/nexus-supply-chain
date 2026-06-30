@@ -13,6 +13,8 @@ frappe.pages['nexus_daily_overhead'].on_page_load = function(wrapper) {
     let custom_btn = page.add_inner_button('Custom Audit Range', function() {
         toggle_custom_range();
     });
+
+    // 100% String Concatenation - Immune to formatting issues
     const layout_html = [
         "<style>",
         "    .nexus-dashboard-wrapper { padding: 20px; background-color: #f8fafc; min-height: 85vh; font-family: 'Inter', -apple-system, sans-serif; }",
@@ -173,6 +175,7 @@ frappe.pages['nexus_daily_overhead'].on_page_load = function(wrapper) {
             "    <div class='kpi-card kpi-highlight-dark'><div class='kpi-title'>Total Value Manufactured</div><div class='kpi-val'>" + format_money(data.total_value_manufactured) + "</div><div class='kpi-sub'>Material Value + Operating Overheads</div></div>" +
             "</div>" +
             
+            // 🚨 REFINED RM CASH PIPELINE (Gross Outflow vs Net Consumed)
             "<div class='rm-grid'>" +
             "    <div class='rm-card' style='border-top: 3px solid #f59e0b;'><div class='rm-title'>Raw Materials Purchased</div><div class='rm-val text-warning'>" + format_money(data.rm_purchased_gross) + "</div><div class='text-muted small mt-1'>Net Inventory Added: <span class='text-dark fw-bold'>" + format_money(data.rm_purchased_net) + "</span></div></div>" +
             "    <div class='rm-card' style='border-top: 3px solid #ef4444;'><div class='rm-title'>Raw Materials Consumed</div><div class='rm-val text-danger'>" + format_money(data.rm_consumed) + "</div><div class='text-muted small mt-1'>Net Inventory Dumped to Mixers</div></div>" +

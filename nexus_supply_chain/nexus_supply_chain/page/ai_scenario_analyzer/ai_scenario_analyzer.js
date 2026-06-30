@@ -234,15 +234,20 @@ frappe.pages['ai_scenario_analyzer'].on_page_load = function(wrapper) {
             t_net_rev += r.net_realized_revenue;
             t_landed_cost += r.total_landed_cost;
             t_net_profit += r.net_profit_value;
+            // Calculate what revenue SHOULD have been based on target price
             t_target_gross += (r.total_qty * r.target_price); 
         });
 
+        // The Revenue Leakage Math
         let revenue_leakage = t_target_gross - t_gross_billed;
         let leakage_class = revenue_leakage > 0 ? 'bg-red-kpi' : 'bg-green-kpi';
         let leakage_text = revenue_leakage > 0 ? 'Value Lost (Discounts)' : 'Value Gained (Markups)';
 
         let is_filtered = $('#dt-search').val() !== '' || $('#dt-group-filter').val() !== '';
         
+        // MATHEMATICAL CORRECTION: 
+        // Do NOT subtract page.global_overheads here. Overheads are already baked into t_landed_cost via unit_landed_cost allocation.
+        // Subtracting it again would artificially double-count the company's expenses.
         let display_profit = t_net_profit;
         
         let corp_margin = t_net_rev > 0 ? (display_profit / t_net_rev) * 100 : 0.0;

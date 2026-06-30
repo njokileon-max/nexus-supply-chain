@@ -8,6 +8,7 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
     let masterData = [];
     let autoRefreshInterval;
 
+    // 1. Build UI
     $(page.main).html(`
         <div style="padding: 15px; background: #1e293b; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
             <input type="text" id="nexus-item-search" 
@@ -38,12 +39,14 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
         </div>
     `);
 
+    // 2. Fetch Data Core
     function fetchLiveData() {
         frappe.call({
             method: "nexus_supply_chain.api.get_nexus_live_inventory",
             callback: function(r) {
                 if(r.message) {
                     masterData = r.message;
+                    // Re-apply search filter automatically on fresh data fetch
                     let currentSearch = $('#nexus-item-search').val().toLowerCase();
                     filterAndRender(currentSearch);
                 } else {
@@ -53,6 +56,7 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
         });
     }
 
+    // 3. Render Table & Links
     function renderTable(data) {
         if (data.length === 0) {
             $('#nexus-inventory-body').html(`<tr><td colspan="7" style="padding: 20px; text-align: center; color: #94a3b8;">No matching records found.</td></tr>`);
@@ -61,6 +65,7 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
 
         let html = "";
         data.forEach(row => {
+            // Apply a slight opacity to rows that have 0 reserved to visually highlight action needed
             let rowStyle = row.reserved_amount === 0 ? "opacity: 0.6;" : "";
             
             html += `
@@ -82,6 +87,7 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
         $('#nexus-inventory-body').html(html);
     }
 
+    // 4. Client-Side Search Function
     function filterAndRender(searchString) {
         let filteredData = masterData.filter(row => {
             return row.item_id.toLowerCase().includes(searchString) || 
@@ -95,13 +101,16 @@ frappe.pages['nexus_live_inventory'].on_page_load = function(wrapper) {
         filterAndRender(e.target.value.toLowerCase());
     });
 
+    // Manual Refresh Button Override
     page.set_primary_action('Refresh Now', function() {
         fetchLiveData();
     });
 
-    fetchLiveData(); 
+    // 5. Silent Auto-Polling Engine (15 Seconds)
+    fetchLiveData(); // Initial Load
     autoRefreshInterval = setInterval(fetchLiveData, 15000); 
 
+    // Cleanup: Stop polling if user navigates away from this page
     frappe.router.on('change', () => {
         clearInterval(autoRefreshInterval);
     });

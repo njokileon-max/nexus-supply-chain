@@ -6,9 +6,12 @@ import json
 from frappe.utils import flt, getdate, add_to_date, now_datetime
 from datetime import datetime
 
-from nexus_supply_chain.utils.cost_utils import compute_total_theoretical_cost_for_orders
+from nexus_supply_chain.utils.cost_utils import (
+    compute_total_theoretical_cost_for_orders,
+    MarketCostEngine,
+)
 
-API_URL = "https://crystal-api.crystalapps.dev"
+API_URL = "https://crystal-api.crystalapps.dev"  # Nexus Brain FastAPI (Local server-to-server is perfect here)
 TARGET_WAREHOUSE = "Finished Goods - CAL"
 
 @frappe.whitelist()
@@ -30,6 +33,7 @@ def run_optimizer(filters=None):
     if not company_name or not vehicle_type:
         frappe.throw("Company and Vehicle Type are mandatory to run optimization.")
 
+    # 1. Strict Dynamic Origin Validation (No Fallbacks)
     factory_lat = flt(frappe.db.get_value("Company", company_name, "custom_latitude"))
     factory_lng = flt(frappe.db.get_value("Company", company_name, "custom_longitude"))
 
@@ -39,14 +43,17 @@ def run_optimizer(filters=None):
             title="Routing Configuration Error"
         )
 
+    # 2. Fetch Regional Radii Map for "Strict Mode" Validation
     regions = frappe.get_all("Delivery Region", fields=["name", "custom_optimization_radius"])
     radius_map = {r.name: flt(r.custom_optimization_radius) for r in regions}
 
+    # 3. Define Base Conditions (Unplanned Orders for specific Company)
     conditions = [
         ["docstatus", "=", 1],
         ["company", "=", company_name]
     ]
 
+    # Exclude Sales Orders already assigned to active Load Plans
     planned_sos = frappe.db.sql("""
         SELECT so.sales_order 
         FROM `tabNexus Load Plan Sales Order` so
@@ -58,6 +65,22 @@ def run_optimizer(filters=None):
         planned_so_names = [d.sales_order for d in planned_sos]
         conditions.append(["name", "not in", planned_so_names])
 
+    # Also exclude SOs that already have submitted Delivery Notes —
+    # these are dispatched regardless of whether they were on a Load Plan.
+    dispatched_via_dnote = frappe.db.sql("""
+        SELECT DISTINCT dni.against_sales_order
+        FROM `tabDelivery Note Item` dni
+        INNER JOIN `tabDelivery Note` dn ON dn.name = dni.parent
+        WHERE dn.docstatus = 1
+          AND dni.against_sales_order IS NOT NULL
+          AND dni.against_sales_order != ''
+    """, as_dict=True)
+
+    if dispatched_via_dnote:
+        dnote_so_names = [d.against_sales_order for d in dispatched_via_dnote]
+        conditions.append(["name", "not in", dnote_so_names])
+
+    # Apply UI Filters
     if filters.get("customer"): conditions.append(["customer", "=", filters.get("customer")])
     if filters.get("sales_order_status"): conditions.append(["status", "=", filters.get("sales_order_status")])
     if filters.get("territory"): conditions.append(["territory", "=", filters.get("territory")])
@@ -70,6 +93,7 @@ def run_optimizer(filters=None):
         try: conditions.append(["transaction_date", "<", add_to_date(getdate(filters["to_date"]), days=1)])
         except: pass
 
+    # Fetch raw Sales Order data
     sos = frappe.get_all(
         "Sales Order", 
         filters=conditions, 
@@ -79,6 +103,7 @@ def run_optimizer(filters=None):
     if not sos:
         return {"groups": [], "message": "No matching un-planned Sales Orders found."}
 
+    # 4. Batch Fetch Customer Coordinates
     customer_ids = list(set([so.customer for so in sos]))
     customers_data = frappe.get_all(
         "Customer", 
@@ -92,6 +117,7 @@ def run_optimizer(filters=None):
         } for c in customers_data
     }
 
+    # 5. Build Payload for External API
     payload_orders = []
     for so in sos:
         region = so.custom_delivery_region
@@ -145,6 +171,7 @@ def run_optimizer(filters=None):
         "is_on_collection": filters.get("transport_mode") == "On-Collection"
     }
 
+    # 6. Execute Remote Optimization
     try:
         resp = requests.post(f"{API_URL}/optimize", json=payload, timeout=60)
         resp.raise_for_status()
@@ -163,7 +190,7 @@ def run_optimizer(filters=None):
 
 
 @frappe.whitelist()
-def create_load_plan(group, action, route_geojson=None, vehicle_type=None, transport_mode=None, company=None):
+def create_load_plan(group, action, route_geojson=None, vehicle_type=None, transport_mode=None, company=None, delivery_region=None):
     """
     Creates a physical Nexus Load Plan document from optimized group data.
     Server-side authoritative route generation ensures 100% accuracy regardless of UI state.
@@ -174,30 +201,35 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     plan = frappe.new_doc("Nexus Load Plan")
     plan.company = company or frappe.defaults.get_user_default("Company")
     
+    # Safety Check: Ensure we have a company before proceeding
     if not plan.company:
         frappe.throw("A valid Company is required to create a Load Plan.")
 
     plan.vehicle_type = vehicle_type or group.get("vehicle_type")
     plan.transport_mode = transport_mode
+    plan.delivery_region = delivery_region or group.get("delivery_region")
     plan.total_tonnage = flt(group.get("total_tonnage", 0))
     plan.total_amount = flt(group.get("total_amount", 0))
     plan.utilization = flt(group.get("utilization", 0))
     plan.max_capacity = flt(group.get("max_capacity", 0))
-    plan.reservation_status = "Soft" 
+    plan.reservation_status = "Soft"
 
+    # 🚨 FIX: Server-Side Map Orchestration (Bypass the frontend payload entirely)
     factory_lat = flt(frappe.db.get_value("Company", plan.company, "custom_latitude"))
     factory_lng = flt(frappe.db.get_value("Company", plan.company, "custom_longitude"))
 
     if not factory_lat or not factory_lng:
         frappe.throw(f"Missing GPS Coordinates for Company '{plan.company}'. Please configure 'custom_latitude' and 'custom_longitude' in the Company record.")
 
+    # Construct coordinate array: Start at Factory -> Stops -> End at Factory
     FACTORY_COORDS = [factory_lng, factory_lat]
     route_coords = [FACTORY_COORDS]
 
     for so in group.get("sales_orders", []):
         lat = flt(so.get("latitude", 0.0))
         lng = flt(so.get("longitude", 0.0))
-
+        
+        # Build the document child table
         plan.append("sales_orders", {
             "sales_order": so.get("sales_order"),
             "customer": so.get("customer"),
@@ -221,6 +253,7 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     approximate_fuel_consumption_ltrs = 0.0
     approximate_fuel_cost = 0.0
 
+    # Automatically fetch and lock the route from VROOM
     if len(route_coords) >= 3:
         try:
             resp = requests.post(
@@ -233,6 +266,7 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
                 if "features" in data:
                     plan.route_geojson = json.dumps(data)
                     
+                    # 🚚 Extract precise distance in meters from MapLibre/ORS and convert to Kilometers
                     try:
                         distance_m = flt(data["features"][0]["properties"]["summary"]["distance"])
                         approximate_total_distance_km = distance_m / 1000.0
@@ -241,6 +275,7 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         except Exception as e:
             frappe.log_error(str(e), "Load Plan Route Generation Failed")
 
+    # ⛽ Calculate Fuel Economics dynamically based on the specific Vehicle Type
     if plan.vehicle_type:
         try:
             vt = frappe.get_doc("Vehicle Type", plan.vehicle_type)
@@ -253,36 +288,33 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         except Exception as e:
             frappe.log_error(str(e), "Load Plan Fuel Economic Calculation Failed")
 
+    # Inject fuel estimates into the physical document
     plan.approximate_total_distance_km = approximate_total_distance_km
     plan.approximate_fuel_consumption_ltrs = approximate_fuel_consumption_ltrs
     plan.approximate_fuel_cost = approximate_fuel_cost
 
+    # ------------------------------------------------------------------
+    # 🚨 PHASE 2: Dynamic Margin Analytics (Ledger-Backed)
+    # ------------------------------------------------------------------
     sales_orders_data = group.get("sales_orders", [])
     total_order_value = flt(group.get("total_amount", 0))
     if not total_order_value and sales_orders_data:
         total_order_value = sum(flt(so.get("amount", 0)) for so in sales_orders_data)
 
+    # 1. Total theoretical production cost (BOM rollup)
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders_data)
 
-    absorbed_overhead = 0.0
-    try:
-        active_period = frappe.get_all(
-            "Nexus Cost Allocation Period",
-            filters={"is_active": 1, "docstatus": 1},
-            fields=["total_global_overheads", "total_invoiced_sales"],
-            limit=1
-        )
-        if active_period:
-            period = active_period[0]
-            total_oh = flt(period.total_global_overheads)
-            total_sales = flt(period.total_invoiced_sales)
-            
-            if total_sales > 0:
-                overhead_ratio = total_oh / total_sales
-                absorbed_overhead = total_order_value * overhead_ratio
-    except Exception:
-        frappe.log_error("Failed to calculate absorbed overhead. Check Cost Allocation Period.", "Load Plan Margin")
+    # 2. Dynamic Absorbed Overhead from Cost Allocation Period
+    # 2. Fixed Overhead Absorption (Company Standard: KES 26M OH / KES 80M Revenue)
+    # These are the board-approved monthly standard rates used for all pre-dispatch
+    # margin projections. Update MONTHLY_STANDARD_OVERHEADS and MONTHLY_STANDARD_REVENUE
+    # here when the board revises the benchmarks.
+    MONTHLY_STANDARD_OVERHEADS = 26_000_000.0   # KES 26,000,000 per month
+    MONTHLY_STANDARD_REVENUE   = 80_000_000.0   # KES 80,000,000 per month
+    overhead_ratio = MONTHLY_STANDARD_OVERHEADS / MONTHLY_STANDARD_REVENUE  # = 0.325 (32.5%)
+    absorbed_overhead = total_order_value * overhead_ratio
 
+    # 3. Profit Cascades
     gross_profit = total_order_value - total_theoretical_cost
     gross_margin_pct = (gross_profit / total_order_value * 100) if total_order_value > 0 else 0.0
     
@@ -291,11 +323,18 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
     
     profitability_status = "Profitable" if net_profit >= 0 else "Loss"
 
+    # 4. Assign to the document
+    # Field mapping per Nexus Load Plan DocType:
+    # margin_percentage  → Gross Margin (%) — projected gross
+    # daily_overhead_allocated → Absorbed overhead (repurposed field)
+    # profit_loss        → Estimated trip net contribution (pre-dispatch)
+    # net_margin         → Net Margin % (after overhead + fuel)
+    # profitability_status → Profitable / Loss
     plan.total_theoretical_cost = total_theoretical_cost
-    plan.daily_overhead_allocated = absorbed_overhead 
-    plan.profit_loss = net_profit
-    plan.margin_percentage = gross_margin_pct
-    plan.net_margin = net_margin_pct
+    plan.daily_overhead_allocated = absorbed_overhead
+    plan.margin_percentage = gross_margin_pct          # Projected Gross Margin %
+    plan.profit_loss = net_profit                      # Estimated Trip Net Contribution
+    plan.net_margin = net_margin_pct                   # Net Margin % after overhead + fuel
     plan.profitability_status = profitability_status
     # ------------------------------------------------------------------
 
@@ -305,6 +344,7 @@ def create_load_plan(group, action, route_geojson=None, vehicle_type=None, trans
         frappe.db.commit()
         return {"status": "success", "message": f"Load Plan {plan.name} created successfully with optimized routing."}
 
+    # action == "reserve": Create a Draft Inventory Reservation linked to this plan
     res_doc = frappe.new_doc("Nexus Inventory Reservation")
     res_doc.nexus_load_plan = plan.name
     
@@ -338,14 +378,17 @@ def reanalyze_load_plan(load_plan_name):
     """
     plan = frappe.get_doc("Nexus Load Plan", load_plan_name)
     
+    # Do not reanalyze if a reservation is already submitted (Docstatus 1)
     existing_res = frappe.db.get_value("Nexus Inventory Reservation", 
         {"nexus_load_plan": plan.name, "docstatus": 1}, "name")
     
     if existing_res:
         return {"status": "exists", "message": "A submitted reservation already exists for this plan."}
 
+    # Clear old drafts
     frappe.db.sql("DELETE FROM `tabNexus Inventory Reservation` WHERE nexus_load_plan = %s AND docstatus = 0", (load_plan_name,))
 
+    # Re-create draft from current Sales Order items
     res_doc = frappe.new_doc("Nexus Inventory Reservation")
     res_doc.nexus_load_plan = plan.name
     
@@ -363,11 +406,17 @@ def reanalyze_load_plan(load_plan_name):
     res_doc.expiry_date = add_to_date(now_datetime(), hours=expiry_hours)
     res_doc.insert(ignore_permissions=True)
     
+    # Sync visual status for UI
     from nexus_supply_chain.reservation_hooks import sync_load_plan_status
     sync_load_plan_status(plan.name)
     
     frappe.db.commit()
     return {"status": "success", "message": "Reanalysis complete. Fresh stock check applied."}
+
+
+# ----------------------------------------------------------------------
+# 🚨 PHASE 2: Dynamic Margin Analysis for UI Rendering
+# ----------------------------------------------------------------------
 
 @frappe.whitelist()
 def get_group_margin_data(group, route_geojson=None, vehicle_type=None):
@@ -387,36 +436,27 @@ def get_group_margin_data(group, route_geojson=None, vehicle_type=None):
     if not sales_orders:
         return {"error": "No sales orders in this group."}
 
+    # 1. Total order value
     total_order_value = flt(group.get("total_amount", 0))
     if not total_order_value:
         total_order_value = sum(flt(so.get("amount", 0)) for so in sales_orders)
 
+    # 2. Compute total theoretical production cost
     total_theoretical_cost = compute_total_theoretical_cost_for_orders(sales_orders)
-
+    
+    # 3. Gross Profit Calculation
     gross_profit = total_order_value - total_theoretical_cost
     gross_margin_pct = (gross_profit / total_order_value * 100) if total_order_value > 0 else 0.0
 
-    overhead_ratio = 0.0
-    absorbed_overhead = 0.0
-    
-    try:
-        active_period = frappe.get_all(
-            "Nexus Cost Allocation Period",
-            filters={"is_active": 1, "docstatus": 1},
-            fields=["total_global_overheads", "total_invoiced_sales"],
-            limit=1
-        )
-        if active_period:
-            period = active_period[0]
-            total_oh = flt(period.total_global_overheads)
-            total_sales = flt(period.total_invoiced_sales)
-            
-            if total_sales > 0:
-                overhead_ratio = (total_oh / total_sales) * 100
-                absorbed_overhead = total_order_value * (total_oh / total_sales)
-    except Exception:
-        frappe.log_error("Failed to fetch active Cost Allocation Period.", "Margin Analysis UI")
+    # 4. Dynamic Overhead Absorption
+    # 4. Fixed Overhead Absorption (Company Standard: KES 26M OH / KES 80M Revenue)
+    MONTHLY_STANDARD_OVERHEADS = 26_000_000.0   # KES 26,000,000 per month
+    MONTHLY_STANDARD_REVENUE   = 80_000_000.0   # KES 80,000,000 per month
+    overhead_ratio_decimal = MONTHLY_STANDARD_OVERHEADS / MONTHLY_STANDARD_REVENUE   # 0.325
+    overhead_ratio = overhead_ratio_decimal * 100                                     # 32.5%
+    absorbed_overhead = total_order_value * overhead_ratio_decimal
 
+    # 5. Extract Distance and Compute Fuel Metrics
     approximate_total_distance_km = 0.0
     if route_geojson:
         try:
@@ -445,6 +485,7 @@ def get_group_margin_data(group, route_geojson=None, vehicle_type=None):
         except Exception:
             pass
 
+    # 6. Final Net Profit Calculation
     net_profit = gross_profit - absorbed_overhead - approximate_fuel_cost
     net_margin_pct = (net_profit / total_order_value * 100) if total_order_value > 0 else 0.0
 
@@ -453,7 +494,9 @@ def get_group_margin_data(group, route_geojson=None, vehicle_type=None):
         "total_theoretical_cost": total_theoretical_cost,
         "gross_profit": round(gross_profit, 2),
         "gross_margin_percentage": round(gross_margin_pct, 2),
-        "overhead_ratio_percentage": round(overhead_ratio, 2),
+        "overhead_ratio_percentage": round(overhead_ratio, 2),        # 32.5
+        "overhead_standard_revenue": MONTHLY_STANDARD_REVENUE,        # 80,000,000 — shown in UI
+        "overhead_standard_overheads": MONTHLY_STANDARD_OVERHEADS,    # 26,000,000 — shown in UI
         "absorbed_overhead": round(absorbed_overhead, 2),
         "approximate_total_distance_km": round(approximate_total_distance_km, 2),
         "approximate_fuel_consumption_ltrs": round(approximate_fuel_consumption_ltrs, 2),

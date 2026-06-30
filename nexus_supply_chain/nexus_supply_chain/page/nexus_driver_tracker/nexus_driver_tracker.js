@@ -4,9 +4,11 @@ let wakeLock = null;
 let ws = null; 
 let reconnect_interval = 3000; 
 
+// 🚨 CLOUDFLARE SECURE WEBSOCKET TUNNEL (FastAPI Telemetry) 🚨
 const FASTAPI_WS_URL = "wss://whereas-reproductive-tribune-accepts.trycloudflare.com/telemetry/ws";
 
-const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
+// 🚨 SOVEREIGN SELF-HOSTED MAP TUNNEL (Docker TileServer-GL) 🚨
+const TILE_SERVER_URL = "https://boc-weblog-johnny-shelter.trycloudflare.com/styles/basic-preview/style.json";
 
 frappe.pages['nexus_driver_tracker'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({ 

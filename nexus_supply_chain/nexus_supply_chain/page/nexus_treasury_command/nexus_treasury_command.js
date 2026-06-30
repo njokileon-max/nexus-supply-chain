@@ -1,4 +1,4 @@
-// gnleon29@gmail.com
+// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_treasury_command/nexus_treasury_command.js
 
 frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({
@@ -13,6 +13,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
         toggle_custom_range();
     });
 
+    // --- Layout & Styles ---
     const layout_html = [
         "<style>",
         "    .treasury-wrap { padding: 20px; background: #f8fafc; min-height: 85vh; font-family: 'Inter', sans-serif; }",
@@ -56,6 +57,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
 
     $(page.main).html(layout_html);
 
+    // --- Dynamic Working Days Auto-Calculator ---
     function update_days_count() {
         let start = $('#t-start-date').val();
         let end = $('#t-end-date').val();
@@ -64,7 +66,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
             let d2 = new Date(end);
             let days = 0;
             while (d1 <= d2) {
-                if (d1.getDay() !== 0) days++; 
+                if (d1.getDay() !== 0) days++; // 0 = Sunday
                 d1.setDate(d1.getDate() + 1);
             }
             $('#t-working-days').val(days > 0 ? days : 1);
@@ -72,6 +74,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
     }
     $('#t-start-date, #t-end-date').on('change', update_days_count);
 
+    // --- State Management ---
     function toggle_custom_range() {
         let panel = $('#custom-date-panel');
         if(panel.is(':visible')) {
@@ -95,6 +98,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
         }
     }
 
+    // --- Helper Functions ---
     function fmt_curr(val) { return "KES " + parseFloat(val).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
     
     function format_days_status(days_past_due) {
@@ -109,10 +113,11 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
     function get_row_class(days_past_due) {
         let d = parseInt(days_past_due);
         if (d > 0) return "row-red";
-        if (d > -7) return "row-orange"; 
+        if (d > -7) return "row-orange"; // Due within 7 days
         return "";
     }
 
+    // --- Core Data Fetch & Render ---
     function trigger_fetch(start_date, end_date) {
         let custom_wd = page.is_custom ? $('#t-working-days').val() : null;
         $('#dashboard-content').html('<div class="text-center py-5 text-muted"><i class="fa fa-spin fa-spinner fa-2x mb-3"></i><br><b>Compiling Treasury Ledger...</b></div>');
@@ -139,6 +144,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
         let runway_color = data.cash_runway_days < 30 ? "val-red" : "val-green";
         let ratio_color = data.quick_ratio < 1.0 ? "val-red" : "val-green";
 
+        // Zone 1: Liquidity Ribbon
         let ribbon_html = "" +
             "<div class='t-ribbon'>" +
             "    <div class='t-card' style='border-top: 4px solid #10b981;'>" +
@@ -163,6 +169,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
             "    </div>" +
             "</div>";
 
+        // Zone 2: Bank Balances & Danger Matrix
         let bank_rows = "";
         data.bank_accounts.forEach(row => {
             bank_rows += "<tr><td><i class='fa fa-university text-muted me-2'></i>" + row.account_name + "</td><td class='text-end fw-bold val-green'>" + fmt_curr(row.balance) + "</td></tr>";
@@ -195,6 +202,7 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
             "    </div>" +
             "</div>";
 
+        // Zone 3: Detailed Ledgers (Now with IDs and Names)
         let ar_rows = "";
         data.sales_invoices.forEach(row => {
             let row_cls = get_row_class(row.days_past_due);
@@ -240,7 +248,9 @@ frappe.pages['nexus_treasury_command'].on_page_load = function(wrapper) {
         $('#dashboard-content').html(ribbon_html + matrix_html + ledgers_html);
     }
 
+    // --- WebSockets: The 0-Lag Auto Update Listener ---
     frappe.realtime.on('nexus_treasury_sync', function(event_data) {
+        // Silently reload the dashboard if a financial transaction is made
         if(!page.is_custom) {
             trigger_fetch(null, null);
             frappe.show_alert({message: "Ledger transaction detected. Treasury updated.", indicator: 'green'});

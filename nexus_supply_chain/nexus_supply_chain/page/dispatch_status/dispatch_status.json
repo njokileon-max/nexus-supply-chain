@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-06-27 13:29:24.470423",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-06-27 13:37:43.997778",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "dispatch_status",
+ "owner": "Administrator",
+ "page_name": "dispatch_status",
+ "roles": [
+  {
+   "role": "Administrator"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Dispatch Status"
+}

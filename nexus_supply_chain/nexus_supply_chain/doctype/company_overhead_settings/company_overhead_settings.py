@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Nexus Supply Chain
 # For license information, please see license.txt
 

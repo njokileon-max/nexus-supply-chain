@@ -1,4 +1,4 @@
-// gnleon29@gmail.com
+// apps/nexus_supply_chain/nexus_supply_chain/page/product_portfolio/product_portfolio.js
 
 frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
     let page = frappe.ui.make_app_page({
@@ -7,6 +7,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         single_column: true
     });
 
+    // Global memory for 0-lag simulation
     page.portfolio_data = [];
     page.filtered_data = [];
     page.current_sort = { col: 'item_name', dir: 'asc' };
@@ -16,24 +17,29 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         "    .portfolio-wrapper { padding: 20px; background-color: #f8fafc; min-height: 85vh; font-family: 'Inter', sans-serif; }",
         "    .rate-badge { display: inline-block; padding: 5px 10px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; font-weight: 700; color: #334155; margin-right: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }",
         
+        "    /* Toolbar & Inputs */",
         "    .nexus-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }",
         "    .nexus-search, .nexus-filter { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 600; outline: none; background: #f8fafc; }",
         "    .nexus-search:focus, .nexus-filter:focus { border-color: #3b82f6; }",
         "    .select-margin { font-size: 15px; font-weight: 900; border: 2px solid #3b82f6; color: #1e3a8a; border-radius: 6px; padding: 6px 12px; outline: none; background: #eff6ff; }",
         
+        "    /* Table & MULTI-FROZEN Column Scroll Lock Logic */",
         "    .nexus-table-wrapper { width: 100%; max-height: calc(100vh - 210px); overflow-y: auto; overflow-x: auto; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; position: relative; }",
         "    .nexus-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; min-width: 2100px; }",
         "    .nexus-table th, .nexus-table td { border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; padding: 12px; text-align: right; white-space: nowrap; }",
         
+        "    /* Sticky Headers - Y-Axis */",
         "    .nexus-table thead tr:nth-child(1) th { position: sticky; top: 0; background-color: #f1f5f9; font-weight: 800; color: #334155; z-index: 50; border-top: 1px solid #cbd5e1; border-bottom: 2px solid #cbd5e1; }",
         "    .nexus-table thead tr:nth-child(2) th { position: sticky; top: 43px; background-color: #f8fafc; font-weight: 800; color: #475569; z-index: 49; border-bottom: 2px solid #cbd5e1; cursor: pointer; }",
         "    .nexus-table thead tr:nth-child(2) th:hover { background-color: #e2e8f0; }",
         
+        "    /* Sticky Columns - X-Axis (Expanded to 4 Frozen Columns) */",
         "    .col-code { position: sticky; left: 0; width: 130px; min-width: 130px; max-width: 130px; background: #ffffff !important; z-index: 30; text-align: left !important; font-weight: 700; border-right: 1px solid #e2e8f0;}",
         "    .col-name { position: sticky; left: 130px; width: 250px; min-width: 250px; max-width: 250px; background: #ffffff !important; z-index: 30; text-align: left !important; border-right: 1px solid #e2e8f0; white-space: normal !important; word-wrap: break-word; line-height: 1.3; }",
         "    .col-grp  { position: sticky; left: 380px; width: 130px; min-width: 130px; max-width: 130px; background: #ffffff !important; z-index: 30; text-align: left !important; border-right: 1px solid #e2e8f0; }",
         "    .col-base { position: sticky; left: 510px; width: 140px; min-width: 140px; max-width: 140px; background: #ffffff !important; z-index: 30; text-align: left !important; box-shadow: 4px 0 8px -2px rgba(0,0,0,0.08); border-right: 1px solid #cbd5e1; white-space: normal !important; word-wrap: break-word; line-height: 1.3; }",
         
+        "    /* The Intersection Lock (Top-Left Corner Matrix) */",
         "    .nexus-table thead tr:nth-child(1) th.col-code, .nexus-table thead tr:nth-child(1) th.col-name, .nexus-table thead tr:nth-child(1) th.col-grp, .nexus-table thead tr:nth-child(1) th.col-base { z-index: 70; background: #f1f5f9 !important; }",
         "    .nexus-table thead tr:nth-child(2) th.col-code, .nexus-table thead tr:nth-child(2) th.col-name, .nexus-table thead tr:nth-child(2) th.col-grp, .nexus-table thead tr:nth-child(2) th.col-base { z-index: 69; background: #f8fafc !important; }",
         "    .variance-positive { color: #16a34a; font-weight: bold; }",
@@ -76,6 +82,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
 
     $(wrapper).find('.layout-main-section').html(layout_html);
 
+    // --- Dynamic Select Generators ---
     let margin_opts = "";
     for(let i=5; i<=100; i+=5) {
         let selected = (i===25) ? "selected" : "";
@@ -171,6 +178,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         });
     }
 
+    // --- The 0-Lag JS Simulation Engine ---
     function run_live_simulation() {
         let margin_pct = parseFloat($('#margin-simulator').val()) / 100.0;
 
@@ -199,6 +207,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         run_live_simulation();
     });
 
+    // --- Instant Filter Engine (Scans Groups, Bases & Codes) ---
     function apply_filters() {
         let term = $('#dt-search').val().toLowerCase();
         let grp = $('#dt-group-filter').val();
@@ -220,6 +229,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
     $('#dt-search').on('keyup', apply_filters);
     $('#dt-group-filter').on('change', apply_filters);
 
+    // --- Double-Axis Table Renderer ---
     function render_table_body() {
         let data = [...page.filtered_data];
         
@@ -272,6 +282,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         $('#nexus-table-body').empty().html(tbody_html);
     }
 
+    // --- THE "DATA IMPORT HANDOFF" MODAL LOGIC FOR COSTING ---
     $('#btn-commit-costs').on('click', function() {
         if (!page.filtered_data || page.filtered_data.length === 0) {
             frappe.msgprint("No data available in the current view to sync.");
@@ -317,7 +328,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
                     page.filtered_data.forEach(row => {
                         if (is_update) {
                             let doc_name = costing_name_map[row.item_code];
-                            if (!doc_name) return; 
+                            if (!doc_name) return; // Silent skip for non-existent documents to avoid the 'None' error
                             csv_content += `"${doc_name}","${row.item_code}",${row.theoretical_cost},${row.overhead_rate},${row.true_landed_cost}\n`;
                         } else {
                             csv_content += `"${row.item_code}",${row.theoretical_cost},${row.overhead_rate},${row.true_landed_cost}\n`;
@@ -374,6 +385,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         strategy_dialog.show();
     });
 
+    // --- THE "DATA IMPORT HANDOFF" MODAL LOGIC FOR PRICING (Group -> Base -> UOM) ---
     $('#btn-generate-averages').on('click', function() {
         frappe.call({
             method: "nexus_supply_chain.nexus_supply_chain.page.product_portfolio.product_portfolio.get_active_price_lists",
@@ -610,6 +622,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         d.fields_dict.grid_html.$wrapper.html(html);
     }
 
+    // --- Simple Excel Export ---
     $('#btn-export-excel').on('click', function() {
         if (!page.filtered_data || page.filtered_data.length === 0) return;
         
@@ -635,6 +648,7 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
 
     $('#refresh-portfolio-btn').on('click', function() { load_portfolio_data(); });
 
+    // WebSockets: Auto-Sync on Catalog/Price Updates
     frappe.realtime.on('nexus_catalog_sync', function(event_data) {
         frappe.show_alert({message: "Catalog Update Detected. Re-compiling pricing graph.", indicator: 'green'});
         load_portfolio_data();

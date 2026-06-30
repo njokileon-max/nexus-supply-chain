@@ -1,12 +1,13 @@
 {
  "actions": [],
- "autoname": "LOAD-.DD.-.MM.-.YY.-.####",
+ "autoname": "LOAD-.delivery_region.-.DD.-.MM.-.YY.-.####.",
  "creation": "2026-03-06 14:23:12.353808",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "section_break_hlqb",
   "company",
+  "delivery_region",
   "vehicle_type",
   "transport_mode",
   "dispatch_status",
@@ -25,6 +26,7 @@
   "approximate_fuel_consumption_ltrs",
   "approximate_fuel_cost",
   "actual_fuel_fuelled",
+  "custom_dispatch_state",
   "custom_inventory_shortfall_notes",
   "sales_orders",
   "route_geojson",
@@ -101,6 +103,7 @@
   {
    "fieldname": "reservation_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Reservation Status",
    "options": "Soft\nReserved\nPartially Reserved\nPartially Consumed\nConsumed\nExpired\nReleased",
    "read_only": 1
@@ -183,13 +186,27 @@
    "fieldtype": "Percent",
    "label": "Net Margin (%)",
    "read_only": 1
+  },
+  {
+   "fieldname": "custom_dispatch_state",
+   "fieldtype": "Long Text",
+   "label": "Dispatch State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "delivery_region",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Delivery Region",
+   "options": "Delivery Region",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-06-19 11:00:05.839694",
+ "modified": "2026-06-29 00:35:07.141638",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus Load Plan",
