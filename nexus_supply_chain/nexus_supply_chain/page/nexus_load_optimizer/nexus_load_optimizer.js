@@ -378,7 +378,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                 <div class="col-6">
                     <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Theoretical Production Cost</div>
                     <div class="margin-value text-secondary">${currency} ${data.total_theoretical_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    <div class="small text-muted mt-1"><i class="fa fa-info-circle me-1"></i>Standard Buying price rollup</div>
+                    <div class="small text-muted mt-1"><i class="fa fa-info-circle me-1"></i>Current Market Price rollup</div>
                 </div>
                 <div class="col-6">
                     <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin</div>
@@ -438,7 +438,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         </div>
         
         <div class="text-muted small mt-4 pt-3 text-center opacity-75">
-            <i class="fa fa-info-circle me-1"></i> All figures are pre-dispatch projections based on Standard Buying price BOM rollup. Realised margins are tracked in Dispatch Intelligence after delivery.
+            <i class="fa fa-info-circle me-1"></i> All figures are pre-dispatch projections based on Current Market Price BOM rollup. Realised margins are tracked in Dispatch Intelligence after delivery.
         </div>
     `;
     
@@ -617,6 +617,8 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                     </div>
                     <div class="card-footer bg-white p-4 d-flex justify-content-between gap-3 rounded-bottom-4">
                         <div class="d-flex gap-2">
+                            <!-- NEW: Pre-Analysis Button -->
+                            <button class="btn btn-info text-white fw-bold px-4 pre-analysis-btn" data-idx="${idx}"><i class="fa fa-box-open me-2"></i> Order Fulfillment Pre-Analysis</button>
                             <button class="btn btn-success fw-bold px-4 margin-analyze-btn" data-idx="${idx}"><i class="fa fa-chart-line me-2"></i> Calculate Theoretical Cost & Gross Margin</button>
                         </div>
                         <div class="d-flex gap-2">
@@ -860,4 +862,103 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         captured_route_data = {};
         active_margin_data = null;
     });
-};
+
+    // =========================================================================
+    // 📦 ORDER FULFILLMENT PRE-ANALYSIS
+    // =========================================================================
+    $(wrapper).on('click', '.pre-analysis-btn', function() {
+        const idx = $(this).data('idx');
+        const dynamic_group = get_current_group_data(idx);
+        
+        // 1. Aggregate items across all Sales Orders in this dynamic group
+        let item_map = {};
+        dynamic_group.sales_orders.forEach(so => {
+            if (!so.items) return;
+            so.items.forEach(item => {
+                if (!item_map[item.item_code]) {
+                    item_map[item.item_code] = {
+                        item_code: item.item_code,
+                        item_name: item.item_name || item.item_code,
+                        required_qty: 0,
+                        available_qty: parseFloat(item.net_available) || 0
+                    };
+                }
+                item_map[item.item_code].required_qty += parseFloat(item.qty);
+            });
+        });
+
+        // 2. Calculate balance and convert to array
+        let aggregated_items = Object.values(item_map).map(item => {
+            item.balance = item.available_qty - item.required_qty;
+            return item;
+        });
+
+        if (aggregated_items.length === 0) {
+            frappe.msgprint({ title: 'Notice', indicator: 'orange', message: 'No items found in this load plan.' });
+            return;
+        }
+
+        // 3. Create Frappe Dialog popup
+        let analysis_dialog = new frappe.ui.Dialog({
+            title: `Fulfillment Analysis - Group ${idx + 1}`,
+            size: 'extra-large',
+            fields: [{ fieldtype: 'HTML', fieldname: 'table_html' }]
+        });
+
+        // 4. Render Table Function (handles sorting state)
+        let sort_asc = true; // Default: show negative balances (shortages) at the top
+        
+        const render_table = () => {
+            // Sort array
+            aggregated_items.sort((a, b) => sort_asc ? a.balance - b.balance : b.balance - a.balance);
+            
+            let tbody = aggregated_items.map(item => {
+                let bal_class = item.balance < 0 ? 'text-danger bg-danger-subtle border-danger' : 'text-success';
+                let alert_icon = item.balance < 0 ? '<i class="fa fa-exclamation-circle me-1"></i>' : '';
+                return `
+                    <tr>
+                        <td class="fw-bold">${item.item_code}</td>
+                        <td class="text-secondary">${item.item_name}</td>
+                        <td class="text-end fw-bold">${item.required_qty.toLocaleString()}</td>
+                        <td class="text-end text-primary fw-bold">${item.available_qty.toLocaleString()}</td>
+                        <td class="text-end fw-bold ${bal_class}">${alert_icon}${item.balance.toLocaleString()}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            let sort_icon = sort_asc ? 'fa-arrow-up' : 'fa-arrow-down';
+
+            let html = `
+                <div class="table-responsive" style="max-height: 60vh; overflow-y: auto;">
+                    <table class="table table-bordered table-hover align-middle mb-0">
+                        <thead class="table-light text-uppercase small text-muted position-sticky top-0 shadow-sm" style="z-index: 1;">
+                            <tr>
+                                <th>Item Code</th>
+                                <th>Item Name</th>
+                                <th class="text-end">Total Required</th>
+                                <th class="text-end">Bin Available</th>
+                                <th class="text-end cursor-pointer bg-light border-bottom border-secondary" id="sort-balance-btn" style="user-select: none;">
+                                    Balance 
+                                    <span class="badge bg-secondary ms-2"><i class="fa ${sort_icon}"></i></span>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>${tbody}</tbody>
+                    </table>
+                </div>
+            `;
+            analysis_dialog.fields_dict.table_html.$wrapper.html(html);
+
+            // Bind click event to the header for sorting
+            analysis_dialog.fields_dict.table_html.$wrapper.find('#sort-balance-btn').on('click', function() {
+                sort_asc = !sort_asc;
+                render_table();
+            });
+        };
+
+        // Render initially and show
+        render_table();
+        analysis_dialog.show();
+    });
+
+}; // <--- THIS CLOSING BRACKET MOVES HERE (Ends frappe.pages['nexus_load_optimizer'].on_page_load)

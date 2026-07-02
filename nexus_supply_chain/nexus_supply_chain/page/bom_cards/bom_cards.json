@@ -1,15 +1,15 @@
 {
  "content": null,
- "creation": "2026-06-28 10:53:57.127456",
+ "creation": "2026-07-01 22:42:00.311010",
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-07-02 03:31:08.551206",
+ "modified": "2026-07-02 03:30:43.571475",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
- "name": "nexus_dispatch_intelligence",
+ "name": "bom_cards",
  "owner": "Administrator",
- "page_name": "nexus_dispatch_intelligence",
+ "page_name": "bom_cards",
  "roles": [
   {
    "role": "System Manager"
@@ -18,5 +18,6 @@
  "script": null,
  "standard": "Yes",
  "style": null,
- "system_page": 0
+ "system_page": 0,
+ "title": "BOM Cards"
 }

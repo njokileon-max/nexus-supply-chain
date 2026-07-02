@@ -203,6 +203,7 @@ def check_mobile_app_access():
 # =========================================================================
 # 3. USER PROFILE & ROLE ROUTER (For App Navigation)
 # =========================================================================
+# FIND:
 @frappe.whitelist(allow_guest=True)
 def get_user_profile():
     """
@@ -225,6 +226,63 @@ def get_user_profile():
             "csrf_token": frappe.sessions.get_csrf_token(),
             "sid": frappe.session.sid 
         }
+    }
+
+# REPLACE WITH:
+@frappe.whitelist(allow_guest=True)
+def get_user_profile():
+    """
+    Called by the React Native app immediately after native login.
+    Returns the user's details, roles, CSRF token, and the SID to authorize proxy requests.
+    Also enforces minimum app version via the X-App-Version header.
+    """
+    if frappe.session.user == "Guest":
+        frappe.local.response["http_status_code"] = 401
+        return {"status": "failed", "message": "Unauthorized"}
+
+    # 🚨 VERSION GATE: Read the version header sent by the mobile app
+    app_version = (
+        frappe.request.headers.get("X-App-Version")
+        or frappe.form_dict.get("app_version")
+    )
+
+    try:
+        settings = frappe.get_doc("Nexus App Settings")
+        minimum_version = getattr(settings, "minimum_app_version", None) or "1.0.8"
+    except Exception:
+        minimum_version = "1.0.8"
+
+    def version_tuple(v):
+        try:
+            return tuple(int(x) for x in str(v).strip().split("."))
+        except Exception:
+            return (0, 0, 0)
+
+    if app_version:
+        if version_tuple(app_version) < version_tuple(minimum_version):
+            frappe.local.response["http_status_code"] = 426  # HTTP 426 Upgrade Required
+            return {
+                "status": "failed",
+                "code": "VERSION_TOO_OLD",
+                "message": (
+                    f"Your app (v{app_version}) is no longer supported. "
+                    f"Please update to version {minimum_version} or later."
+                ),
+                "minimum_version": minimum_version,
+            }
+
+    user_doc = frappe.get_doc("User", frappe.session.user)
+    roles = frappe.get_roles(frappe.session.user)
+
+    return {
+        "status": "success",
+        "message": {
+            "full_name": user_doc.full_name,
+            "email": user_doc.email,
+            "roles": roles,
+            "csrf_token": frappe.sessions.get_csrf_token(),
+            "sid": frappe.session.sid,
+        },
     }
 
 # =================================================================

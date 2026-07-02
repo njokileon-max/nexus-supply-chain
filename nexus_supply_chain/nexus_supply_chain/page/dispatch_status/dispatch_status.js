@@ -8,6 +8,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         single_column: true
     });
 
+    // ── Global State ──────────────────────────────────────────────────────
     var state = {
         load_plans:      [],
         items:           [],
@@ -15,12 +16,14 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         competing_plans: {},
         active_lp:       null,
         unattended_count: 0,
+        // New Sidebar Filter & Sort State
         date_filter:     'all',
         sort_order:      'desc',
         custom_start:    '',
         custom_end:      ''
     };
 
+    // ── Page Layout ───────────────────────────────────────────────────────
     $(page.main).html(`
         <div style="display:flex; gap:20px; height:90vh; padding-top:15px;">
 
@@ -129,6 +132,10 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         render_sidebar();
     });
 
+
+    // ── Shared helpers ────────────────────────────────────────────────────
+
+    /** Pill search bar; id defaults to 'popup-search-bar' */
     function make_search_bar(placeholder, id) {
         id = id || 'popup-search-bar';
         return `
@@ -146,6 +153,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             </div>`;
     }
 
+    /** Balance filter bar */
     function make_balance_filter(targetTableId, balanceColIdx) {
         return `
             <div id="balance-filter-wrap" style="display:flex; gap:6px; margin-bottom:12px; align-items:center;">
@@ -171,6 +179,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             </div>`;
     }
 
+    /** Wire up balance filter buttons */
     function bind_balance_filter(wrapper, tableId, balColIdx) {
         wrapper.on('click', '.bal-filter-btn', function() {
             wrapper.find('.bal-filter-btn').each(function() {
@@ -203,6 +212,8 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         if (num === 0) return '0';
         return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
     }
+
+    // ── Sidebar Logic & Rendering ─────────────────────────────────────────
     
     function filter_and_sort_lps(lps) {
         let filtered = lps.filter(lp => {
@@ -235,14 +246,17 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
 
         let html = '';
         
+        // 1. SPLIT INTO GROUPS BASED ON BACKEND STATUS
         var pending_lps = processed_lps.filter(l => !['Partially Dispatched', 'Fully Dispatched'].includes(l.dispatch_status));
         var dispatched_lps = processed_lps.filter(l => ['Partially Dispatched', 'Fully Dispatched'].includes(l.dispatch_status));
 
+        // 2. RENDER ACTIVE (PENDING) GROUP
         if (pending_lps.length) {
             html += `<div style="font-size:13px; font-weight:800; color:#6c757d; letter-spacing:.6px; text-transform:uppercase; margin-bottom:8px; margin-top:6px;">ACTIVE</div>`;
             pending_lps.forEach(lp => html += _lp_card_html(lp));
         }
 
+        // 3. RENDER DISPATCHED GROUP
         if (dispatched_lps.length) {
             html += `<div style="font-size:13px; font-weight:800; color:#28a745; letter-spacing:.6px; text-transform:uppercase; margin-top:14px; margin-bottom:8px; border-top:1px solid #d1d8dd; padding-top:10px;">DISPATCHED</div>`;
             dispatched_lps.forEach(lp => html += _lp_card_html(lp));
@@ -270,13 +284,17 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         let percentage_display = '';
         let left_color = '';
         
+        // 4. DYNAMIC PROGRESS BAR PAINTING
         if (is_dispatched) {
+            // Pulls the precise physical percentage calculated in Python
             let pct = parseFloat(lp.delivered_percentage) || 0; 
             if (disp_status === 'Fully Dispatched') pct = 100;
             
+            // Financial Color Triage
             let fill_color = disp_status === 'Fully Dispatched' ? '#d4edda' : '#fdebd0';
             left_color = disp_status === 'Fully Dispatched' ? '#28a745' : '#ca6f1e';
             
+            // Uses CSS linear-gradient to fill the card background exactly to the percentage
             fill_bg = `linear-gradient(to right, ${fill_color} ${pct}%, #fff ${pct}%)`;
             percentage_display = `<span style="font-size:10px; color:#64748b; font-weight:700;">${pct.toFixed(0)}% DELIVERED</span>`;
         } else {
@@ -288,6 +306,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             ? '<span class="badge badge-warning">Draft</span>'
             : '<span class="badge badge-primary">Submitted</span>';
 
+        // Dispatch status badges
         var disp_badge_class = 'badge-secondary';
         if (disp_status === 'Fully Dispatched') disp_badge_class = 'badge-success';
         if (disp_status === 'Partially Dispatched') disp_badge_class = 'badge-warning';
@@ -327,6 +346,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             </div>`;
     }
 
+    // ── Unattended banner ─────────────────────────────────────────────────
     function update_unattended_banner() {
         var count = state.load_plans.filter(l => !['Partially Dispatched', 'Fully Dispatched'].includes(l.dispatch_status)).length;
         state.unattended_count = count;
@@ -338,6 +358,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         }
     }
 
+    // ── Main Canvas ───────────────────────────────────────────────────────
     function render_canvas() {
         if (!state.active_lp) return;
 
@@ -413,12 +434,14 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         var rows = '';
         items.forEach(function(row) {
             
+            // 1. Quantity Fulfillment Math & Formatting
             let ord_qty = parseFloat(row.so_ordered_qty) || 0;
             let del_qty = parseFloat(row.so_delivered_qty) || 0;
             let pct = parseFloat(row.so_qty_perc) || 0;
             
+            // Dispatch floor logic: Pure Green if perfectly satisfied, Heavy Black Bold if short.
             let fulfill_color = pct >= 99.99 ? '#27ae60' : '#000000';
-            let fulfill_weight = pct >= 99.99 ? '700' : '900';
+            let fulfill_weight = pct >= 99.99 ? '700' : '900'; // 900 for extra bold black
             
             let fulfill_html = `
                 <div class="fulfill-cell" data-pct="${pct}" style="font-weight:${fulfill_weight}; color:${fulfill_color}; font-size:14px; white-space:nowrap;">
@@ -518,6 +541,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
 
     function bind_canvas_events() {
         
+        // Fulfillment percentage sorting logic
         $('#lp-canvas').on('click', '.sort-fulfill-header', function() {
             var th = $(this);
             var currentSort = th.data('sort') || 'none';
@@ -588,6 +612,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         });
     }
 
+    // ── State mutation ────────────────────────────────────────────────────
     function apply_state(row, new_status) {
         row.status = new_status;
         if (state.current_state[row.item_row_name]) {
@@ -625,6 +650,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         if (lp) { lp.reservation_status = new_status; render_sidebar(); }
     }
 
+    // ── Backend calls ─────────────────────────────────────────────────────
     function fetch_load_plans(callback) {
         frappe.call({
             method: 'nexus_supply_chain.nexus_supply_chain.page.dispatch_status.dispatch_status.get_dispatch_board_load_plans',
@@ -707,6 +733,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         });
     }
 
+    // ── Popup: All Planned Items ──────────────────────────────────────────
     $('#card-all-planned').on('click', function() {
         var d = new frappe.ui.Dialog({
             title: '📦 All Planned Items (Without D-Note)',
@@ -730,6 +757,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         });
     });
 
+    // ── Popup: Unplanned Orders ───────────────────────────────────────────
     $('#card-unplanned').on('click', function() {
         var d = new frappe.ui.Dialog({
             title: '🗂 Unplanned Confirmed Orders',
@@ -753,6 +781,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         });
     });
 
+    // ── Popup renderer ────────────────────────────────────────────────────
     var BALANCE_COL_IDX = 6;
 
     function _render_popup(items, show_lp_col) {
@@ -872,6 +901,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
 
     function _bind_popup_events(wrapper, original_items, show_lp_col) {
 
+        // Text search
         wrapper.on('input', '#popup-search', function() {
             var q = $(this).val().toLowerCase().trim();
             wrapper.find('#popup-table tbody tr').each(function() {
@@ -879,8 +909,10 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             });
         });
 
+        // Balance filter
         bind_balance_filter(wrapper, 'popup-table', BALANCE_COL_IDX);
 
+        // Sorting Logic via Balance Header click
         wrapper.on('click', '.sort-bal-header', function() {
             var th = $(this);
             var currentSort = th.data('sort') || 'none';
@@ -905,28 +937,33 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
             tbody.empty().append(rows);
         });
 
+        // Consolidate
         wrapper.on('click', '#btn-consolidate', function() {
             var result = _popup_consolidated_rows(original_items);
             wrapper.find('#popup-tbody').html(result.html);
             wrapper.find('#popup-summary-bar').html(result.summary).show();
             wrapper.find('#btn-consolidate').hide();
             wrapper.find('#btn-unconsolidate').show();
+            // reset search, filter, and sort
             wrapper.find('#popup-search').val('');
             wrapper.find('.bal-filter-btn[data-filter="all"]').trigger('click');
             wrapper.find('.sort-bal-header').data('sort', 'none').find('.sort-icon').text('↕').addClass('text-muted').css('color', '');
         });
 
+        // Unconsolidate
         wrapper.on('click', '#btn-unconsolidate', function() {
             wrapper.find('#popup-tbody').html(_popup_individual_rows(original_items, show_lp_col));
             wrapper.find('#popup-summary-bar').hide();
             wrapper.find('#btn-consolidate').show();
             wrapper.find('#btn-unconsolidate').hide();
+            // reset search, filter, and sort
             wrapper.find('#popup-search').val('');
             wrapper.find('.bal-filter-btn[data-filter="all"]').trigger('click');
             wrapper.find('.sort-bal-header').data('sort', 'none').find('.sort-icon').text('↕').addClass('text-muted').css('color', '');
         });
     }
 
+    // ── Visual helpers ────────────────────────────────────────────────────
     function get_status_color(lp) {
         if (lp.dispatch_status === 'Fully Dispatched')      return '#28a745';
         if (lp.dispatch_status === 'Partially Dispatched')  return '#e67e22';
@@ -967,6 +1004,7 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         return `<span class="badge ${e[0]}" style="font-size:10px;">${e[1]}</span>`;
     }
 
+    // ── Sidebar refresh button ────────────────────────────────────────────
     $('#btn-refresh-plans').on('click', function() {
         var current = state.active_lp;
         fetch_load_plans(function() {
@@ -977,5 +1015,6 @@ frappe.pages['dispatch_status'].on_page_load = function(wrapper) {
         });
     });
 
+    // ── Boot ─────────────────────────────────────────────────────────────
     fetch_load_plans();
 };

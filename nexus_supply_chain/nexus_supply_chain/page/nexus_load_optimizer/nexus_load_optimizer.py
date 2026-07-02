@@ -14,6 +14,72 @@ from nexus_supply_chain.utils.cost_utils import (
 API_URL = "https://crystal-api.crystalapps.dev"  # Nexus Brain FastAPI (Local server-to-server is perfect here)
 TARGET_WAREHOUSE = "Finished Goods - CAL"
 
+# ──────────────────────────────────────────────────────────────────────
+# 🔒 WORKFLOW GUARD: Resolve Finance-Approved Draft States Dynamically
+# ──────────────────────────────────────────────────────────────────────
+def _get_finance_approved_draft_states(doctype="Sales Order"):
+    """
+    Dynamically resolves which workflow_state values represent a Draft Sales
+    Order that has PASSED Finance (Accounts Manager) approval.
+
+    Strategy:
+      1. Find the active Workflow for the given DocType.
+      2. Find all transitions where the allowed role is "Accounts Manager".
+      3. Collect the `next_state` values of those transitions — these are
+         the states Finance MOVES the document INTO when they approve.
+      4. Cross-check against the Workflow Document States table to keep only
+         states that are still drafts (doc_status = "0").
+      5. Strip any state whose action name contains "reject" — those are
+         the reject-path next_states, NOT the approval-path ones.
+
+    Returns:
+      list[str] — state names to use in a workflow_state IN (...) filter.
+      Returns None if no workflow is active (fall through, no filtering).
+    """
+    try:
+        # 1. Active workflow for the doctype
+        workflow_name = frappe.db.get_value(
+            "Workflow",
+            {"document_type": doctype, "is_active": 1},
+            "name"
+        )
+        if not workflow_name:
+            return None  # No workflow active — don't restrict
+
+        # 2. All Accounts Manager transitions
+        am_transitions = frappe.get_all(
+            "Workflow Transition",
+            filters={"parent": workflow_name, "allowed": "Accounts Manager"},
+            fields=["action", "next_state"]
+        )
+        if not am_transitions:
+            return None  # AM role not in this workflow
+
+        # 3. Collect only APPROVAL next_states (exclude reject-path actions)
+        candidate_states = [
+            t.next_state for t in am_transitions
+            if "reject" not in (t.action or "").lower()
+        ]
+        if not candidate_states:
+            return None
+
+        # 4. Keep only draft-docstatus states (doc_status = "0")
+        draft_states = frappe.db.sql_list("""
+            SELECT state
+            FROM `tabWorkflow Document State`
+            WHERE parent = %s
+              AND doc_status = '0'
+              AND state IN ({placeholders})
+        """.format(placeholders=", ".join(["%s"] * len(candidate_states))),
+            [workflow_name] + candidate_states
+        )
+
+        return draft_states if draft_states else None
+
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Nexus: Workflow State Resolution Failed")
+        return None  # Safe fallback — don't block the optimizer
+
 @frappe.whitelist()
 def run_optimizer(filters=None):
     """
@@ -48,10 +114,46 @@ def run_optimizer(filters=None):
     radius_map = {r.name: flt(r.custom_optimization_radius) for r in regions}
 
     # 3. Define Base Conditions (Unplanned Orders for specific Company)
+    # 3. Define Base Conditions (Unplanned Orders for specific Company)
     conditions = [
-        ["docstatus", "=", 1],
         ["company", "=", company_name]
     ]
+
+    # Dynamically assign docstatus based on the requested order status
+    so_status = filters.get("sales_order_status")
+    
+    if so_status == "Draft":
+        # Drafts are always unsubmitted
+        conditions.append(["docstatus", "=", 0])
+        conditions.append(["status", "=", "Draft"])
+
+        # ── WORKFLOW GUARD ──────────────────────────────────────────────
+        # Only surface Drafts that Finance (Accounts Manager) has already
+        # approved. This excludes:
+        #   • "Proceed To Order"          — not yet sent to Finance
+        #   • "Pending Finance Approval"  — Finance hasn't acted yet
+        #   • Any Finance-Rejected state  — rejected via workflow action
+        #
+        # The helper queries the live Workflow definition so state names
+        # are never hardcoded here — safe against workflow renames.
+        # ────────────────────────────────────────────────────────────────
+        finance_approved_states = _get_finance_approved_draft_states("Sales Order")
+        if finance_approved_states:
+            conditions.append(["workflow_state", "in", finance_approved_states])
+        else:
+            # No active workflow or AM role not found.
+            # Log a one-time notice and proceed without the guard so the
+            # optimizer is never silently broken.
+            frappe.log_error(
+                "No active Sales Order workflow found for Accounts Manager role. "
+                "Draft filter is running WITHOUT finance-approval guard.",
+                "Nexus Load Optimizer — Workflow Guard Skipped"
+            )
+    else:
+        # 'To Deliver', 'To Deliver and Bill', etc., are submitted documents
+        conditions.append(["docstatus", "=", 1])
+        if so_status:
+            conditions.append(["status", "=", so_status])
 
     # Exclude Sales Orders already assigned to active Load Plans
     planned_sos = frappe.db.sql("""
@@ -82,7 +184,10 @@ def run_optimizer(filters=None):
 
     # Apply UI Filters
     if filters.get("customer"): conditions.append(["customer", "=", filters.get("customer")])
-    if filters.get("sales_order_status"): conditions.append(["status", "=", filters.get("sales_order_status")])
+    # NOTE: sales_order_status is intentionally NOT re-applied here.
+    # docstatus + status were already set in the if/else block above.
+    # Re-applying it would create a duplicate condition and could conflict
+    # with the workflow_state guard on Draft orders.
     if filters.get("territory"): conditions.append(["territory", "=", filters.get("territory")])
     if filters.get("delivery_region"): conditions.append(["custom_delivery_region", "=", filters.get("delivery_region")])
     
@@ -118,7 +223,10 @@ def run_optimizer(filters=None):
     }
 
     # 5. Build Payload for External API
+    # 5. Build Payload for External API
     payload_orders = []
+    item_name_map = {}  # 🚨 NEW: Store names locally to bypass API data stripping
+
     for so in sos:
         region = so.custom_delivery_region
         if not region:
@@ -132,6 +240,11 @@ def run_optimizer(filters=None):
         items = []
         
         for item in so_doc.items:
+            # 🚨 NEW: Safely map the master item name in Python ONCE per unique item
+            if item.item_code not in item_name_map:
+                master_name = frappe.db.get_value("Item", item.item_code, "item_name")
+                item_name_map[item.item_code] = master_name or item.item_code
+
             weight = flt(frappe.db.get_value("Item", item.item_code, "weight_per_unit") or 0)
             price_list_rate = flt(frappe.db.get_value("Item Price", {"item_code": item.item_code, "price_list": "Standard Selling"}, "price_list_rate") or item.rate)
             stock = flt(frappe.db.get_value("Bin", {"item_code": item.item_code, "warehouse": TARGET_WAREHOUSE}, "actual_qty") or 0)
@@ -176,9 +289,19 @@ def run_optimizer(filters=None):
         resp = requests.post(f"{API_URL}/optimize", json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
+        
+        groups = data.get("groups", [])
+        
+        # 🚨 NEW: Intercept API response and re-inject the actual Item Names
+        for group in groups:
+            for so in group.get("sales_orders", []):
+                for item in so.get("items", []):
+                    ic = item.get("item_code")
+                    if ic:
+                        item["item_name"] = item_name_map.get(ic, ic)
 
         return {
-            "groups": data.get("groups", []),
+            "groups": groups,
             "factory_lat": factory_lat,
             "factory_lng": factory_lng,
             "debug": data.get("debug", {})

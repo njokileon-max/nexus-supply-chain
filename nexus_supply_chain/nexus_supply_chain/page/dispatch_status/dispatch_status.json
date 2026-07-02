@@ -4,7 +4,7 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-06-27 13:37:43.997778",
+ "modified": "2026-07-02 03:32:21.221763",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "dispatch_status",
@@ -12,7 +12,7 @@
  "page_name": "dispatch_status",
  "roles": [
   {
-   "role": "Administrator"
+   "role": "System Manager"
   }
  ],
  "script": null,

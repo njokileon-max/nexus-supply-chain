@@ -9,7 +9,7 @@ from typing import Dict, List
 
 # ----------------------------------------------------------------------
 # In-Memory Market Cost Engine (aligned with TrueMarketCostEngine in
-# nexus_dispatch_intelligence.py — Standard Buying price as primary
+# nexus_dispatch_intelligence.py — Current Market price as primary
 # source, Item.valuation_rate as fallback, zero-lag RAM mapping)
 # ----------------------------------------------------------------------
 
@@ -20,17 +20,17 @@ class MarketCostEngine:
     during BOM explosion), then resolves costs recursively with memoization.
 
     Leaf-node price priority:
-        1. Standard Buying price list (tabItem Price, buying = 1)
+        1. Current Market Price list (tabItem Price, buying = 1)
         2. Item.valuation_rate
         3. 0.0
     """
 
     def __init__(self):
-        # 1. Standard Buying prices (current market replacement cost)
+        # 1. Current Market prices (current market replacement cost)
         prices = frappe.db.sql("""
             SELECT item_code, price_list_rate
             FROM `tabItem Price`
-            WHERE price_list = 'Standard Buying'
+            WHERE price_list = 'Current Market Price'
               AND buying = 1
         """, as_dict=True)
         self.price_map: Dict[str, float] = {
@@ -90,7 +90,7 @@ class MarketCostEngine:
         bom_info = self.bom_map.get(item_code)
 
         if not bom_info:
-            # Leaf node: Standard Buying price → Item valuation fallback
+            # Leaf node: Current Market price → Item valuation fallback
             cost = self.price_map.get(item_code)
             if not cost:
                 cost = self.item_val_map.get(item_code, 0.0)
@@ -123,7 +123,7 @@ def compute_total_theoretical_cost_for_orders(sales_orders: List[dict]) -> float
     with 'item_code' and 'qty'), returns the total theoretical market
     cost (sum of market_cost_per_unit × qty).
 
-    Uses MarketCostEngine (Standard Buying → valuation_rate fallback)
+    Uses MarketCostEngine (Current Market Price → valuation_rate fallback)
     to match the COGS figures shown in Dispatch Intelligence.
     """
     if not sales_orders:
