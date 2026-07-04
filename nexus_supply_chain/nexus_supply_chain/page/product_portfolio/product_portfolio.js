@@ -7,7 +7,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         single_column: true
     });
 
-    // Global memory for 0-lag simulation
     page.portfolio_data = [];
     page.filtered_data = [];
     page.current_sort = { col: 'item_name', dir: 'asc' };
@@ -82,7 +81,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
 
     $(wrapper).find('.layout-main-section').html(layout_html);
 
-    // --- Dynamic Select Generators ---
     let margin_opts = "";
     for(let i=5; i<=100; i+=5) {
         let selected = (i===25) ? "selected" : "";
@@ -178,7 +176,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         });
     }
 
-    // --- The 0-Lag JS Simulation Engine ---
     function run_live_simulation() {
         let margin_pct = parseFloat($('#margin-simulator').val()) / 100.0;
 
@@ -207,7 +204,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         run_live_simulation();
     });
 
-    // --- Instant Filter Engine (Scans Groups, Bases & Codes) ---
     function apply_filters() {
         let term = $('#dt-search').val().toLowerCase();
         let grp = $('#dt-group-filter').val();
@@ -229,7 +225,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
     $('#dt-search').on('keyup', apply_filters);
     $('#dt-group-filter').on('change', apply_filters);
 
-    // --- Double-Axis Table Renderer ---
     function render_table_body() {
         let data = [...page.filtered_data];
         
@@ -282,7 +277,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         $('#nexus-table-body').empty().html(tbody_html);
     }
 
-    // --- THE "DATA IMPORT HANDOFF" MODAL LOGIC FOR COSTING ---
     $('#btn-commit-costs').on('click', function() {
         if (!page.filtered_data || page.filtered_data.length === 0) {
             frappe.msgprint("No data available in the current view to sync.");
@@ -385,7 +379,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         strategy_dialog.show();
     });
 
-    // --- THE "DATA IMPORT HANDOFF" MODAL LOGIC FOR PRICING (Group -> Base -> UOM) ---
     $('#btn-generate-averages').on('click', function() {
         frappe.call({
             method: "nexus_supply_chain.nexus_supply_chain.page.product_portfolio.product_portfolio.get_active_price_lists",
@@ -622,7 +615,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
         d.fields_dict.grid_html.$wrapper.html(html);
     }
 
-    // --- Simple Excel Export ---
     $('#btn-export-excel').on('click', function() {
         if (!page.filtered_data || page.filtered_data.length === 0) return;
         
@@ -648,7 +640,6 @@ frappe.pages['product_portfolio'].on_page_load = function(wrapper) {
 
     $('#refresh-portfolio-btn').on('click', function() { load_portfolio_data(); });
 
-    // WebSockets: Auto-Sync on Catalog/Price Updates
     frappe.realtime.on('nexus_catalog_sync', function(event_data) {
         frappe.show_alert({message: "Catalog Update Detected. Re-compiling pricing graph.", indicator: 'green'});
         load_portfolio_data();

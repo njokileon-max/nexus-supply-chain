@@ -4,8 +4,6 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
         title: 'NEXUS INVENTORY SYNC',
         single_column: true
     });
-
-    // --- Inject Professional UI Styles ---
     const style = document.createElement('style');
     style.innerHTML = `
         .section-header-container { margin-top: 40px; margin-bottom: 10px; border-bottom: 2px solid #f0f4f7; padding-bottom: 8px; }
@@ -23,8 +21,6 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
         .pagination { margin-bottom: 20px; }
     `;
     document.head.appendChild(style);
-
-    // --- Filter Fields ---
     let company_f = page.add_field({label: 'Company', fieldtype: 'Link', options: 'Company', default: frappe.defaults.get_user_default("Company")});
     let customer_f = page.add_field({label: 'Customer', fieldtype: 'Link', options: 'Customer'});
     let item_code_f = page.add_field({label: 'Item Code', fieldtype: 'Link', options: 'Item'});
@@ -52,8 +48,6 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
     let debounce_timer = null;
 
     $(wrapper).find('.layout-main-section').append(frappe.render_template('nexus_inventory_sync', {}));
-
-    // --- Event Handlers ---
 
     $(wrapper).on('input', '.section-search-input', function() {
         let $el = $(this);
@@ -129,8 +123,6 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
         ['so', 'fg', 'sub', 'rm'].forEach(type => $(`#${type}-table-container`).empty());
     });
 
-    // --- Helpers ---
-
     function get_filters(page_fields) {
         let f = {};
         Object.keys(page_fields).forEach(k => {
@@ -195,8 +187,6 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
             <button class="btn btn-default btn-xs" data-type="${type}" data-action="last" data-total-pages="${total_pages}" ${page===total_pages-1?'disabled':''}>Last</button>
         </div>`;
     }
-
-    // --- Core Render Functions ---
 
     function render_section(wrapper, data, type, page, page_size, sort_states) {
         if (!data) return;
@@ -322,12 +312,9 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
         $('#rm-table-container').html(html + `</tbody></table>` + render_pagination('rm', page, tp, start, start + paginated.length, total));
     }
 
-    // --- Export Logic ---
-
     function export_section(type, data, page_fields, wrapper) {
         if (!data) return frappe.msgprint("No data to export.");
         
-        // Prepare Filters for Header
         let filters = get_filters(page_fields);
         let filter_lines = Object.keys(filters).map(k => [`${k}: ${filters[k]}`]);
 
@@ -340,14 +327,12 @@ frappe.pages['nexus_inventory_sync'].on_page_load = function(wrapper) {
         let export_items = all_items;
         let query = search_queries[type];
 
-        // Apply search query if no specific selection
         if (query && selected_ids.length === 0) {
             export_items = export_items.filter(i => {
                 return [i.sales_order, i.item_code, i.item_name, i.customer, i.customer_name].join(' ').toLowerCase().includes(query);
             });
         }
 
-        // Filter by selection
         if (selected_ids.length > 0) {
             export_items = all_items.filter(r => {
                 if (type === 'so') return selected_ids.includes(r.sales_order);

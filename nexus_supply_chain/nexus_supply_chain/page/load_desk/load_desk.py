@@ -4,10 +4,6 @@ import frappe
 import json
 from frappe.utils import flt
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _get_submitted_dnote_so_set(so_names):
     """
     Returns a set of Sales Order names that have at least one submitted
@@ -39,17 +35,9 @@ def _get_delivery_status(so_status, qty_per_delivered):
         return 'On Hold'
     return 'Pending'
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API 1 – Sidebar Load Plans (Lightning Fast Physical Quantity RAM Map)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @frappe.whitelist()
 def get_load_desk_plans():
-    """
-    Fetches Load Plans calculating dispatch statuses exactly on Physical 
-    Box Quantities (Ordered vs Delivered) using 0-Lag RAM mapping.
-    """
-    # 1. Map total ordered physical quantities per Load Plan
+
     load_plans = frappe.db.sql("""
         SELECT
             lp.name, lp.docstatus, lp.vehicle_type, lp.transport_mode,
@@ -65,7 +53,6 @@ def get_load_desk_plans():
         ORDER BY lp.creation DESC
     """, as_dict=True)
 
-    # 2. Map absolute truth of delivered physical quantities direct from submitted D-Notes
     delivered_map_raw = frappe.db.sql("""
         SELECT 
             lp_so.parent as load_plan,
@@ -82,7 +69,6 @@ def get_load_desk_plans():
     pending_lps    = []
     dispatched_lps = []
 
-    # 3. RAM Merge & Status Classification
     for lp in load_plans:
         tot_ordered = flt(lp.total_ordered)
         tot_delivered = del_map.get(lp.name, 0.0)
@@ -110,17 +96,8 @@ def get_load_desk_plans():
 
     return pending_lps + dispatched_lps
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 2 – Sales Order Exact Quantity Aggregation Engine
-# ─────────────────────────────────────────────────────────────────────────────
-
 @frappe.whitelist()
 def get_load_plan_sales_orders(load_plan_name):
-    """
-    Computes precise line-item physical execution (Ordered Qty, Delivered Qty, 
-    and True Outstanding Shortfall) per Sales Order via 0-Lag RAM mapping.
-    """
     lp = frappe.get_doc("Nexus Load Plan", load_plan_name)
     if not lp.sales_orders:
         return {"sales_orders": []}
@@ -128,7 +105,6 @@ def get_load_plan_sales_orders(load_plan_name):
     so_names = [row.sales_order for row in lp.sales_orders]
     dispatched_so_set = _get_submitted_dnote_so_set(so_names)
 
-    # Fetch header details (custom_delivery_region synced with Intelligence Dashboard)
     sos = frappe.db.sql("""
         SELECT 
             name as sales_order, customer_name, custom_delivery_region as region, 
@@ -137,7 +113,6 @@ def get_load_plan_sales_orders(load_plan_name):
         WHERE name IN %s
     """, (tuple(so_names),), as_dict=True)
 
-    # --- RAM Map for Exact Physical SO Quantities ---
     so_ordered_raw = frappe.db.sql("""
         SELECT parent as sales_order, SUM(stock_qty) as ordered_qty, COUNT(name) as total_items
         FROM `tabSales Order Item`
@@ -153,13 +128,11 @@ def get_load_plan_sales_orders(load_plan_name):
         GROUP BY dni.against_sales_order
     """, (tuple(so_names),), as_dict=True)
 
-    # Build RAM Map
     so_quantities = {r.sales_order: {"ordered_qty": flt(r.ordered_qty), "total_items": r.total_items, "delivered_qty": 0.0} for r in so_ordered_raw}
     for r in so_delivered_raw:
         if r.sales_order in so_quantities:
             so_quantities[r.sales_order]["delivered_qty"] = flt(r.delivered_qty)
 
-    # Process Reservation Statuses from Custom State JSON
     state_dict = json.loads(lp.custom_dispatch_state) if lp.custom_dispatch_state else {}
     so_stats = {so: {"confirmed": 0, "reserved": 0} for so in so_names}
     
@@ -177,19 +150,16 @@ def get_load_plan_sales_orders(load_plan_name):
         stats = so_stats.get(so_id, {"confirmed": 0, "reserved": 0})
         qty_data = so_quantities.get(so_id, {"ordered_qty": 0.0, "delivered_qty": 0.0, "total_items": 0})
         
-        # Exact Physical Mathematics
         ord_qty = qty_data["ordered_qty"]
         del_qty = qty_data["delivered_qty"]
         qty_perc = (del_qty / ord_qty * 100) if ord_qty > 0 else 0.0
         outstanding_qty = ord_qty - del_qty
 
-        # Map to UI JSON payload
         so['so_ordered_qty'] = ord_qty
         so['so_delivered_qty'] = del_qty
         so['so_qty_perc'] = qty_perc
         so['outstanding_qty'] = outstanding_qty
         
-        # Dispatch & Reservation Tracking
         so['so_dispatched'] = so_id in dispatched_so_set
         so['delivery_status'] = 'Dispatched' if so['so_dispatched'] else _get_delivery_status(so['so_status'], qty_perc)
         
@@ -206,11 +176,6 @@ def get_load_plan_sales_orders(load_plan_name):
         final_sos.append(so)
 
     return {"sales_orders": final_sos}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 3 – Delivery Note Mapper (Draft & Redirect)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()
 def create_dn_from_so(sales_order, load_plan_name):
@@ -243,11 +208,6 @@ def create_dn_from_so(sales_order, load_plan_name):
     dn.insert(ignore_permissions=True)
     
     return {"name": dn.name}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 4 – Unplanned Confirmed Orders Fetcher (Layer 1: SOs)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()
 def get_unplanned_confirmed_orders():
@@ -290,14 +250,8 @@ def get_unplanned_confirmed_orders():
 
     return {"sales_orders": sos, "count": len(pending_sos)}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 5 – Explode Unplanned Items (Layer 2: Items)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @frappe.whitelist()
 def get_exploded_unplanned_items():
-    """Explodes the pending SOs into item-level details mapping available bin stock."""
     planned_sos = frappe.db.sql("""
         SELECT DISTINCT sales_order
         FROM `tabNexus Load Plan Sales Order`
@@ -349,11 +303,6 @@ def get_exploded_unplanned_items():
             item['balance'] = item['actual_bin'] - item['required_qty']
 
     return {"items": items}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 6 – Print Engine Data Fetcher
-# ─────────────────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()
 def get_print_data(load_plans, print_type):

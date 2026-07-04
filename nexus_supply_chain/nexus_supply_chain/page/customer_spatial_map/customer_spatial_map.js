@@ -7,7 +7,6 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
         single_column: true
     });
 
-    // 1. Inject the CSS for our STATIC markers, clustering, and the NEW Company Marker
     $(wrapper).find('.layout-main-section').append(`
         <style>
             /* Lightweight CSS for 5000+ Customer markers */
@@ -48,7 +47,6 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
         <div id="spatial-map-container" style="height: 75vh; width: 100%; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); z-index: 1; border: 1px solid #e2e8f0;"></div>
     `);
 
-    // 2. Load LOCAL Leaflet mapping AND Clustering assets
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css",
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -60,7 +58,6 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
     });
 
     function init_spatial_map() {
-        // 3. Initialize map centered loosely on Kenya
         let map = L.map('spatial-map-container', {
             preferCanvas: true 
         }).setView([-1.2921, 36.8219], 6);
@@ -70,7 +67,6 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
             attribution: 'Data &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Routing by Crystal Adhesives Ltd'
         }).addTo(map);
 
-        // 4. Initialize the High-Speed Cluster Group for Customers
         let markersClusterGroup = L.markerClusterGroup({
             chunkedLoading: true,
             maxClusterRadius: 50
@@ -78,12 +74,10 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
 
         let bounds = [];
 
-        // 5. FETCH COMPANIES FIRST (The Anchors)
         frappe.db.get_list('Company', {
             fields: ['name', 'company_name', 'custom_latitude', 'custom_longitude']
         }).then(companies => {
             
-            // Create the distinct, professional Company Icon
             let companyIcon = L.divIcon({
                 className: 'custom-nexus-icon',
                 html: `
@@ -117,7 +111,6 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
                 }
             });
 
-            // 6. NOW FETCH CUSTOMERS (The Destinations)
             frappe.call({
                 method: "nexus_supply_chain.nexus_supply_chain.page.customer_spatial_map.customer_spatial_map.get_mapped_customers",
                 freeze: true,
@@ -156,23 +149,19 @@ frappe.pages['customer_spatial_map'].on_page_load = function(wrapper) {
                                 
                                 marker.bindPopup(popup_html, { closeButton: false });
                                 
-                                // Customers go into the cluster group
                                 markersClusterGroup.addLayer(marker);
                                 bounds.push([lat, lng]);
                             }
                         });
 
-                        // Add the customer clusters to the map
                         map.addLayer(markersClusterGroup);
 
-                        // Fit the map to view BOTH the factory and all customers
                         if (bounds.length > 0) {
                             map.fitBounds(bounds, {padding: [50, 50]});
                         }
                         
                         frappe.show_alert({message: `Mapped Factory and clustered ${r.message.length} customers.`, indicator: "green"});
                     } else {
-                        // If no customers, just zoom to the company if it exists
                         if (bounds.length > 0) {
                             map.fitBounds(bounds, {padding: [50, 50], maxZoom: 12});
                         }

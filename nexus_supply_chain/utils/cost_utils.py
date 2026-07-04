@@ -3,7 +3,7 @@
 # For license information, please see license.txt
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, now_datetime, get_first_day, get_last_day
 from typing import Dict, List
 
 
@@ -26,12 +26,14 @@ class MarketCostEngine:
     """
 
     def __init__(self):
-        # 1. Current Market prices (current market replacement cost)
+        # 🚨 FIX 1: Add ORDER BY creation ASC so that dictionary iterations
+        # overwrite older duplicates, leaving the latest entry active.
         prices = frappe.db.sql("""
             SELECT item_code, price_list_rate
             FROM `tabItem Price`
             WHERE price_list = 'Current Market Price'
               AND buying = 1
+            ORDER BY creation ASC
         """, as_dict=True)
         self.price_map: Dict[str, float] = {
             p.item_code: flt(p.price_list_rate) for p in prices
@@ -73,6 +75,9 @@ class MarketCostEngine:
         # Per-instance memoization and circular-reference guard
         self.cost_cache: Dict[str, float] = {}
         self.visited: set = set()
+        
+        # 🚨 FIX 2: Dynamic list container tracking items lacking valuation setups
+        self.zero_cost_items: List[str] = []
 
     def get_cost(self, item_code: str) -> float:
         """
@@ -94,6 +99,12 @@ class MarketCostEngine:
             cost = self.price_map.get(item_code)
             if not cost:
                 cost = self.item_val_map.get(item_code, 0.0)
+            
+            # 🚨 FIX 2: Trap zero valuations and cache them to tracking system
+            if flt(cost) <= 0.0:
+                if item_code not in self.zero_cost_items:
+                    self.zero_cost_items.append(item_code)
+
             self.cost_cache[item_code] = cost
             self.visited.discard(item_code)
             return cost
@@ -108,6 +119,11 @@ class MarketCostEngine:
             total_bom_cost += self.get_cost(child.item_code) * flt(child.stock_qty)
 
         unit_cost = total_bom_cost / bom_yield
+        
+        # Catch sub-assemblies costing nothing
+        if flt(unit_cost) <= 0.0 and item_code not in self.zero_cost_items:
+            self.zero_cost_items.append(item_code)
+
         self.cost_cache[item_code] = unit_cost
         self.visited.discard(item_code)
         return unit_cost
@@ -205,3 +221,65 @@ def invalidate_theoretical_cost_cache(item_code: str = None):
     """
     if item_code:
         frappe.cache().delete_value(f"nexus:market_cost:{item_code}")
+
+
+# ----------------------------------------------------------------------
+# Overhead Allocation Engine (0-Lag Caching for Real-Time Net Profit)
+# ----------------------------------------------------------------------
+
+def get_current_month_overhead_metrics(force_refresh: bool = False) -> Dict[str, float]:
+    """
+    Dynamically computes the Total Global Overheads (Labour, Energy, Admin) 
+    and Total Invoiced Sales for the CURRENT month to establish the company's 
+    baseline overhead ratio.
+    
+    Results are cached in Redis for 1 hour to prevent DB locking when analyzing 
+    dozens of Load Plans interactively.
+    """
+    today = now_datetime()
+    start_date = get_first_day(today).strftime("%Y-%m-%d")
+    end_date = get_last_day(today).strftime("%Y-%m-%d")
+    
+    cache_key = f"nexus:overhead_metrics:{start_date}"
+
+    if not force_refresh:
+        cached_data = frappe.cache().get_value(cache_key)
+        if cached_data:
+            return cached_data
+
+    # 1. Fetch the 3 Nexus Cost Pools for the current month
+    has_custom_pool = frappe.db.has_column("Account", "nexus_cost_pool")
+    target_field = "nexus_cost_pool" if has_custom_pool else "custom_nexus_cost_pool"
+
+    pools = frappe.db.sql(f"""
+        SELECT SUM(gl.debit) - SUM(gl.credit) AS total
+        FROM `tabGL Entry` gl
+        INNER JOIN `tabAccount` acc ON gl.account = acc.name
+        WHERE gl.posting_date BETWEEN %s AND %s
+            AND gl.is_cancelled = 0
+            AND acc.root_type = 'Expense'
+            AND acc.{target_field} IN ('Labour', 'Energy', 'Admin')
+    """, (start_date, end_date), as_dict=True)
+
+    total_global_overheads = flt(pools[0].total) if pools and pools[0].total else 0.0
+
+    # 2. Fetch Total Invoiced Sales for the current month (Strictly docstatus 1, non-return)
+    sales_data = frappe.db.sql("""
+        SELECT SUM(base_grand_total) as total_sales
+        FROM `tabSales Invoice`
+        WHERE posting_date BETWEEN %s AND %s
+            AND docstatus = 1
+            AND is_return = 0
+    """, (start_date, end_date), as_dict=True)
+
+    total_invoiced_sales = flt(sales_data[0].total_sales) if sales_data and sales_data[0].total_sales else 0.0
+    
+    # 3. Compile and Cache
+    result = {
+        "total_global_overheads": total_global_overheads,
+        "total_invoiced_sales": total_invoiced_sales
+    }
+
+    frappe.cache().set_value(cache_key, result, expires_in_sec=3600)
+    
+    return result

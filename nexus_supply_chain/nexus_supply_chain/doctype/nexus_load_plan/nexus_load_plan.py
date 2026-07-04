@@ -5,14 +5,11 @@ from frappe.model.document import Document
 
 class NexusLoadPlan(Document):
     def on_submit(self):
-        # Automatically move to loading phase when confirmed
         self.db_set("dispatch_status", "Production/Loading")
 
 @frappe.whitelist()
 def make_delivery_manifest(source_name):
-    """Creates a Draft Vehicle Delivery Manifest securely and prevents duplicates"""
     
-    # 1. Uniqueness Check: Does a manifest already exist for this Load Plan?
     existing_manifest = frappe.db.get_value("Vehicle Delivery Manifest", 
         {"load_plan": source_name, "docstatus": ["<", 2]}, "name")
         
@@ -23,15 +20,12 @@ def make_delivery_manifest(source_name):
             "message": "A Delivery Manifest already exists for this Load Plan."
         }
         
-    # 2. Map and Create the Document
     source = frappe.get_doc("Nexus Load Plan", source_name)
     target = frappe.new_doc("Vehicle Delivery Manifest")
     
     target.load_plan = source.name
     target.trip_status = "Manifested"
-    # Note: target.vehicle mapping removed to allow manual assignment of the specific license plate
     
-    # 🚨 FINANCIAL & LOGISTICAL HANDOFF: Map Load Plan intelligence directly to the Manifest
     target.profit_loss = source.profit_loss
     target.gross_margin = source.margin_percentage  # Maps Load Plan's 'margin_percentage' to Manifest's 'gross_margin'
     target.net_margin = source.net_margin
@@ -53,7 +47,6 @@ def make_delivery_manifest(source_name):
             "delivery_status": "Pending"
         })
 
-    # Save as Draft
     target.insert(ignore_permissions=True)
     frappe.db.commit()
 

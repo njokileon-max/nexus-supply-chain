@@ -8,19 +8,16 @@ frappe.pages['sales-and-collection-targets'].on_page_load = function(wrapper) {
         single_column: true
     });
 
-    // Global state for instant sorting/filtering/exporting
     page.nexus_cache = [];
     page.nexus_dates = {};
     page.current_sort = { col: 'sales_person_name', dir: 'asc' };
 
     page.set_primary_action('Refresh Live Data', () => trigger_fetch(page), 'refresh');
     
-    // Custom Checkbox injection in page header with State Management
     let custom_btn = page.add_inner_button('Custom Audit Range', function() {
         toggle_custom_range(page, custom_btn);
     });
 
-    // Phase 5: Client-Side Excel Export Engine
     page.add_inner_button('Export to Excel', function() {
         export_to_excel(page);
     });
@@ -163,7 +160,6 @@ function render_core_ui(page) {
     let data = page.nexus_cache;
     let dates = page.nexus_dates;
     
-    // Global Accumulators aligned with exact backend ledger math
     let t_sales_target = data.reduce((sum, row) => sum + row.sales_target, 0);
     let t_sales = data.reduce((sum, row) => sum + row.actual_sales, 0);
     let t_delivered = data.reduce((sum, row) => sum + (row.actual_delivered || 0), 0);
@@ -177,7 +173,6 @@ function render_core_ui(page) {
     let t_outstanding = data.reduce((sum, row) => sum + row.total_outstanding, 0);
     let t_overdue = data.reduce((sum, row) => sum + row.total_overdue, 0);
     
-    // 4-Month PDC Splice
     let t_pdc = data.reduce((sum, row) => sum + row.pdc_amount, 0);
     let t_pdc_m1 = data.reduce((sum, row) => sum + row.pdc_m1, 0);
     let t_pdc_m2 = data.reduce((sum, row) => sum + row.pdc_m2, 0);
@@ -324,7 +319,6 @@ function render_core_ui(page) {
 
     $('#dashboard-content').html(html);
 
-    // Attach Event Listeners for Client-Side Interactivity
     $('#nexus-search-input').on('keyup', function() {
         render_table_body(page, $(this).val());
     });
@@ -332,7 +326,6 @@ function render_core_ui(page) {
     $('.nexus-table th[data-sort], .nexus-table th:contains("↕")').on('click', function() {
         let col = $(this).attr('data-sort');
         
-        // Map top row header clicks to their respective column keys
         if(!col) {
             let text = $(this).text().trim();
             if(text.includes("Executive")) col = "sales_person_name";
@@ -379,7 +372,6 @@ function render_table_body(page, filter_term = "") {
         let s_css = get_pct_css(row.sales_pct);
         let c_css = get_pct_css(row.collection_pct);
 
-        // Phase 3: Conditionally render Today metrics (leave blank for custom audit)
         let display_today_sales = page.is_custom ? "" : format_curr(row.today_sales || 0);
         let display_today_coll = page.is_custom ? "" : format_curr(row.today_collections || 0);
 

@@ -12,7 +12,6 @@ app_license = ""
 
 doc_events = {
     "Customer": {
-        # 🚨 EVENTUAL CONSISTENCY MODEL: 0-Lag Background Geocoding.
         # Fires only AFTER MariaDB has safely committed the record and released the row lock.
         # This completely eliminates UI freezing on the "Save" button.
         "after_insert": [
@@ -25,21 +24,19 @@ doc_events = {
         ]
     },
     
-   # 🚨 UNIFIED CATALOG TRIGGERS
     "Item": {
         "on_update": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-            "nexus_supply_chain.api.publish_catalog_update" # <-- MOVED TO API.PY
+            "nexus_supply_chain.api.publish_catalog_update"
         ]
     },
     "Item Price": {
         "on_update": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-            "nexus_supply_chain.api.publish_catalog_update" # <-- MOVED TO API.PY
+            "nexus_supply_chain.api.publish_catalog_update"
         ]
     },
 
-    # 🚨 NOT IN API.PY
     # "Nexus Inventory Reservation": {
     #     "on_update": "nexus_supply_chain.reservation_hooks.process_reservation_update",
     #     "before_submit": "nexus_supply_chain.reservation_hooks.prepare_reservation_submission",
@@ -47,7 +44,6 @@ doc_events = {
     #     "on_cancel": "nexus_supply_chain.reservation_hooks.process_reservation_cancel"
     # },
     
-    # 🚨 STOCK MOVEMENT TRIGGERS
     "Delivery Note": {
         # "validate": "nexus_supply_chain.reservation_hooks.validate_delivery_note_submission",
         "on_submit": [
@@ -72,8 +68,6 @@ doc_events = {
         ]
     },
     
-    # 🚨 FINANCIAL TRIGGERS
-    # Clears Redis cache to update debt snapshots and dashboard MTD collections.
     "Payment Entry": {
         "on_submit": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
         "on_cancel": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
@@ -119,13 +113,10 @@ doc_events = {
         ]
     },
     
-    # 🚨 TARGET MANAGEMENT TRIGGER
     "Sales Person": {
         "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
     },
 
-    # 🚨 MASTER METADATA STRUCTURAL TRIGGERS
-    # Forces absolute global system invalidation cache sweeps if dropdown matrices change.
     "Customer Group": {
         "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
         "on_change": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
@@ -147,29 +138,17 @@ doc_events = {
         "on_trash": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
     },
 
-    # 🚨 BULK DATA IMPORT TRIGGERS (The Thundering Herd Shield)
-    # Fires exactly once after a Frappe v15 Data Import completely finishes.
     "Data Import": {
         "on_update": "nexus_supply_chain.api.trigger_post_import_cache_eviction"
     }
 }
 
-# 🚨 SCHEDULED ORCHESTRATOR (STRATEGY B: The Redis Debounce Buffer)
-# This cron job runs every 1 minute. It will check the Redis cache flag and 
-# fire a single webhook to FastAPI if any records were updated in the last 60 seconds.
-# 🚨 SCHEDULED ORCHESTRATORS
 scheduler_events = {
     "cron": {
-        # 1. Strategy B: Redis Debounce Buffer (Runs every 1 minute)
-        # Checks the Redis cache flag and fires a single cache-eviction webhook to FastAPI 
-        # if any records were updated in the last 60 seconds.
         "* * * * *": [
             "nexus_supply_chain.api.process_debounced_cache_eviction"
         ],
-        
-        # 2. Strategy D: The Slow-Drip Batcher (Runs every 10 minutes)
-        # The Cleanup Crew: Quietly processes bulk-imported customers in the background.
-        # It bypasses Frappe's synchronous UI hooks and avoids Google Map API bans.
+
         "*/10 * * * *": [
             "nexus_supply_chain.api.process_bulk_geocoding_queue"
         ]

@@ -8,15 +8,28 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     });
 
     let page_fields = {
-        company: page.add_field({label: 'Company', fieldtype: 'Link', options: 'Company', default: frappe.defaults.get_user_default("Company")}),
-        customer: page.add_field({label: 'Customer', fieldtype: 'Link', options: 'Customer'}),
-        sales_order_status: page.add_field({label: 'Sales Order Status', fieldtype: 'Select', options: '\nDraft\nTo Deliver\nTo Deliver and Bill', default: 'To Deliver and Bill'}),
-        territory: page.add_field({label: 'Territory', fieldtype: 'Link', options: 'Territory'}),
-        delivery_region: page.add_field({label: 'Delivery Region', fieldtype: 'Link', options: 'Delivery Region', reqd: 1}),
-        vehicle_type: page.add_field({label: 'Vehicle Type', fieldtype: 'Link', options: 'Vehicle Type', reqd: 1}),
-        transport_mode: page.add_field({label: 'Transport Mode', fieldtype: 'Select', options: '\nCompany Truck\nOn-Collection', default: 'Company Truck'}),
-        from_date: page.add_field({label: 'From Date', fieldtype: 'Date'}),
-        to_date: page.add_field({label: 'To Date', fieldtype: 'Date'})
+    company: page.add_field({label: 'Company', fieldtype: 'Link', options: 'Company', default: frappe.defaults.get_user_default("Company")}),
+    customer: page.add_field({label: 'Customer', fieldtype: 'Link', options: 'Customer'}),
+    sales_order_status: page.add_field({label: 'Sales Order Status', fieldtype: 'Select', options: '\nDraft\nTo Deliver\nTo Deliver and Bill', default: 'To Deliver and Bill'}),
+    territory: page.add_field({label: 'Territory', fieldtype: 'Link', options: 'Territory'}),
+    delivery_region: page.add_field({label: 'Delivery Region', fieldtype: 'Link', options: 'Delivery Region', reqd: 1}),
+    vehicle_type: page.add_field({label: 'Vehicle Type', fieldtype: 'Link', options: 'Vehicle Type', reqd: 1}),
+    transport_mode: page.add_field({label: 'Transport Mode', fieldtype: 'Select', options: '\nCompany Truck\nOn-Collection', default: 'Company Truck'}),
+    grouping_mode: page.add_field({
+        label: 'Group by Tonnage Only (Skip Geo-Clustering)',
+        fieldtype: 'Check',
+        default: 0,
+        description: 'When checked, orders are packed purely by capacity/FIFO wait time. Geographic proximity clustering is skipped — route sequencing (VROOM/ORS) is unaffected and still runs when you click "View Optimized Route".'
+    }),
+    from_date: page.add_field({label: 'From Date', fieldtype: 'Date'}),
+    to_date: page.add_field({label: 'To Date', fieldtype: 'Date'})
+    };
+
+    page_fields.grouping_mode.df.onchange = () => {
+    captured_route_data = {};
+    active_margin_data = null;
+    $('#optimizer-sections-container').empty();
+    current_data = null;
     };
 
     page_fields.transport_mode.df.onchange = () => {
@@ -36,11 +49,9 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     let map_layers = [];
     let captured_route_data = {}; 
     
-    // 🚨 0-Lag State Management for Margin Analytics
     let active_margin_data = null;
     let is_car_hire_mode = false;
     
-    // 🚨 FLEET TELEMETRY STATE
     const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/ws";
     const FASTAPI_URL = "https://crystal-api.crystalapps.dev";
     let fleetWS = null;
@@ -48,17 +59,109 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     let LIVE_FLEET_STATE = {};
     let fleet_markers = {};
 
+    const groupColorPalette = [
+        '#1e3a8a', '#065f46', '#7f1d1d', '#581c87', 
+        '#9a3412', '#0f766e', '#86198f', '#3f3f46'
+    ];
+
+    function getLightShade(hexCode) {
+        let r = parseInt(hexCode.slice(1, 3), 16);
+        let g = parseInt(hexCode.slice(3, 5), 16);
+        let b = parseInt(hexCode.slice(5, 7), 16);
+        r = Math.round(r * 0.08 + 255 * 0.92);
+        g = Math.round(g * 0.08 + 255 * 0.92);
+        b = Math.round(b * 0.08 + 255 * 0.92);
+        return `rgb(${r}, ${g}, ${b})`;
+    }
+
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css",
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
         "https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js" 
     ], function() {
-        // Initialize the WebSocket engine as soon as the dependencies are loaded
         connectFleetWebSocket();
     });
 
     $('head').append(`
         <style>
+            .controls-wrapper {
+                background: #ffffff;
+                padding: 15px 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                border: 1px solid #e2e8f0;
+                margin-bottom: 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .sticky-kpi-banner {
+                position: sticky;
+                top: 0;
+                z-index: 10;
+                background-color: #f3f6f9; 
+                padding-top: 5px;
+                padding-bottom: 15px;
+            }
+            .margin-card {
+                background: #ffffff;
+                border-radius: 10px;
+                padding: 20px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                border: 2px solid #cbd5e1;
+            }
+            .margin-card-title { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+            .margin-card-value { font-size: 24px; font-weight: 800; color: #0f172a; }
+            .margin-card-percentage { font-size: 14px; font-weight: bold; margin-left: 10px; padding: 2px 6px; border-radius: 4px; }
+            
+            .region-card {
+                border-radius: 8px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.08);
+                border: 2px solid #cbd5e1;
+                height: 100%;
+                transition: transform 0.2s, box-shadow 0.2s;
+                overflow: hidden; 
+                display: flex;
+                flex-direction: column;
+            }
+            .region-card:hover { transform: translateY(-3px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }
+            
+            .region-header {
+                padding: 12px 16px;
+                color: #ffffff;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 2px solid rgba(0,0,0,0.1);
+            }
+            .region-title {
+                font-size: 14px;
+                font-weight: 900;
+                color: #ffffff !important;
+                margin: 0;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            .region-header-pct {
+                font-size: 14px;
+                font-weight: 900;
+                background: rgba(255,255,255,0.2);
+                padding: 2px 8px;
+                border-radius: 6px;
+                box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+            }
+
+            .region-body {
+                padding: 16px;
+                flex-grow: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-around;
+            }
+            .region-stat { display: flex; flex-direction: column; margin-bottom: 12px; }
+            .region-stat-label { font-size: 10px; color: #475569; text-transform: uppercase; font-weight: 800; opacity: 0.85; }
+            .region-stat-val { font-size: 16px; font-weight: 800; color: #0f172a; margin-top: 2px; }
+            
             .nexus-route-panel {
                 position: fixed; top: 0; right: -60vw; width: 55vw; height: 100vh;
                 background-color: #ffffff; box-shadow: -10px 0 30px rgba(0,0,0,0.2);
@@ -85,9 +188,18 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             .gps-mapped { background: #dcfce7; color: #166534; }
             .gps-missing { background: #f1f5f9; color: #64748b; }
             
-            .load-group-card { transition: border 0.3s, background-color 0.3s; border: 2px solid transparent !important; }
-            .load-group-card.stale-map { border: 2px solid #fbbf24 !important; } 
-            .load-group-card.overload { border: 2px solid #ef4444 !important; background: #fef2f2; }
+            .load-group-card { transition: border-color 0.3s, box-shadow 0.3s; border-radius: 10px; overflow: hidden; }
+            .load-group-card.stale-map { border-color: #fbbf24 !important; } 
+            
+            .load-group-card.overload { border-color: #ef4444 !important; box-shadow: 0 0 15px rgba(239, 68, 68, 0.4) !important; }
+            .load-group-card.overload .card-header { background-color: #ef4444 !important; transition: background-color 0.3s; }
+            
+            .overload-msg { display: none; background: #991b1b; color: white; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 900; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2); margin-right: 8px; }
+            .overload .overload-msg { display: inline-flex !important; align-items: center; }
+            
+            .util-badge { background: rgba(255,255,255,0.25); color: white; padding: 2px 8px; border-radius: 6px; font-size: 14px; font-weight: 900; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1); margin-right: 8px; }
+            .max-badge { background: rgba(0,0,0,0.25); color: white; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1); }
+            
             .order-row { cursor: grab; background: white; transition: background 0.2s; }
             .order-row:active { cursor: grabbing; }
             .order-row:hover { background: #f8fafc; }
@@ -95,10 +207,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             .update-map-btn { display: none; }
             .stale-map .update-map-btn { display: inline-block !important; }
             .stale-map .view-route-btn { display: none; }
-            .overload-msg { display: none; color: #ef4444; font-weight: bold; font-size: 11px; margin-right: 15px; }
-            .overload .overload-msg { display: inline-block; }
 
-            /* Margin Analysis Styles */
             .nexus-margin-panel {
                 position: fixed; top: 0; left: -60vw; width: 60vw; height: 100vh;
                 background-color: #f8fafc; box-shadow: 10px 0 30px rgba(0,0,0,0.2);
@@ -115,14 +224,61 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             .profit-negative { color: #ef4444; }
             .tracking-wider { letter-spacing: 0.05em; }
 
-            input[type=number]::-webkit-inner-spin-button, 
-            input[type=number]::-webkit-outer-spin-button { 
-                -webkit-appearance: none; margin: 0; 
+            .table-viewport {
+                background: #fff;
+                border-radius: 10px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+                border: 2px solid #cbd5e1;
+                overflow-x: auto;
+                margin-bottom: 40px;
             }
+            .nexus-table {
+                width: 100%;
+                min-width: 1400px; 
+                border-collapse: collapse;
+            }
+            .nexus-table th { 
+                background-color: #f8fafc !important; 
+                color: #475569; 
+                font-size: 11px; 
+                text-transform: uppercase; 
+                font-weight: 700; 
+                border-bottom: 2px solid #cbd5e1;
+                padding: 12px 15px;
+                white-space: nowrap;
+            }
+            .nexus-table td { 
+                vertical-align: middle; 
+                font-size: 13px; 
+                padding: 10px 15px;
+                border-bottom: 1px solid #e2e8f0;
+            }
+            .nexus-table tbody tr:hover { background-color: #f8fafc; }
+            
+            .sort-btn { cursor: pointer; user-select: none; transition: color 0.2s; }
+            .sort-btn:hover { color: #0f172a; }
+            .sort-icon { margin-left: 4px; font-size: 10px; opacity: 0.4; }
+            .sort-icon.active { opacity: 1; color: #3b82f6; }
+
+            .text-success-dark { color: #16a34a; font-weight: bold; }
+            .text-danger-dark { color: #dc2626; font-weight: bold; }
+            .zero-qty-row { opacity: 0.55; background-color: #f8fafc; }
+            .return-row { background-color: #fef2f2 !important; }
+            .source-badge { font-size: 10px; padding: 3px 6px; border-radius: 4px; background: #e2e8f0; color: #475569; font-weight: 600; display: inline-block; margin-bottom: 2px;}
+
+            input[type=number]::-webkit-inner-spin-button, 
+            input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
             input[type=number] { -moz-appearance: textfield; }
 
-            /* 🚨 SMOOTH MARKER ANIMATION FOR LIVE FLEET */
             .leaflet-marker-icon { transition: transform 0.8s linear !important; }
+            
+            .empty-state-wrapper {
+                text-align: center;
+                padding: 60px 20px;
+                background-color: #ffffff;
+                border-radius: 10px;
+                border: 2px dashed #cbd5e1;
+            }
         </style>
     `);
 
@@ -177,10 +333,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     function closeMarginPanel() { $('#nexusMarginPanel').removeClass('open'); $('#nexusMarginBackdrop').fadeOut(200); }
     $('#closeMarginPanel, #nexusMarginBackdrop').on('click', closeMarginPanel);
 
-    // =========================================================================
-    // 🚨 0-LAG WEBSOCKET FLEET ENGINE (Live Tracking on Optimizer Map)
-    // =========================================================================
-
     function connectFleetWebSocket() {
         if (fleetWS && fleetWS.readyState === WebSocket.OPEN) return;
 
@@ -228,7 +380,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     }
 
     function build_truck_icon(heading) {
-        const color = '#ef4444'; // Red Nexus Fleet Theme
+        const color = '#ef4444'; 
         const htmlIcon = `
             <div style="position:relative;width:36px;height:36px;">
                 <div class="direction-ring" style="position:absolute;top:0;left:0;width:100%;height:100%;transform:rotate(${heading}deg);transition:transform 0.5s linear;">
@@ -244,7 +396,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
     }
 
     function updateFleetMarkers() {
-        if (!route_map) return; // Prevent updates if map isn't open/rendered yet
+        if (!route_map) return; 
 
         const currentActiveIds = new Set(Object.keys(LIVE_FLEET_STATE));
 
@@ -253,7 +405,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             if (!truck.lat || !truck.lng) return;
 
             if (fleet_markers[tracking_id]) {
-                // Update Location & Smooth Rotation
                 fleet_markers[tracking_id].setLatLng([truck.lat, truck.lng]);
                 
                 const iconEl = fleet_markers[tracking_id].getElement();
@@ -262,7 +413,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                     if (arrow) arrow.style.transform = `rotate(${truck.heading || 0}deg)`;
                 }
             } else {
-                // Generate New Truck Marker
                 const icon = build_truck_icon(truck.heading || 0);
                 const popupText = `<b>Driver: ${truck.driver.split('@')[0].toUpperCase()}</b><br><span class="text-muted small">Vehicle: <strong class="text-dark">${truck.vehicle}</strong></span><br><span class="text-muted small">Speed: ${Math.round((truck.speed||0)*3.6)} km/h</span>`;
                 
@@ -272,7 +422,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             }
         });
 
-        // 🚨 Ghost Truck Sweeper
         Object.keys(fleet_markers).forEach(tracking_id => {
             if (!currentActiveIds.has(tracking_id)) {
                 route_map.removeLayer(fleet_markers[tracking_id]);
@@ -281,22 +430,23 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         });
     }
 
-    // =========================================================================
-    // 🚨 GROSS MARGIN CALCULATOR ENGINE
-    // =========================================================================
-
     function updateMarginMath() {
         if (!active_margin_data) return;
         const data = active_margin_data;
         const currency = data.currency || 'KES';
-        
+
+        // Base backend data
+        const gross_profit = data.gross_profit || 0;
+        const revenue_excl_tax = data.revenue_excl_tax || 0;
+        const prorated_overhead = data.prorated_overhead_allocated || 0;
+
         let logistics_cost = 0;
 
         if (is_car_hire_mode) {
             let days = $('#hire-days').length ? parseFloat($('#hire-days').val()) || 0 : 0;
             let rate = $('#hire-rate').length ? parseFloat($('#hire-rate').val()) || 0 : 0;
             logistics_cost = days * rate;
-            
+
             if ($('#val-car-hire-cost').length) {
                 $('#val-car-hire-cost').text(`${currency} ${logistics_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
             }
@@ -308,164 +458,177 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             $('#val-logistics-cost').text(`${currency} ${logistics_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
         }
 
-        let net_profit = data.gross_profit - data.absorbed_overhead - logistics_cost;
-        let net_margin_percentage = data.total_order_value > 0 ? (net_profit / data.total_order_value * 100) : 0;
+        const net_profit = gross_profit - prorated_overhead - logistics_cost;
+        const net_margin_percentage = revenue_excl_tax > 0 ? (net_profit / revenue_excl_tax) * 100 : 0;
 
         const profitClass = net_profit >= 0 ? 'profit-positive' : 'profit-negative';
         const profitIcon = net_profit >= 0 ? 'fa-arrow-up' : 'fa-arrow-down';
-        
+
         $('#val-net-profit').html(`<i class="fa ${profitIcon} me-2"></i>${currency} ${Math.abs(net_profit).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`)
                              .removeClass('profit-positive profit-negative').addClass(profitClass);
-        
+
         const alertClass = net_profit >= 0 ? 'alert-success' : 'alert-danger';
         const alertIcon = net_profit >= 0 ? 'fa-check-circle' : 'fa-exclamation-triangle';
-        const alertText = net_profit >= 0 ? ' (Profitable)' : ' (Loss making)';
-        
+        const alertText = net_profit >= 0 ? ' (Profitable at Net Level)' : ' (Loss at Net Level)';
+
         $('#val-margin-alert').removeClass('alert-success alert-danger').addClass(alertClass)
                               .html(`<i class="fa ${alertIcon} me-2"></i><strong>Net Margin: ${net_margin_percentage.toFixed(2)}%</strong>${alertText}`);
     }
 
     function renderMarginUI() {
-    if (!active_margin_data) return;
-    const data = active_margin_data;
-    const currency = data.currency || 'KES';
-    
-    let car_hire_html = '';
-
-    if (is_car_hire_mode) {
-        $('#margin-panel-title').html('<i class="fa fa-truck me-2 text-warning"></i> Projected Net Contribution (External Fleet)');
-        $('#toggle-car-hire-btn').text('Switch to Company Fleet').removeClass('btn-outline-primary').addClass('btn-primary text-white border-0 me-2');
+        if (!active_margin_data) return;
+        const data = active_margin_data;
+        const currency = data.currency || 'KES';
         
-        car_hire_html = `
-            <div class="bg-white p-4 rounded-4 border mb-4 shadow-sm" style="border-left: 5px solid #f59e0b !important;">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h6 class="fw-bold mb-0 text-dark"><i class="fa fa-handshake me-2 text-warning"></i>Car Hire Parameters</h6>
-                </div>
-                <div class="row g-3 align-items-end">
-                    <div class="col-md-4">
-                        <label class="small text-muted fw-bold">Number of Days for Hire</label>
-                        <input type="number" class="form-control form-control-lg fw-bold" id="hire-days" value="1" min="0">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="small text-muted fw-bold">Hire Cost per Day (${currency})</label>
-                        <input type="number" class="form-control form-control-lg fw-bold" id="hire-rate" value="0" min="0">
-                    </div>
-                    <div class="col-md-4 text-end">
-                        <div class="text-muted small fw-bold mb-1">Total Car Hire Cost</div>
-                        <div class="fs-3 text-warning" id="val-car-hire-cost" style="font-weight: 900 !important;">${currency} 0.00</div>
-                    </div>
-                </div>
-            </div>
-        `;
-    } else {
-        $('#margin-panel-title').html('<i class="fa fa-calculator me-2 text-primary"></i> Projected Net Contribution');
-        $('#toggle-car-hire-btn').text('Switch to Car Hire').removeClass('btn-primary text-white border-0').addClass('btn-outline-primary me-2');
-    }
+        let car_hire_html = '';
 
-    let distance_warning = data.approximate_total_distance_km === 0 
-        ? `<span class="badge bg-danger ms-2">Map Not Updated</span>` : '';
-
-    let html = `
-        ${car_hire_html}
-        <div class="bg-white rounded-4 border p-4 shadow-sm">
-            <h5 class="border-bottom pb-3 mb-4 fw-bold text-dark">Load Financial Summary <span class="badge bg-secondary ms-2" style="font-size:11px; font-weight:600;">Pre-Dispatch Projection</span></h5>
+        if (is_car_hire_mode) {
+            $('#margin-panel-title').html('<i class="fa fa-truck me-2 text-warning"></i> Projected Net Contribution (External Fleet)');
+            $('#toggle-car-hire-btn').text('Switch to Company Fleet').removeClass('btn-outline-primary').addClass('btn-primary text-white border-0 me-2');
             
-            <div class="row mb-4 g-4">
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Total Order Value</div>
-                    <div class="margin-value text-dark">${currency} ${data.total_order_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                </div>
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Theoretical Production Cost</div>
-                    <div class="margin-value text-secondary">${currency} ${data.total_theoretical_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    <div class="small text-muted mt-1"><i class="fa fa-info-circle me-1"></i>Current Market Price rollup</div>
-                </div>
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin</div>
-                    <div class="margin-value ${data.gross_profit >= 0 ? 'text-success' : 'text-danger'}">${currency} ${data.gross_profit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                </div>
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin (%)</div>
-                    <div class="margin-value text-dark">${data.gross_margin_percentage.toFixed(2)}%</div>
-                </div>
-            </div>
-
-            <div class="row mb-4 g-4 border-top pt-4 bg-light mx-0 p-2 rounded border shadow-sm">
-                <div class="col-12">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">${is_car_hire_mode ? 'External Fleet Cost (Car Hire)' : 'Est. Fleet Fuel Cost'} ${distance_warning}</div>
-                    <div class="margin-value text-secondary" id="val-logistics-cost"></div>
-                    ${!is_car_hire_mode ? `
-                    <div class="small text-muted mt-1 fw-medium">
-                        <i class="fa fa-road me-1"></i> ${data.approximate_total_distance_km} km roundtrip &nbsp;|&nbsp; 
-                        <i class="fa fa-gas-pump me-1"></i> ${data.approximate_fuel_consumption_ltrs} Ltrs consumed
-                    </div>` : ''}
-                </div>
-            </div>
-
-            <div class="row mb-4 g-4 border-top pt-4">
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Absorbed Company Overhead</div>
-                    <div class="margin-value text-secondary">${currency} ${data.absorbed_overhead.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    <div class="small text-muted mt-1 fw-medium">
-                        <i class="fa fa-info-circle me-1"></i>
-                        ${data.overhead_ratio_percentage.toFixed(1)}% of order value absorbed
+            car_hire_html = `
+                <div class="bg-white p-4 rounded-4 border mb-4 shadow-sm" style="border-left: 5px solid #f59e0b !important;">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h6 class="fw-bold mb-0 text-dark"><i class="fa fa-handshake me-2 text-warning"></i>Car Hire Parameters</h6>
+                    </div>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                            <label class="small text-muted fw-bold">Number of Days for Hire</label>
+                            <input type="number" class="form-control form-control-lg fw-bold" id="hire-days" value="1" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="small text-muted fw-bold">Hire Cost per Day (${currency})</label>
+                            <input type="number" class="form-control form-control-lg fw-bold" id="hire-rate" value="0" min="0">
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <div class="text-muted small fw-bold mb-1">Total Car Hire Cost</div>
+                            <div class="fs-3 text-warning" id="val-car-hire-cost" style="font-weight: 900 !important;">${currency} 0.00</div>
+                        </div>
                     </div>
                 </div>
-                <div class="col-6">
-                    <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Company Standard Overhead Rate</div>
-                    <div class="margin-value text-secondary">${data.overhead_ratio_percentage.toFixed(2)}%</div>
-                    <div class="small text-muted mt-1 fw-medium">
-                        <i class="fa fa-building me-1"></i>
-                        KES ${(data.overhead_standard_overheads || 26000000).toLocaleString()} OH
-                        &nbsp;/&nbsp;
-                        KES ${(data.overhead_standard_revenue || 80000000).toLocaleString()} avg monthly revenue
+            `;
+        } else {
+            $('#margin-panel-title').html('<i class="fa fa-calculator me-2 text-primary"></i> Projected Net Contribution');
+            $('#toggle-car-hire-btn').text('Switch to Car Hire').removeClass('btn-primary text-white border-0').addClass('btn-outline-primary me-2');
+        }
+
+        let distance_warning = data.approximate_total_distance_km === 0 
+            ? `<span class="badge bg-danger ms-2">Map Not Updated</span>` : '';
+
+        let html = `
+            ${car_hire_html}
+            <div class="bg-white rounded-4 border p-4 shadow-sm mb-4">
+                <h5 class="border-bottom pb-3 mb-4 fw-bold text-dark">Load Financial Summary <span class="badge bg-secondary ms-2" style="font-size:11px; font-weight:600;">Pre-Dispatch Projection</span></h5>
+                
+                <div class="row mb-4 g-4">
+                    <div class="col-6">
+                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Total Order Value (Tax Incl.)</div>
+                        <div class="margin-value text-dark">${currency} ${data.total_order_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                        <div class="text-muted mt-2" style="font-size: 16px; font-weight: 500;"><i class="fa fa-receipt me-1"></i>Less ${data.tax_rate_percentage.toFixed(0)}% VAT: ${currency} ${data.tax_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} &rarr; <span class="text-dark fw-bold">Revenue ${currency} ${data.revenue_excl_tax.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Theoretical Production Cost</div>
+                        <div class="margin-value text-secondary">${currency} ${data.total_theoretical_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                        <div class="small text-muted mt-1"><i class="fa fa-info-circle me-1"></i>Current Market Price rollup</div>
+                    </div>
+                    
+                    <div class="col-12 mt-4 pt-4 border-top">
+                        <div class="row">
+                            <div class="col-6">
+                                <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Profit (Post-Tax)</div>
+                                <div class="margin-value ${data.gross_profit >= 0 ? 'text-success' : 'text-danger'}" style="font-size: 2.2rem;">${currency} ${data.gross_profit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-muted small text-uppercase tracking-wider fw-bold mb-1">Projected Gross Margin (%)</div>
+                                <div class="margin-value text-dark" style="font-size: 2.2rem;">${data.gross_margin_percentage.toFixed(2)}%</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="row mb-3 g-3 mt-4 border-top pt-4 bg-light rounded-bottom p-3 mx-0 shadow-sm border">
-                <div class="col-12 text-center">
-                    <div class="text-muted small fw-bold text-uppercase tracking-wider mb-1">
-                        Estimated Trip Net Contribution
-                        ${is_car_hire_mode ? '<span class="badge bg-warning text-dark ms-1">Incl. Car Hire</span>' : ''}
-                        <span class="badge bg-info text-dark ms-1" style="font-size:10px;">Pre-Dispatch Estimate</span>
+                <div class="row mb-4 mt-4 mx-0 p-4 rounded-4 shadow-sm" style="background-color: #475569; color: #ffffff;">
+                    <div class="col-12">
+                        <div class="small text-uppercase tracking-wider fw-bold mb-2" style="color: #cbd5e1;">
+                            ${is_car_hire_mode ? 'External Fleet Cost (Car Hire)' : 'Est. Fleet Fuel Cost'} 
+                            <span class="badge bg-dark text-white ms-1" style="font-size:9px;">Informational Only</span> ${distance_warning}
+                        </div>
+                        <div class="margin-value text-white" id="val-logistics-cost" style="font-size: 2rem;"></div>
+                        ${!is_car_hire_mode ? `
+                        <div class="small mt-2 fw-medium" style="color: #f1f5f9;">
+                            <i class="fa fa-road me-1"></i> ${data.approximate_total_distance_km} km roundtrip &nbsp;|&nbsp; 
+                            <i class="fa fa-gas-pump me-1"></i> ${data.approximate_fuel_consumption_ltrs} Ltrs consumed
+                        </div>` : ''}
                     </div>
-                    <div class="fs-1" id="val-net-profit" style="font-size: 3rem !important; font-weight: 900 !important;"></div>
                 </div>
-            </div>
 
-            <div class="alert mt-4 text-center fs-4 border-2" id="val-margin-alert"></div>
-        </div>
+                <div class="row mb-4 mt-4 mx-0 p-4 rounded-4 shadow-sm" style="background-color: #1e3a8a; color: #ffffff;">
+                    <div class="col-12">
+                        <div class="small text-uppercase tracking-wider fw-bold mb-2" style="color: #bfdbfe;">
+                            <i class="fa fa-building me-1"></i> Prorated Monthly Overheads
+                            <span class="badge bg-dark text-white ms-1" style="font-size:9px;">Allocated by Revenue</span>
+                        </div>
+                        <div class="margin-value text-white" style="font-size: 2rem;">${currency} ${(data.prorated_overhead_allocated || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                        <div class="small mt-2 fw-medium" style="color: #dbeafe;">
+                            <i class="fa fa-info-circle me-1"></i> Absorbs a proportional share of company Labour, Energy, and Admin costs based on live ledger.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mb-3 mt-4 mx-0 p-4 rounded-4 shadow-sm border" style="background-color: #f8fafc;">
+                    <div class="col-12 text-center">
+                        <div class="text-muted small fw-bold text-uppercase tracking-wider mb-2">
+                            Projected Net Profit (Post-Tax)
+                            <span class="badge bg-success text-white ms-1" style="font-size:10px;">Fully Landed Estimate</span>
+                        </div>
+                        <div class="fs-1" id="val-net-profit" style="font-size: 3.5rem !important; font-weight: 900 !important; letter-spacing: -1px;"></div>
+                        <div class="small text-muted mt-3"><i class="fa fa-check-circle me-1"></i>Net Profit absorbs direct production costs, allocated monthly overheads, and logistics constraints. Finalized upon actual dispatch.</div>
+                    </div>
+                </div>
+
+                <div class="alert mt-4 text-center fs-5 border-2 fw-bold" id="val-margin-alert"></div>
+            </div>
+            
+            ${data.zero_cost_items && data.zero_cost_items.length > 0 ? `
+                <div class="alert alert-warning mt-4 border-2 p-3 text-start rounded-3 shadow-sm" style="border-left: 5px solid #d97706 !important;">
+                    <div class="fw-bold mb-2 text-warning-dark fs-5">
+                        <i class="fa fa-exclamation-triangle me-2"></i> Margin Accuracy Warning
+                    </div>
+                    <p class="small text-dark mb-2">
+                        The following item(s) have no active <strong>Current Market Price</strong> record or <strong>Valuation Rate</strong> defined in the system. 
+                        Their costs were processed as <strong>0.00</strong>, which artificially inflates your gross profit figures:
+                    </p>
+                    <div style="max-height: 120px; overflow-y: auto;" class="bg-white p-2 border rounded">
+                        <ul class="mb-0 ps-3 small fw-bold text-danger">
+                            ${data.zero_cost_items.map(item => `<li>${item}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div class="small text-muted mt-2 font-italic">
+                        * Please verify Item Prices or stock valuation setups for these entities to secure true gross margin calculations.
+                    </div>
+                </div>
+            ` : ''}
+        `;
         
-        <div class="text-muted small mt-4 pt-3 text-center opacity-75">
-            <i class="fa fa-info-circle me-1"></i> All figures are pre-dispatch projections based on Current Market Price BOM rollup. Realised margins are tracked in Dispatch Intelligence after delivery.
-        </div>
-    `;
-    
-    $('#margin-panel-content').html(html);
-    updateMarginMath();
+        $('#margin-panel-content').html(html);
+        updateMarginMath();
 
-    if (is_car_hire_mode) {
-        $('#hire-days, #hire-rate').off('input').on('input', function() {
-            if ($(this).val() < 0) {
-                $(this).val(Math.abs($(this).val()));
-            }
-            updateMarginMath(); 
-        });
+        if (is_car_hire_mode) {
+            $('#hire-days, #hire-rate').off('input').on('input', function() {
+                if ($(this).val() < 0) {
+                    $(this).val(Math.abs($(this).val()));
+                }
+                updateMarginMath(); 
+            });
+        }
     }
-}
 
     $('body').off('click', '#toggle-car-hire-btn').on('click', '#toggle-car-hire-btn', function() {
         is_car_hire_mode = !is_car_hire_mode;
         renderMarginUI();
     });
 
-    // =========================================================================
-    // 🚚 LOGISTICS DATA RENDERERS
-    // =========================================================================
-
     function format_weight(kg) {
-        if (!kg || kg <= 0) return "0.0 T";
+        if (!kg || kg <= 0) return "0.00 T";
         return `${(kg / 1000).toFixed(2)} Tonnes (${Math.round(kg)} kg)`;
     }
 
@@ -518,7 +681,7 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
 
             card.toggleClass('overload', current_weight > max);
             if (current_weight > max) {
-                card.find('.overload-msg').html(`<i class="fa fa-exclamation-triangle"></i> OVERLOADED BY ${Math.round(current_weight - max)} kg`);
+                card.find('.overload-msg').html(`<i class="fa fa-exclamation-triangle me-1"></i> OVERLOADED BY ${Math.round(current_weight - max)} kg`);
             }
         });
     }
@@ -535,32 +698,34 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         groups.forEach((group, idx) => {
             let util_color = group.utilization >= 90 ? 'text-success' : group.utilization >= 70 ? 'text-warning' : 'text-danger';
             
+            let headerColor = groupColorPalette[idx % groupColorPalette.length];
+            let bodyColor = getLightShade(headerColor);
+            
             let html = `
-                <div class="card mb-5 shadow-sm border-0 rounded-4 overflow-hidden load-group-card" id="group-card-${idx}" data-max="${group.max_capacity}">
-                    <div class="card-header text-white p-4" style="background: #1e3a8a;">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0 fw-bold fs-4">Load Group ${idx + 1}</h5>
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="overload-msg"></span>
-                                <span class="badge bg-white text-dark px-3 py-2 rounded-pill fw-bold util-badge">${group.utilization.toFixed(1)}% Full</span>
-                                <span class="badge bg-white bg-opacity-25 text-white px-3 py-2 rounded-pill">${format_weight(group.max_capacity)} Max</span>
-                            </div>
+                <div class="card mb-5 shadow-sm border-0 load-group-card" id="group-card-${idx}" data-max="${group.max_capacity}" style="border: 2px solid ${headerColor} !important;">
+                    
+                    <div class="card-header" style="background-color: ${headerColor}; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid rgba(0,0,0,0.15);">
+                        <h5 class="mb-0 text-uppercase region-title" style="color: #ffffff !important; font-weight: 900; font-size: 16px; letter-spacing: 0.5px;">Load Group ${idx + 1}</h5>
+                        <div class="d-flex align-items-center">
+                            <span class="overload-msg"></span>
+                            <span class="util-badge">${group.utilization.toFixed(1)}% Full</span>
+                            <span class="max-badge">${format_weight(group.max_capacity)} Max</span>
                         </div>
                     </div>
                     
-                    <div class="card-body bg-light p-4 border-bottom text-center">
+                    <div class="card-body p-4 border-bottom text-center" style="background-color: ${bodyColor};">
                         <div class="row g-3">
-                            <div class="col-md-4 border-end">
-                                <div class="small text-muted text-uppercase tracking-wider">Total Value</div>
-                                <div class="fs-3 fw-bold text-dark total-value-display">KES ${group.total_amount.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</div>
+                            <div class="col-md-4 border-end" style="border-color: rgba(0,0,0,0.06) !important;">
+                                <div class="small text-uppercase fw-bold" style="color: #475569; opacity: 0.85; letter-spacing: 0.05em;">Total Value</div>
+                                <div class="fs-3 fw-bold text-dark total-value-display mt-1">KES ${group.total_amount.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</div>
                             </div>
-                            <div class="col-md-4 border-end">
-                                <div class="small text-muted text-uppercase tracking-wider">Tonnage Sum</div>
-                                <div class="fs-3 fw-bold text-dark tonnage-sum-display">${(group.total_tonnage/1000).toFixed(2)} T</div>
+                            <div class="col-md-4 border-end" style="border-color: rgba(0,0,0,0.06) !important;">
+                                <div class="small text-uppercase fw-bold" style="color: #475569; opacity: 0.85; letter-spacing: 0.05em;">Tonnage Sum</div>
+                                <div class="fs-3 fw-bold text-dark tonnage-sum-display mt-1">${(group.total_tonnage/1000).toFixed(2)} T</div>
                             </div>
                             <div class="col-md-4">
-                                <div class="small text-muted text-uppercase tracking-wider">Load State</div>
-                                <div class="fs-3 fw-bold load-state-display ${util_color}">${group.utilization.toFixed(1)}% Full</div>
+                                <div class="small text-uppercase fw-bold" style="color: #475569; opacity: 0.85; letter-spacing: 0.05em;">Load State</div>
+                                <div class="fs-3 fw-bold load-state-display ${util_color} mt-1">${group.utilization.toFixed(1)}% Full</div>
                             </div>
                         </div>
                     </div>
@@ -615,9 +780,8 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                             </tbody>
                         </table>
                     </div>
-                    <div class="card-footer bg-white p-4 d-flex justify-content-between gap-3 rounded-bottom-4">
+                    <div class="card-footer bg-white p-4 d-flex justify-content-between gap-3 rounded-bottom-4" style="border-top: 2px solid rgba(0,0,0,0.06);">
                         <div class="d-flex gap-2">
-                            <!-- NEW: Pre-Analysis Button -->
                             <button class="btn btn-info text-white fw-bold px-4 pre-analysis-btn" data-idx="${idx}"><i class="fa fa-box-open me-2"></i> Order Fulfillment Pre-Analysis</button>
                             <button class="btn btn-success fw-bold px-4 margin-analyze-btn" data-idx="${idx}"><i class="fa fa-chart-line me-2"></i> Calculate Theoretical Cost & Gross Margin</button>
                         </div>
@@ -645,6 +809,8 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
                 }
             });
         });
+
+        recalculate_group_totals();
     }
 
     function draw_group_route(group, idx) {
@@ -657,7 +823,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: 'Nexus Spatial Engine' }).addTo(route_map);
         }
 
-        // Only clear routing layers, leave the fleet markers intact!
         map_layers.forEach(layer => route_map.removeLayer(layer));
         map_layers = [];
         
@@ -704,7 +869,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             let time = Math.round(data.features[0].properties.summary.duration / 60);
             $('#route-distance-label').html(`<span class="text-primary me-4"><i class="fa fa-road me-2"></i>${dist} km Roundtrip</span> <span><i class="fa fa-clock me-2"></i>Est. ${time} mins</span>`);
             
-            // Re-render live fleet trucks to place them on top of the newly drawn route
             updateFleetMarkers();
         })
         .catch(err => {
@@ -863,14 +1027,10 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
         active_margin_data = null;
     });
 
-    // =========================================================================
-    // 📦 ORDER FULFILLMENT PRE-ANALYSIS
-    // =========================================================================
     $(wrapper).on('click', '.pre-analysis-btn', function() {
         const idx = $(this).data('idx');
         const dynamic_group = get_current_group_data(idx);
         
-        // 1. Aggregate items across all Sales Orders in this dynamic group
         let item_map = {};
         dynamic_group.sales_orders.forEach(so => {
             if (!so.items) return;
@@ -887,7 +1047,6 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             });
         });
 
-        // 2. Calculate balance and convert to array
         let aggregated_items = Object.values(item_map).map(item => {
             item.balance = item.available_qty - item.required_qty;
             return item;
@@ -898,18 +1057,15 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             return;
         }
 
-        // 3. Create Frappe Dialog popup
         let analysis_dialog = new frappe.ui.Dialog({
             title: `Fulfillment Analysis - Group ${idx + 1}`,
             size: 'extra-large',
             fields: [{ fieldtype: 'HTML', fieldname: 'table_html' }]
         });
 
-        // 4. Render Table Function (handles sorting state)
-        let sort_asc = true; // Default: show negative balances (shortages) at the top
+        let sort_asc = true; 
         
         const render_table = () => {
-            // Sort array
             aggregated_items.sort((a, b) => sort_asc ? a.balance - b.balance : b.balance - a.balance);
             
             let tbody = aggregated_items.map(item => {
@@ -949,16 +1105,14 @@ frappe.pages['nexus_load_optimizer'].on_page_load = function(wrapper) {
             `;
             analysis_dialog.fields_dict.table_html.$wrapper.html(html);
 
-            // Bind click event to the header for sorting
             analysis_dialog.fields_dict.table_html.$wrapper.find('#sort-balance-btn').on('click', function() {
                 sort_asc = !sort_asc;
                 render_table();
             });
         };
 
-        // Render initially and show
         render_table();
         analysis_dialog.show();
     });
 
-}; // <--- THIS CLOSING BRACKET MOVES HERE (Ends frappe.pages['nexus_load_optimizer'].on_page_load)
+};

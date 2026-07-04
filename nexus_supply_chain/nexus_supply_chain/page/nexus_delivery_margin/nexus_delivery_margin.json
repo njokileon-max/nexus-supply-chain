@@ -1,15 +1,15 @@
 {
  "content": null,
- "creation": "2026-06-28 10:53:57.127456",
+ "creation": "2026-07-03 13:12:49.990628",
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-07-03 20:41:08.038272",
+ "modified": "2026-07-03 22:14:42.952432",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
- "name": "nexus_dispatch_intelligence",
+ "name": "nexus_delivery_margin",
  "owner": "Administrator",
- "page_name": "nexus_dispatch_intelligence",
+ "page_name": "nexus_delivery_margin",
  "roles": [
   {
    "role": "System Manager"
@@ -19,5 +19,5 @@
  "standard": "Yes",
  "style": null,
  "system_page": 0,
- "title": "Dispatch Intelligence"
+ "title": "Delivery Margin Report"
 }

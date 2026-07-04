@@ -11,6 +11,7 @@ class FastBOMExploder:
             SELECT item_code, price_list_rate
             FROM `tabItem Price`
             WHERE price_list = 'Current Market Price' AND buying = 1
+            ORDER BY creation ASC
         """, as_dict=True)
         self.price_map = {p.item_code: frappe.utils.flt(p.price_list_rate) for p in prices}
 
@@ -48,14 +49,12 @@ class FastBOMExploder:
 
         bom_info = self.bom_map.get(item_code)
 
-        # Base Case: Raw Material / Leaf Node
         if not bom_info:
             cost = self.price_map.get(item_code)
             if not cost:
                 cost = self.item_val_map.get(item_code, 0.0)
             return frappe.utils.flt(cost), []
 
-        # Recursive Case: Sub-Assembly or FG
         visited.add(item_code)
         bom_name = bom_info["name"]
         bom_yield = bom_info["qty"]
@@ -131,7 +130,6 @@ def get_fg_cards():
                 "total_cogs": total_cogs
             })
             
-    # Sort alphabetically by Item Name
     return sorted(results, key=lambda k: k['item_name'])
 
 @frappe.whitelist()

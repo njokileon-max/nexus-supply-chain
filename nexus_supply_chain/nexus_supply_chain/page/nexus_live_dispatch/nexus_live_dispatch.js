@@ -7,7 +7,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         single_column: true 
     });
 
-    // 1. Centered Enterprise Layout (3-Column Architecture)
     $(wrapper).find('.layout-main-section').html(`
         <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
             <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
@@ -78,7 +77,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         </div>
     `);
 
-    // 2. Deep Enterprise Styling
     $('head').append(`
         <style>
             .vehicle-card { 
@@ -206,7 +204,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         </style>
     `);
 
-    // 3. Global State Registry
     let map = null;
     let vehicle_markers = {};
     let vehicle_marker_last_seen = {}; // 🚨 TTL tracking: tracking_id -> timestamp of last update
@@ -215,22 +212,18 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
     let active_route_layers = {}; 
     let unvisited_waypoints = {}; 
     
-    // Throttle state for expensive Turf calculations
     let last_math_calc = {}; 
     let ws = null;
     let map_reset_timer = null;
     let stale_ping_purge_timer = null; // 🚨 Interval handle for periodic stale-marker sweep
     window.current_stop_markers = null;
 
-    // 🚨 PING / MARKER LIFECYCLE CONFIG (auto-delete stale pings so the page never accumulates unbounded DOM/map state)
     const PING_STALE_MS = 60 * 1000;        // a vehicle marker not updated in 60s is considered stale
     const PING_SWEEP_INTERVAL_MS = 15 * 1000; // how often we sweep for stale markers
     
-    // 🚨 ENDPOINTS 🚨
     const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/ws";
     const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
 
-    // 🚨 LOAD NATIVE LIBRARIES (Leaflet + Turf + MapLibre) 🚨
     frappe.require([
         "/assets/nexus_supply_chain/leaflet/leaflet.css", 
         "/assets/nexus_supply_chain/leaflet/leaflet.js",
@@ -255,10 +248,9 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         
         refresh_dispatch_data();
         connectTelemetryWebSocket();
-        startStalePingSweeper(); // 🚨 begin periodic auto-purge of stale vehicle pings
+        startStalePingSweeper();
     });
 
-    // 🚨 Clean up intervals/sockets if the page is torn down (Frappe route change)
     $(wrapper).on('remove', function() {
         if (stale_ping_purge_timer) clearInterval(stale_ping_purge_timer);
         if (map_reset_timer) clearTimeout(map_reset_timer);
@@ -268,7 +260,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // 4. Data Bridge: Fetch Vehicles as Source of Truth
     function refresh_dispatch_data() {
         frappe.call({
             method: "frappe.client.get_list",
@@ -317,7 +308,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             let status = v.current_status ? v.current_status.toUpperCase() : 'IDLE';
             let m = manifestMap[v.name];
             
-            // 🚨 MANIFEST SUPREMACY LOGIC
             if (m) {
                 if (m.trip_status === 'Ready') {
                     status = 'LOADING';
@@ -341,7 +331,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 groups['IDLE'].push(v);
             }
 
-            // Parse GeoJSON lines but DO NOT render them immediately. Keep map clean.
             if (m && m.route_geojson && !static_route_layers[v.name]) {
                 try {
                     let parsedGeoJSON = JSON.parse(m.route_geojson);
@@ -367,7 +356,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             }
         });
 
-        // Apply Deep Enterprise Themes to Rendering Groups
         render_group(activeContainer, 'Loading / Ready', groups['LOADING'], manifestMap, 'theme-loading');
         render_group(activeContainer, 'En Route', groups['EN ROUTE'], manifestMap, 'theme-transit');
         render_group(activeContainer, 'Returning', groups['RETURNING'], manifestMap, 'theme-returning');
@@ -391,7 +379,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 ? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
                 : `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
             
-            // 🚨 UNIFIED TRACKING ID MAPPING 
             let driver_email = (v.current_driver || "Unknown_Driver").toLowerCase();
             let vehicle_id = v.name || "Idle";
 
@@ -402,7 +389,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             let trackingKey = `${driver_email}::${vehicle_id}`;
             let safeManifestId = m ? m.name : '';
 
-            // 🚨 DUAL BUTTON INJECTION
             let btnHtml = m && m.trip_status !== 'Ready' ? `
                 <div style="display: flex; gap: 8px; margin-top: 15px;">
                     <button class="card-btn btn-route" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="flex: 1; margin-top: 0; background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.4); color: #fff;">
@@ -432,9 +418,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // =========================================================================
-    // 🚨 ZOOM ENGINE UTILITIES (5-Second Timeout Controller)
-    // =========================================================================
     function clearTemporaryMapLayers() {
         if (map_reset_timer) {
             clearTimeout(map_reset_timer);
@@ -453,7 +436,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         map_reset_timer = setTimeout(() => {
             clearTemporaryMapLayers();
             
-            // Zoom out to cluster entire physical fleet
             let globalGroup = new L.featureGroup();
             Object.values(vehicle_markers).forEach(m => globalGroup.addLayer(m));
             if (globalGroup.getLayers().length > 0) {
@@ -464,15 +446,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         }, 5000);
     }
 
-    // =========================================================================
-    // 🚨 STALE PING AUTO-PURGE ENGINE
-    // Future-proof approach: rather than trusting the websocket to always send
-    // an explicit "vehicle gone" event, we independently track last-seen
-    // timestamps per marker and sweep on an interval. This guarantees bounded
-    // memory/DOM/map-layer growth regardless of backend behavior, network
-    // hiccups, or dropped disconnect events — preventing the tab from
-    // accumulating ghost markers, lagging, or crashing over a long session.
-    // =========================================================================
     function startStalePingSweeper() {
         if (stale_ping_purge_timer) clearInterval(stale_ping_purge_timer);
         stale_ping_purge_timer = setInterval(() => {
@@ -512,11 +485,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         $(`.speed-val[data-tid="${safe_tid}"]`).text(`0 km/h`);
     }
 
-    // =========================================================================
-    // 🚨 BUTTON INTERACTION ENGINE (Route vs ETA vs Card Click)
-    // =========================================================================
-
-    // 1. CLICKING THE CARD ITSELF (Only zooms to truck)
     $(wrapper).on('click', '.vehicle-card', function(e) {
         if ($(e.target).closest('.btn-gmaps, .btn-route').length) return; 
 
@@ -534,7 +502,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // 2. CLICKING "ROUTE" BUTTON (Fetches Stops & Maps Lines with 5s Timeout)
     $(wrapper).on('click', '.btn-route', function(e) {
         e.stopPropagation();
         let btn = $(this);
@@ -561,7 +528,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             featureGroup.addLayer(vehicle_markers[trackingKey]);
         }
 
-        // 🚨 BYPASS FRAppe PERMISSION ERROR (Fetch Parent Manifest)
         frappe.call({
             method: 'frappe.client.get',
             args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
@@ -580,7 +546,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                     let total = s.grand_total || 0;
                     let pin_color, border_color, text_color, status_bg, status_label, icon_class, desc_label, amount_label;
                     
-                    // Logic mapped precisely to the explicit requirement
                     if (s.delivery_status === 'Delivered') {
                         pin_color = '#22c55e'; border_color = '#16a34a'; text_color = '#166534'; status_bg = '#dcfce7';
                         status_label = 'Delivered'; icon_class = 'fa-check'; desc_label = 'Order amount'; amount_label = total;
@@ -595,7 +560,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         status_label = 'Not Yet Delivered'; icon_class = 'fa-clock-o'; desc_label = 'Order amount'; amount_label = total;
                     }
 
-                    // 🚨 COMPACT PIN MARKER (visible at a glance, doesn't crowd the map)
                     let pinHtml = `
                         <div class="stop-pin-wrap">
                             <div class="stop-pin-body" style="background:${pin_color}; border-color:${border_color};">
@@ -607,10 +571,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                     let icon = L.divIcon({ className: '', html: pinHtml, iconSize: [28, 28], iconAnchor: [14, 28] });
                     let marker = L.marker([lat, lng], { icon: icon });
 
-                    // 🚨 DETAIL CARD (only shown on click, via popup — closeButton disabled
-                    // to avoid Leaflet's native '#close' anchor, which Frappe's router
-                    // intercepts and throws "Page #close not found". We render our own
-                    // close control that calls map.closePopup() directly instead.)
                     let cardHtml = `
                         <div class="stop-detail-card">
                             <button type="button" class="stop-detail-close" aria-label="Close">&times;</button>
@@ -643,14 +603,12 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         });
     });
 
-    // 🚨 STOP DETAIL CARD CLOSE HANDLER (delegated; avoids '#close' hash navigation entirely)
     $(wrapper).on('click', '.stop-detail-close', function(e) {
         e.preventDefault();
         e.stopPropagation();
         map.closePopup();
     });
 
-    // 3. CLICKING "ETA" BUTTON (Deep Link to Google Maps)
     $(wrapper).on('click', '.btn-gmaps', function(e) {
         e.stopPropagation(); 
         let btn = $(this);
@@ -697,7 +655,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
             return;
         }
 
-        // 🚨 Fetch Parent Manifest Securely
         frappe.call({
             method: 'frappe.client.get',
             args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
@@ -714,7 +671,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 let destination = "";
                 let pending_stops = stops.filter(s => s.delivery_status === 'Pending' && (s.custom_latitude || s.latitude) && (s.custom_longitude || s.longitude));
 
-                // 🚨 EXTRACT COMPANY COORDINATES: Pull starting point from GeoJSON directly
                 let company_coords = null;
                 if (manifest.route_geojson) {
                     try {
@@ -727,14 +683,12 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                     } catch(e) {}
                 }
 
-                // Add all pending stops as intermediate waypoints
                 pending_stops.forEach((s) => {
                     let lat = s.custom_latitude || s.latitude;
                     let lng = s.custom_longitude || s.longitude;
                     waypoints.push(`${lat},${lng}`);
                 });
 
-                // Set Company/Yard as absolute final destination
                 if (company_coords) {
                     destination = company_coords;
                 } else if (waypoints.length > 0) {
@@ -743,7 +697,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                     destination = origin;
                 }
 
-                // Standard Google Maps Deep Link Structure
                 let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
                 if (waypoints.length > 0) {
                     url += `&waypoints=${waypoints.slice(0, 8).join('|')}`;
@@ -758,7 +711,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // 5. THE TELEMETRY ENGINE (0-Lag DOM Rendering)
     function connectTelemetryWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
@@ -774,8 +726,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                 try {
                     const data = JSON.parse(event.data);
                     
-                    // 🚨 WEBSOCKET AUTO-REFRESH ENGINE
-                    // If drivers update states in the field, map redraws instantly without page reload.
                     if (data.command === "REFRESH_MANIFESTS") {
                         console.log("🔄 Background Invalidation Push Received. Redrawing map state...");
                         refresh_dispatch_data();
@@ -800,7 +750,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         $stat.text('Live').css('opacity', '1');
                         $speed.text(`${speedKmh} km/h`);
 
-                        // 🚨 Refresh TTL stamp every time telemetry arrives for this vehicle
                         vehicle_marker_last_seen[exact_tid] = now;
 
                         let heading = v.heading || 0;
@@ -834,7 +783,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                             vehicle_markers[exact_tid] = L.marker([v.lat, v.lng], { icon: icon }).addTo(map).bindPopup(`<div class="p-1">${popupText}</div>`);
                         }
 
-                        // MATH THROTTLING (GeoJSON local coordinate snapping)
                         let physical_vehicle_name = v.vehicle;
                         
                         if (!last_math_calc[physical_vehicle_name] || (now - last_math_calc[physical_vehicle_name] > 1000)) {
@@ -874,10 +822,6 @@ frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
                         }
                     });
 
-                    // 🚨 THE PURGE FIX: Aggressive Cleanup of Orphaned Markers and Lines
-                    // (immediate purge when the backend explicitly drops a vehicle from
-                    // the payload, complementary to the TTL sweeper above which catches
-                    // any pings that go silent without an explicit removal)
                     Object.keys(vehicle_markers).forEach(marker_id => {
                         if (!fleet[marker_id]) {
                             purgeVehicleMarker(marker_id);

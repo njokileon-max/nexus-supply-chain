@@ -45,7 +45,6 @@ class VehicleDeliveryManifest(Document):
     def on_update(self):
         self.auto_assign_driver()
         
-        # 🚨 FCM PUSH TRIGGER: Re-assignments
         if self.docstatus == 1 and self.has_value_changed("driver") and self.trip_status in ["Ready", "Dispatched"]:
             self.notify_driver("Route Reassigned", f"Manifest {self.name} has been assigned to you.")
 
@@ -53,11 +52,9 @@ class VehicleDeliveryManifest(Document):
         try:
             company_name = None
             if self.load_plan:
-                # 🚨 MAP FINANCIAL INTELLIGENCE FROM LOAD PLAN ON SUBMIT
                 load_plan_doc = frappe.get_doc("Nexus Load Plan", self.load_plan)
                 company_name = load_plan_doc.company
                 
-                # Assign the financial/logistical fields to the Manifest
                 self.db_set("profit_loss", load_plan_doc.profit_loss)
                 self.db_set("gross_margin", load_plan_doc.margin_percentage) # Note mapping name difference
                 self.db_set("net_margin", load_plan_doc.net_margin)
@@ -108,7 +105,6 @@ class VehicleDeliveryManifest(Document):
         if self.load_plan:
             frappe.db.set_value("Nexus Load Plan", self.load_plan, "dispatch_status", "Manifested")
 
-        # 🚨 FCM PUSH TRIGGER: Initial Dispatch Ready
         self.notify_driver("New Dispatch Ready", f"Manifest {self.name} is ready for departure.")
 
     def on_cancel(self):
@@ -135,9 +131,7 @@ class VehicleDeliveryManifest(Document):
                 })
 
     def notify_driver(self, title, message):
-        """Fetches the driver's FCM tokens from the custom table and enqueues the push notifications"""
         if self.driver:
-            # Supports multi-device by fetching all tokens registered to this user
             devices = frappe.get_all(
                 "Nexus FCM Device", 
                 filters={"user": self.driver}, 
@@ -159,9 +153,6 @@ class VehicleDeliveryManifest(Document):
                         queue="short"
                     )
 
-# =========================================================================
-# BACKGROUND WORKERS & UTILITIES
-# =========================================================================
 
 def send_fcm_push(token, title, body, data_payload):
     """
@@ -233,10 +224,6 @@ def process_financials_in_background(sales_order):
 
     except Exception as e:
         frappe.log_error(message=str(e), title=f"Auto-Invoice Failed for {sales_order}")
-
-# =========================================================================
-# WHITELISTED API METHODS
-# =========================================================================
 
 @frappe.whitelist()
 def start_trip_telemetry(manifest_name):

@@ -28,27 +28,22 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
     $(page.main).html(`
         <div style="background-color: #f4f6f8; min-height: 100vh; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
             
-            <!-- TOP METRICS HEADER -->
             <div id="metrics-container" style="display:flex; gap:15px; margin-bottom: 25px; flex-wrap: wrap;">
-                <!-- Populated dynamically -->
-            </div>
+                </div>
 
-            <!-- MAIN LAYOUT -->
             <div style="display:flex; gap:20px; height: calc(100vh - 160px);">
 
-                <!-- SIDEBAR -->
                 <div style="width:320px; flex-shrink:0; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; display:flex; flex-direction:column;">
                     
                     <div style="padding: 15px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px 8px 0 0;">
                         
-                        <!-- Unplanned Orders Sidebar Card -->
                         <div id="unplanned-card-container"></div>
                         
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                             <div class="h5 mb-0" style="font-weight: 700; color: #1e293b;">Load Plans</div>
                             <button id="btn-refresh-plans" class="btn btn-xs btn-default" style="background:#fff; font-weight:600; padding:4px 10px;" title="Force Refresh All Data">
-    <i class="fa fa-sync-alt text-primary"></i> Refresh
-</button>
+                                <i class="fa fa-sync-alt text-primary"></i> Refresh
+                            </button>
                         </div>
                         
                         <div style="display:flex; gap:5px; margin-bottom:8px;">
@@ -71,9 +66,7 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                     </div>
                 </div>
 
-                <!-- MAIN CANVAS -->
                 <div id="lp-canvas" style="flex:1; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; overflow-y:auto;">
-                    <!-- Empty State mimicking the screenshot -->
                     <div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height: 100%; color: #475569;">
                         <img src="https://img.icons8.com/color/96/000000/truck.png" style="width: 60px; margin-bottom: 15px; opacity: 0.9;" alt="Truck"/>
                         <h4 style="font-weight: 700; margin-bottom: 5px; color: #1e293b;">No dispatched plans selected</h4>
@@ -109,11 +102,9 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
     $('#btn-refresh-plans').on('click', function() {
         let btn = $(this);
 
-        // Disable button and show spinner + loading state matching load_desk pattern
         btn.prop('disabled', true)
            .html('<i class="fa fa-sync-alt fa-spin text-primary"></i> Refreshing...');
 
-        // Show skeleton loading state in sidebar list
         $('#lp-list').html(`
             <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
                 ${[1,2,3].map(() => `
@@ -133,7 +124,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
         `);
 
         fetch_all_data(() => {
-            // Restore active canvas if one was selected
             if (state.active_lp === 'unplanned') {
                 render_unplanned_canvas(false);
             } else if (state.active_lp) {
@@ -141,7 +131,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                 if (lp) select_load_plan(lp);
             }
 
-            // Restore button after data is rendered
             setTimeout(() => {
                 btn.prop('disabled', false)
                    .html('<i class="fa fa-sync-alt text-primary"></i> Refresh');
@@ -194,7 +183,7 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
         state.active_lp = lp.name;
         render_sidebar(); 
         
-        $('#lp-canvas').html(`<div class="text-muted" style="padding:50px; text-align:center;"><div class="spinner-border text-primary" role="status"></div><br><br><b>Analyzing Exact Financial Line Items...</b></div>`);
+        $('#lp-canvas').html(`<div class="text-muted" style="padding:50px; text-align:center;"><div class="spinner-border text-primary" role="status"></div><br><br><b>Analyzing Exact Financial Line Items & Overheads...</b></div>`);
         
         frappe.call({
             method: 'nexus_supply_chain.nexus_supply_chain.page.nexus_dispatch_intelligence.nexus_dispatch_intelligence.get_load_plan_audit',
@@ -216,14 +205,17 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
         
         let cardStyle = `flex:1; background:#fff; padding:15px 20px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border:1px solid #e2e8f0; border-top: 3px solid;`;
         
+        // 🚨 OVERHEAD & PROFIT COLOR CODING
+        let netColor = m.true_net_profit >= 0 ? '#10b981' : '#ef4444';
+        
         let html = `
-            <div style="${cardStyle} border-top-color: #64748b;">
-                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">OUTSTANDING (UNBILLED)</div>
-                <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${format_currency(m.total_outstanding_value, 'KES')}</div>
-                <div style="font-size:11px; color:#94a3b8;">Delivered but pending invoice</div>
+            <div style="${cardStyle} border-top-color: #3b82f6;">
+                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">ACTIVE PLANS</div>
+                <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${m.active_plans}</div>
+                <div style="font-size:11px; color:#94a3b8;">Pending / Staging</div>
             </div>
             <div style="${cardStyle} border-top-color: #10b981;">
-                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">TOTAL DELIVERED ${date_label}</div>
+                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">TOTAL DELIVERED (EXCL. VAT)</div>
                 <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${format_currency(m.filtered_delivered_total, 'KES')}</div>
                 <div style="font-size:11px; color:#94a3b8;">From ${m.fully_dispatched + m.partially_dispatched} active dispatches</div>
             </div>
@@ -237,10 +229,15 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                 <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${format_currency(m.true_gross_margin, 'KES')}</div>
                 <div style="font-size:11px; font-weight:700; color:#10b981;">${m.true_gross_margin_perc.toFixed(1)}% Yield on Delivered</div>
             </div>
-            <div style="${cardStyle} border-top-color: #3b82f6;">
-                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">ACTIVE PLANS</div>
-                <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${m.active_plans}</div>
-                <div style="font-size:11px; color:#94a3b8;">Pending / Staging</div>
+            <div style="${cardStyle} border-top-color: #64748b;">
+                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">PRORATED MONTHLY OVERHEAD</div>
+                <div style="font-size:22px; font-weight:800; color:#0f172a; margin-bottom:2px;">${format_currency(m.global_prorated_overhead, 'KES')}</div>
+                <div style="font-size:11px; color:#94a3b8;">Allocated by Revenue Share</div>
+            </div>
+            <div style="${cardStyle} border-top-color: ${netColor}; background-color: #f8fafc;">
+                <div style="font-size:11px; font-weight:700; color:#64748b; letter-spacing:0.5px; margin-bottom:5px;">PROJECTED TRUE NET PROFIT</div>
+                <div style="font-size:22px; font-weight:800; color:${netColor}; margin-bottom:2px;">${format_currency(m.true_net_profit, 'KES')}</div>
+                <div style="font-size:11px; font-weight:700; color:#64748b;">Fully Landed Estimate</div>
             </div>
         `;
         $('#metrics-container').html(html);
@@ -329,16 +326,13 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
         let percentage_display = '';
         let left_color = '';
         
-        // Dynamic Progress Bar Painting using precise Physical Box percentage calculated in Python
         if (is_dispatched) {
             let pct = parseFloat(lp.delivered_percentage) || 0; 
             if (disp_status === 'Fully Dispatched') pct = 100;
             
-            // Financial Color Triage (Matching Load Desk & Dispatch Board UI)
             let fill_color = disp_status === 'Fully Dispatched' ? '#d4edda' : '#fdebd0';
             left_color = disp_status === 'Fully Dispatched' ? '#28a745' : '#ca6f1e';
             
-            // Uses CSS linear-gradient to fill the card background exactly to the percentage
             fill_bg = `linear-gradient(to right, ${fill_color} ${pct}%, #fff ${pct}%)`;
             percentage_display = `<span style="font-size:10px; color:#64748b; font-weight:700;">${pct.toFixed(0)}% DELIVERED</span>`;
         } else {
@@ -503,13 +497,13 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
     }
 
     // ── Main Canvas (Load Plan Audit) ─────────────────────────────────────
+    // ── Main Canvas (Load Plan Audit) ─────────────────────────────────────
     function render_canvas() {
         if (!state.active_lp || state.active_lp === 'unplanned') return;
 
         let s = state.audit_summary;
-        let margin_diff = (s.delivered_margin_perc || 0) - (s.planned_margin_perc || 0);
-        let trend_icon = margin_diff >= 0 ? '<i class="fa fa-arrow-up text-success"></i>' : '<i class="fa fa-arrow-down text-danger"></i>';
-        let trend_color = margin_diff >= 0 ? '#10b981' : '#ef4444';
+        
+        let netColor = s.lp_net_profit >= 0 ? '#10b981' : '#ef4444';
 
         let header = `
             <div style="padding: 20px 25px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px 8px 0 0;">
@@ -518,36 +512,44 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                         <div class="h3" style="font-weight:800; color:#0f172a; margin-bottom:4px;">${state.active_lp}</div>
                         <div class="text-muted" style="font-size:13px;">Financial & Dispatch Execution Audit</div>
                     </div>
-                    <div style="text-align:right; background:#fff; padding:10px 15px; border:1px solid #e2e8f0; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-                        <div style="font-size:11px; font-weight:700; color:#64748b; margin-bottom:2px;">TRUE DELIVERED MARGIN</div>
-                        <div style="font-size:20px; font-weight:800; color:#0f172a;">
-                            ${(s.delivered_margin_perc || 0).toFixed(2)}% 
-                            <span style="font-size:13px; color:${trend_color}; margin-left:5px;">${trend_icon} ${Math.abs(margin_diff).toFixed(2)}% vs Plan</span>
+                    
+                    <div style="display:flex; align-items:stretch; background:#fff; border:1px solid #e2e8f0; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">
+                        
+                        <div style="padding:10px 15px; border-right:1px solid #e2e8f0;">
+                            <div style="font-size:10px; font-weight:700; color:#64748b; margin-bottom:2px;">GROSS MARGIN %</div>
+                            <div style="font-size:18px; font-weight:800; color:#0f172a;">${(s.delivered_gross_margin_perc || 0).toFixed(1)}%</div>
                         </div>
+                        
+                        <div style="padding:10px 15px; background:#f8fafc; border-right:1px solid #e2e8f0;">
+                            <div style="font-size:10px; font-weight:700; color:#64748b; margin-bottom:2px;">PRORATED OVERHEAD</div>
+                            <div style="font-size:15px; font-weight:700; color:#64748b; margin-top:2px;">${format_currency(s.lp_prorated_overhead, 'KES')}</div>
+                        </div>
+                        
+                        <div style="padding:10px 15px; background-color: ${s.lp_net_profit >= 0 ? '#f0fdf4' : '#fef2f2'}; border-left:3px solid ${netColor};">
+                            <div style="font-size:10px; font-weight:800; color:${netColor}; margin-bottom:2px;">NET PROFIT</div>
+                            <div style="font-size:18px; font-weight:900; color:${netColor};">${format_currency(s.lp_net_profit, 'KES')}</div>
+                        </div>
+                        
                     </div>
                 </div>
 
-                <!-- Sub Metrics Strip (Segmented for Clarity) -->
                 <div style="display:flex; gap:30px; align-items: center;">
-                    
-                    <!-- Group 1: Ordered / Billed Reference -->
                     <div style="display:flex; gap:25px;">
                         <div>
-                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">TOTAL REVENUE</div>
+                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">TOTAL REVENUE (EX-VAT)</div>
                             <div style="font-size:15px; font-weight:700; color:#1e293b;">${format_currency(s.total_revenue, 'KES')}</div>
                         </div>
                         <div>
-                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">INVOICED VALUE</div>
+                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">INVOICED VALUE (EX-VAT)</div>
                             <div style="font-size:15px; font-weight:700; color:#38bdf8;">${format_currency(s.total_invoiced_value, 'KES')}</div>
                         </div>
                     </div>
                     
                     <div style="height: 30px; width: 2px; background-color: #cbd5e1;"></div>
                     
-                    <!-- Group 2: True Physical Execution & Profit -->
                     <div style="display:flex; gap:25px;">
                         <div>
-                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">DELIVERED VALUE</div>
+                            <div style="font-size:10px; font-weight:700; color:#64748b; letter-spacing:0.5px;">DELIVERED VALUE (EX-VAT)</div>
                             <div style="font-size:15px; font-weight:700; color:#10b981;">${format_currency(s.total_delivered_value, 'KES')}</div>
                         </div>
                         <div>
@@ -559,7 +561,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                             <div style="font-size:15px; font-weight:700; color:#0f172a;">${format_currency(s.delivered_gross_margin, 'KES')}</div>
                         </div>
                     </div>
-
                 </div>
             </div>
         `;
@@ -567,12 +568,11 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
         let rows = '';
         state.audit_sos.forEach(row => {
             
-            // 3-Bar Financial Progress Math (Retained purely for CEO Shilling Dashboard)
-            let revenue = parseFloat(row.revenue) || 1; 
-            let pct_delivered = (parseFloat(row.delivered_value) / revenue) * 100;
-            let pct_invoiced = (parseFloat(row.invoiced_value) / revenue) * 100;
+            // 🚨 Progress Bars using pure Ex-VAT base supplied by backend
+            let revenue_ex_vat = parseFloat(row.revenue) || 1; 
+            let pct_delivered = (parseFloat(row.delivered_value) / revenue_ex_vat) * 100;
+            let pct_invoiced = (parseFloat(row.invoiced_value) / revenue_ex_vat) * 100;
 
-            // Cap at 100% for UI purposes
             if (pct_delivered > 100) pct_delivered = 100;
             if (pct_invoiced > 100) pct_invoiced = 100;
 
@@ -595,7 +595,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                         <div style="font-size:11px; font-weight:700; color:#10b981;">Margin: ${(row.delivered_margin_perc || 0).toFixed(1)}%</div>
                     </td>
                     <td style="padding:12px; width: 260px;">
-                        <!-- Revenue Base Bar -->
                         <div style="display:flex; justify-content:space-between; font-size:10px; font-weight:700; margin-bottom:2px; color:#475569;">
                             <span>Ordered</span> <span>100%</span>
                         </div>
@@ -603,7 +602,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                             <div style="background:#cbd5e1; height:100%; width:100%;"></div>
                         </div>
                         
-                        <!-- Delivered Execution Bar -->
                         <div style="display:flex; justify-content:space-between; font-size:10px; font-weight:700; margin-bottom:2px; color:#10b981;">
                             <span>Delivered</span> <span>${pct_delivered.toFixed(0)}%</span>
                         </div>
@@ -611,7 +609,6 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                             <div style="background:${d_color}; height:100%; width:${pct_delivered}%;"></div>
                         </div>
                         
-                        <!-- Invoiced Execution Bar -->
                         <div style="display:flex; justify-content:space-between; font-size:10px; font-weight:700; margin-bottom:2px; color:#38bdf8;">
                             <span>Invoiced</span> <span>${pct_invoiced.toFixed(0)}%</span>
                         </div>
@@ -631,7 +628,7 @@ frappe.pages['nexus_dispatch_intelligence'].on_page_load = function(wrapper) {
                             <th style="padding:12px; color:#475569; font-weight:700;">Sales Order</th>
                             <th style="padding:12px; color:#475569; font-weight:700;">Region</th>
                             <th style="padding:12px; color:#475569; font-weight:700;">Payment Terms</th>
-                            <th style="padding:12px; text-align:center; color:#475569; font-weight:700;">Ordered Revenue</th>
+                            <th style="padding:12px; text-align:center; color:#475569; font-weight:700;">Ordered Revenue (Ex-VAT)</th>
                             <th style="padding:12px; text-align:center; color:#475569; font-weight:700;">Delivered COGS & Margin</th>
                             <th style="padding:12px; color:#475569; font-weight:700;">Financial Execution</th>
                         </tr>

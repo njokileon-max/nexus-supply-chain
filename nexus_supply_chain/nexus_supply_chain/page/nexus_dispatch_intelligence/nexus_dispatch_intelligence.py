@@ -3,92 +3,10 @@
 import frappe
 from frappe.utils import today, get_first_day, flt, add_days
 
-# ─────────────────────────────────────────────────────────────────────────────
-# In-Memory Theoretical Costing Engine (0-Lag BOM Explosion)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TrueMarketCostEngine:
-    """
-    High-Performance RAM-Mapping Engine for True Market COGS.
-    Explodes BOMs recursively and evaluates against the live Standard Buying Price List.
-    """
-    def __init__(self):
-        # 1. Fetch Standard Buying Prices
-        prices = frappe.db.sql("""
-            SELECT item_code, price_list_rate 
-            FROM `tabItem Price` 
-            WHERE price_list = 'Standard Buying' AND buying = 1
-        """, as_dict=True)
-        self.price_map = {p.item_code: flt(p.price_list_rate) for p in prices}
-
-        # 2. Fetch Item Fallback Valuations
-        item_vals = frappe.db.sql("""
-            SELECT name, valuation_rate FROM `tabItem`
-        """, as_dict=True)
-        self.item_val_map = {i.name: flt(i.valuation_rate) for i in item_vals}
-
-        # 3. Fetch BOMs
-        boms = frappe.db.sql("""
-            SELECT name, item, quantity
-            FROM `tabBOM`
-            WHERE is_active = 1 AND is_default = 1 AND docstatus = 1
-        """, as_dict=True)
-        self.bom_map = {b.item: {"name": b.name, "qty": flt(b.quantity) or 1.0} for b in boms}
-
-        # 4. Fetch BOM Items
-        bom_names = tuple([b.name for b in boms])
-        self.bom_items_map = {}
-        if bom_names:
-            bom_items = frappe.db.sql("""
-                SELECT parent, item_code, stock_qty
-                FROM `tabBOM Item`
-                WHERE parent IN %s
-            """, (bom_names,), as_dict=True)
-            for bi in bom_items:
-                self.bom_items_map.setdefault(bi.parent, []).append(bi)
-
-        self.cost_cache = {}
-        self.visited = set()
-
-    def get_cost(self, item_code):
-        # Memoization: Return immediately if already calculated
-        if item_code in self.cost_cache:
-            return self.cost_cache[item_code]
-        
-        # Prevent infinite recursion loops
-        if item_code in self.visited:
-            return 0.0 
-            
-        self.visited.add(item_code)
-        bom_info = self.bom_map.get(item_code)
-        
-        if not bom_info:
-            # Leaf node: Check Standard Buying Price -> Fallback to Item Valuation
-            cost = self.price_map.get(item_code)
-            if cost is None or cost == 0.0:
-                cost = self.item_val_map.get(item_code, 0.0)
-            self.cost_cache[item_code] = cost
-            self.visited.remove(item_code)
-            return cost
-            
-        # Subassembly/Parent: Calculate from children recursively
-        bom_name = bom_info["name"]
-        bom_yield = bom_info["qty"]
-        children = self.bom_items_map.get(bom_name, [])
-        
-        total_bom_cost = 0.0
-        for child in children:
-            child_cost = self.get_cost(child.item_code)
-            total_bom_cost += child_cost * flt(child.stock_qty)
-            
-        unit_cost = total_bom_cost / bom_yield
-        self.cost_cache[item_code] = unit_cost
-        self.visited.remove(item_code)
-        return unit_cost
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API 1 – Global Executive Metrics
-# ─────────────────────────────────────────────────────────────────────────────
+from nexus_supply_chain.utils.cost_utils import (
+    MarketCostEngine,
+    get_current_month_overhead_metrics,
+)
 
 @frappe.whitelist()
 def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
@@ -100,7 +18,6 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
     """
     current_date = today()
     
-    # Date Filtering Setup
     target_start = start_date if filter_date == 'custom' else (current_date if filter_date == 'today' else None)
     target_end = end_date if filter_date == 'custom' else current_date
     
@@ -109,7 +26,6 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
     elif filter_date == 'all':
         target_start = '2000-01-01'
 
-    # Fetch Load Plan & Exact Item-Level Execution Data
     lp_data = frappe.db.sql("""
         SELECT 
             lp.name as lp_name,
@@ -128,7 +44,6 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
           AND DATE(lp.creation) BETWEEN %s AND %s
     """, (target_start, target_end), as_dict=True)
 
-    # Pre-fetch 0-Lag Physical Delivery Truth (RAM Map) to classify plan status counts
     valid_lps = list(set([r.lp_name for r in lp_data if r.lp_name]))
     del_map = {}
     if valid_lps:
@@ -144,7 +59,7 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
         """, (tuple(valid_lps),), as_dict=True)
         del_map = {r.load_plan: flt(r.total_delivered) for r in delivered_map_raw}
 
-    engine = TrueMarketCostEngine()
+    engine = MarketCostEngine()
     
     active_plans_set = set()
     fully_dispatched_set = set()
@@ -152,7 +67,6 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
     
     lp_summary = {} 
     
-    # Aggregate Costs and Values precisely per line item
     for row in lp_data:
         lp_name = row.lp_name
         active_plans_set.add(lp_name)
@@ -160,9 +74,9 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
         if lp_name not in lp_summary:
             lp_summary[lp_name] = {
                 "ordered_qty_physical": 0.0,
-                "ordered_value": 0.0,
-                "delivered_value": 0.0,
-                "invoiced_value": 0.0,
+                "ordered_value_ex_vat": 0.0,
+                "delivered_value_ex_vat": 0.0,
+                "invoiced_value_ex_vat": 0.0,
                 "delivered_market_cogs": 0.0
             }
             
@@ -170,33 +84,29 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
         if row.item_code and ordered_qty > 0:
             del_qty = flt(row.delivered_qty)
             
-            # Physical Base accumulation for cross-department status matching
             lp_summary[lp_name]["ordered_qty_physical"] += flt(row.stock_qty)
             
-            # Exact Financial Execution (Used strictly for Shilling Display)
-            unit_revenue = flt(row.line_amount) / ordered_qty
-            lp_summary[lp_name]["ordered_value"] += flt(row.line_amount)
-            lp_summary[lp_name]["delivered_value"] += unit_revenue * del_qty
-            lp_summary[lp_name]["invoiced_value"] += flt(row.billed_amt)
+            line_amount_ex_vat = flt(row.line_amount) / 1.16
+            unit_revenue_ex_vat = line_amount_ex_vat / ordered_qty
             
-            # Exact Base UOM Delivered COGS
+            lp_summary[lp_name]["ordered_value_ex_vat"] += line_amount_ex_vat
+            lp_summary[lp_name]["delivered_value_ex_vat"] += unit_revenue_ex_vat * del_qty
+            lp_summary[lp_name]["invoiced_value_ex_vat"] += flt(row.billed_amt) / 1.16
+            
             conv_factor = flt(row.stock_qty) / ordered_qty
             base_del_qty = del_qty * conv_factor
             unit_cost = engine.get_cost(row.item_code)
             lp_summary[lp_name]["delivered_market_cogs"] += unit_cost * base_del_qty
 
-    # Global Calculations & Dispatch Status Determination
-    total_delivered_value = 0.0
-    total_billed_value = 0.0
+    total_delivered_value_ex_vat = 0.0
+    total_billed_value_ex_vat = 0.0
     delivered_market_cogs = 0.0
     
     for lp_name, data in lp_summary.items():
-        total_delivered_value += data["delivered_value"]
-        total_billed_value += data["invoiced_value"]
+        total_delivered_value_ex_vat += data["delivered_value_ex_vat"]
+        total_billed_value_ex_vat += data["invoiced_value_ex_vat"]
         delivered_market_cogs += data["delivered_market_cogs"]
         
-        # Determine Status mathematically by Physical Boxes, ensuring the counts 
-        # in the Executive Header match the Warehouse/Load Desk sidebars.
         tot_ordered_qty = data["ordered_qty_physical"]
         tot_delivered_qty = del_map.get(lp_name, 0.0)
         
@@ -209,34 +119,39 @@ def get_dashboard_metrics(filter_date=None, start_date=None, end_date=None):
                 partially_dispatched_set.add(lp_name)
                 active_plans_set.discard(lp_name)
         
-    total_outstanding = total_delivered_value - total_billed_value
-    true_gross_margin = total_delivered_value - delivered_market_cogs
-    true_gross_margin_perc = (true_gross_margin / total_delivered_value * 100) if total_delivered_value > 0 else 0.0
+    total_outstanding = total_delivered_value_ex_vat - total_billed_value_ex_vat 
+    true_gross_margin = total_delivered_value_ex_vat - delivered_market_cogs
+    true_gross_margin_perc = (true_gross_margin / total_delivered_value_ex_vat * 100) if total_delivered_value_ex_vat > 0 else 0.0
+
+    monthly_metrics = get_current_month_overhead_metrics()
+    total_monthly_overheads = flt(monthly_metrics.get("total_global_overheads", 0.0))
+    total_monthly_invoiced_sales = flt(monthly_metrics.get("total_invoiced_sales", 0.0))
+
+    global_prorated_overhead = 0.0
+    if total_monthly_invoiced_sales > 0:
+        global_revenue_ratio = total_delivered_value_ex_vat / total_monthly_invoiced_sales
+        global_prorated_overhead = total_monthly_overheads * global_revenue_ratio
+
+    true_net_profit = true_gross_margin - global_prorated_overhead
 
     return {
         "total_outstanding_value": total_outstanding,
-        "filtered_delivered_total": total_delivered_value,
+        "filtered_delivered_total": total_delivered_value_ex_vat,
         "delivered_market_cogs": delivered_market_cogs,
         "true_gross_margin": true_gross_margin,
         "true_gross_margin_perc": true_gross_margin_perc,
+        
+        "global_prorated_overhead": global_prorated_overhead,
+        "true_net_profit": true_net_profit,
         
         "fully_dispatched": len(fully_dispatched_set),
         "partially_dispatched": len(partially_dispatched_set),
         "active_plans": len(active_plans_set)
     }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API 2 – Sidebar Load Plans
-# ─────────────────────────────────────────────────────────────────────────────
-
 @frappe.whitelist()
 def get_intelligence_plans():
-    """
-    Fetches Load Plans and classifies dispatch statuses exactly on 
-    Physical Box Quantities via RAM Mapping. This prevents the "79% vs 88%" 
-    discrepancy and ensures 100% Sidebar sync across all operational modules.
-    """
-    # 1. Map total ordered physical quantities per Load Plan
+
     load_plans = frappe.db.sql("""
         SELECT
             lp.name, lp.docstatus, lp.vehicle_type, lp.transport_mode,
@@ -252,7 +167,6 @@ def get_intelligence_plans():
         ORDER BY lp.creation DESC
     """, as_dict=True)
 
-    # 2. Map absolute physical delivery truth direct from submitted D-Notes
     delivered_map_raw = frappe.db.sql("""
         SELECT 
             lp_so.parent as load_plan,
@@ -266,7 +180,6 @@ def get_intelligence_plans():
     
     del_map = {r.load_plan: flt(r.total_delivered) for r in delivered_map_raw}
 
-    # 3. RAM Merge
     for lp in load_plans:
         tot_ordered = flt(lp.total_ordered)
         tot_delivered = del_map.get(lp.name, 0.0)
@@ -287,15 +200,12 @@ def get_intelligence_plans():
 
     return load_plans
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API 3 – The Financial Audit Engine (Exact Item-Level Accuracy)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()
 def get_load_plan_audit(load_plan_name):
     """
     Calculates exact Delivered Value, Invoiced Value, and Delivered Market COGS 
-    line-by-line. Retains purely Financial Shilling calculations for executive oversight.
+    line-by-line. Uses Tax-Exclusive revenue universally for true profit metrics.
     """
     lp = frappe.get_doc("Nexus Load Plan", load_plan_name)
     if not lp.sales_orders:
@@ -303,7 +213,6 @@ def get_load_plan_audit(load_plan_name):
 
     so_names = [row.sales_order for row in lp.sales_orders]
 
-    # Explicitly fetching custom_delivery_region and payment_terms_template
     sos = frappe.db.sql("""
         SELECT 
             name as sales_order, customer_name, custom_delivery_region as region, 
@@ -312,7 +221,6 @@ def get_load_plan_audit(load_plan_name):
         WHERE name IN %s
     """, (tuple(so_names),), as_dict=True)
 
-    # Fetch precise line-level execution metrics
     items = frappe.db.sql("""
         SELECT 
             parent as sales_order, item_code, 
@@ -322,27 +230,28 @@ def get_load_plan_audit(load_plan_name):
         WHERE parent IN %s
     """, (tuple(so_names),), as_dict=True)
 
-    engine = TrueMarketCostEngine()
+    engine = MarketCostEngine()
     
     so_execution = {
         so: {
-            "delivered_value": 0.0, 
-            "invoiced_value": 0.0, 
+            "delivered_value_ex_vat": 0.0, 
+            "invoiced_value_ex_vat": 0.0, 
             "delivered_cogs": 0.0, 
             "ordered_cogs": 0.0
         } for so in so_names
     }
     
-    # Calculate exact execution metrics row by row
     for it in items:
         ordered_qty = flt(it['ordered_qty'])
         if ordered_qty > 0:
             so = it['sales_order']
             del_qty = flt(it['delivered_qty'])
             
-            unit_revenue = flt(it['line_amount']) / ordered_qty
-            so_execution[so]["delivered_value"] += unit_revenue * del_qty
-            so_execution[so]["invoiced_value"] += flt(it['billed_amt'])
+            line_amount_ex_vat = flt(it['line_amount']) / 1.16
+            unit_revenue_ex_vat = line_amount_ex_vat / ordered_qty
+            
+            so_execution[so]["delivered_value_ex_vat"] += unit_revenue_ex_vat * del_qty
+            so_execution[so]["invoiced_value_ex_vat"] += flt(it['billed_amt']) / 1.16
             
             conv_factor = flt(it['stock_qty']) / ordered_qty
             base_del_qty = del_qty * conv_factor
@@ -351,66 +260,74 @@ def get_load_plan_audit(load_plan_name):
             so_execution[so]["delivered_cogs"] += unit_cost * base_del_qty
             so_execution[so]["ordered_cogs"] += unit_cost * flt(it['stock_qty'])
 
-    total_revenue = 0.0
+    total_revenue_ex_vat = 0.0
     total_market_cogs = 0.0
-    total_delivered_value = 0.0
-    total_invoiced_value = 0.0
+    total_delivered_value_ex_vat = 0.0
+    total_invoiced_value_ex_vat = 0.0
     total_delivered_market_cogs = 0.0
 
     final_sos = []
     for so in sos:
         so_name = so['sales_order']
-        rev = flt(so['revenue'])
+        rev_ex_vat = flt(so['revenue']) / 1.16
         
-        del_val = so_execution[so_name]["delivered_value"]
-        inv_val = so_execution[so_name]["invoiced_value"]
+        del_val_ex_vat = so_execution[so_name]["delivered_value_ex_vat"]
+        inv_val_ex_vat = so_execution[so_name]["invoiced_value_ex_vat"]
         del_cogs = so_execution[so_name]["delivered_cogs"]
         ordered_cogs = so_execution[so_name]["ordered_cogs"]
         
-        del_margin = del_val - del_cogs
-        del_margin_perc = (del_margin / del_val * 100) if del_val > 0 else 0.0
+        del_margin = del_val_ex_vat - del_cogs
+        del_margin_perc = (del_margin / del_val_ex_vat * 100) if del_val_ex_vat > 0 else 0.0
 
-        # Global Rollups
-        total_revenue += rev
+        total_revenue_ex_vat += rev_ex_vat
         total_market_cogs += ordered_cogs
-        total_delivered_value += del_val
-        total_invoiced_value += inv_val
+        total_delivered_value_ex_vat += del_val_ex_vat
+        total_invoiced_value_ex_vat += inv_val_ex_vat
         total_delivered_market_cogs += del_cogs
 
-        # Map to individual Sales Order dict for pure financial rendering
+        so['revenue'] = rev_ex_vat 
         so['market_cogs'] = ordered_cogs
         so['delivered_cogs'] = del_cogs
         so['delivered_margin'] = del_margin
         so['delivered_margin_perc'] = del_margin_perc
-        so['delivered_value'] = del_val
-        so['invoiced_value'] = inv_val
+        so['delivered_value'] = del_val_ex_vat
+        so['invoiced_value'] = inv_val_ex_vat
 
         final_sos.append(so)
 
-    # Calculate True Performance Margins
-    total_delivered_margin = total_delivered_value - total_delivered_market_cogs
-    delivered_margin_perc = (total_delivered_margin / total_delivered_value * 100) if total_delivered_value > 0 else 0.0
+    total_delivered_gross_margin = total_delivered_value_ex_vat - total_delivered_market_cogs
+    delivered_gross_margin_perc = (total_delivered_gross_margin / total_delivered_value_ex_vat * 100) if total_delivered_value_ex_vat > 0 else 0.0
+
+    monthly_metrics = get_current_month_overhead_metrics()
+    total_monthly_overheads = flt(monthly_metrics.get("total_global_overheads", 0.0))
+    total_monthly_invoiced_sales = flt(monthly_metrics.get("total_invoiced_sales", 0.0))
+
+    lp_prorated_overhead = 0.0
+    if total_monthly_invoiced_sales > 0:
+        lp_revenue_ratio = total_delivered_value_ex_vat / total_monthly_invoiced_sales
+        lp_prorated_overhead = total_monthly_overheads * lp_revenue_ratio
+        
+    lp_net_profit = total_delivered_gross_margin - lp_prorated_overhead
 
     summary = {
         "planned_margin_perc": flt(lp.margin_percentage), 
-        "market_margin_perc": delivered_margin_perc,          
-        "delivered_margin_perc": delivered_margin_perc,
-        "delivered_gross_margin": total_delivered_margin,
+        "market_margin_perc": delivered_gross_margin_perc,          
+        "delivered_gross_margin_perc": delivered_gross_margin_perc,
+        "delivered_gross_margin": total_delivered_gross_margin,
         "delivered_market_cogs": total_delivered_market_cogs,
-        "total_revenue": total_revenue,
+        
+        "lp_prorated_overhead": lp_prorated_overhead,
+        "lp_net_profit": lp_net_profit,
+        
+        "total_revenue": total_revenue_ex_vat,
         "total_market_cogs": total_market_cogs,
-        "total_delivered_value": total_delivered_value,
-        "total_invoiced_value": total_invoiced_value
+        "total_delivered_value": total_delivered_value_ex_vat,
+        "total_invoiced_value": total_invoiced_value_ex_vat
     }
 
     return {"sales_orders": final_sos, "summary": summary}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API 4 – Unplanned Confirmed Orders
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _get_submitted_dnote_so_set(so_names):
-    """Helper to check if SOs already have Delivery Notes."""
     if not so_names:
         return set()
     rows = frappe.db.sql("""

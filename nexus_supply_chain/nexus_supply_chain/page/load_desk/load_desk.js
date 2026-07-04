@@ -8,7 +8,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         single_column: true
     });
 
-    // ── Global State ──────────────────────────────────────────────────────
     var state = {
         load_plans:               [],
         sales_orders:             [],
@@ -22,7 +21,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         custom_end:               ''
     };
 
-    // ── Page Layout ───────────────────────────────────────────────────────
     $(page.main).html(`
         <div style="display:flex; gap:20px; height:90vh; padding-top:15px;">
 
@@ -82,7 +80,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         </div>
     `);
 
-    // ── Sidebar UI Bindings ───────────────────────────────────────────────
     $('#lp-date-filter').on('change', function() {
         state.date_filter = $(this).val();
         $('#custom-date-wrap').toggle(state.date_filter === 'custom');
@@ -112,7 +109,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         });
     });
 
-    // ── Sidebar Logic & Rendering ─────────────────────────────────────────
     function filter_and_sort_lps(lps) {
         let filtered = lps.filter(lp => {
             if (!lp.creation) return true;
@@ -193,7 +189,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
             if (lp) select_load_plan(lp);
         });
 
-        // Group-Level Print Buttons
         $('#lp-list .action-print-group').on('click', function(e) {
             e.stopPropagation();
             let group = $(this).data('group');
@@ -220,7 +215,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         let fill_bg = '';
         let percentage_display = '';
         
-        // Dynamic Progress Bar Painting using precise quantity percentage calculated in Python
         if (is_dispatched) {
             let pct = parseFloat(lp.delivered_percentage) || 0; 
             if (disp_status === 'Fully Dispatched') pct = 100;
@@ -263,10 +257,8 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
             </div>`;
     }
 
-    // ── Main Canvas: Unplanned Orders (Two-Layer System) ──────────────────
     function render_unplanned_canvas(exploded = false) {
         if (!exploded) {
-            // Layer 1: High Level Sales Orders View
             var header = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                     <div>
@@ -306,7 +298,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
                 
             $('#lp-canvas').html(header + table);
 
-            // Bind Explosion Button
             $('#btn-explode-unplanned').on('click', function() {
                 $('#lp-canvas').html(`<div class="text-muted" style="padding:40px; text-align:center;"><div class="spinner-border spinner-border-sm"></div> &nbsp; <span style="font-size:14.5px;">Exploding Items…</span></div>`);
                 frappe.call({
@@ -321,7 +312,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
             });
             
         } else {
-            // Layer 2: Exploded Items View
             var header = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                     <div>
@@ -373,7 +363,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
                 render_unplanned_canvas(false);
             });
 
-            // Sorting Logic via Balance Header click
             $('#lp-canvas').on('click', '.sort-bal-header', function() {
                 var th = $(this);
                 var currentSort = th.data('sort') || 'none';
@@ -395,7 +384,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         }
     }
 
-    // ── Main Canvas (Load Plan Sales Orders) ──────────────────────────────
     function render_canvas() {
         if (!state.active_lp || state.active_lp === 'unplanned') return;
 
@@ -424,12 +412,10 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
                 `<span class="text-success fw-bold"><i class="fa fa-check"></i> Manifested</span>` :
                 `<button class="btn btn-sm ${btn_class} action-create-dn" data-so="${row.sales_order}" ${btn_state}>Create DN</button>`;
 
-            // 1. Quantity Fulfillment Math & Formatting
             let ord_qty = parseFloat(row.so_ordered_qty) || 0;
             let del_qty = parseFloat(row.so_delivered_qty) || 0;
             let pct = parseFloat(row.so_qty_perc) || 0;
             
-            // Dispatch floor logic: Pure Green if perfectly satisfied, Normal Bold Black if short.
             let fulfill_color = pct >= 99.99 ? '#27ae60' : '#000000';
             let fulfill_weight = '700'; // Normal bold text weight applied universally as requested
             
@@ -479,7 +465,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
 
         $('#lp-canvas').html(header + table);
 
-        // Fulfillment percentage sorting logic (0-Lag DOM manipulation)
         $('#lp-canvas').off('click', '.sort-fulfill-header').on('click', '.sort-fulfill-header', function() {
             var th = $(this);
             var currentSort = th.data('sort') || 'none';
@@ -534,7 +519,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         });
     }
 
-    // ── Backend API Calls ─────────────────────────────────────────────────
     function fetch_initial_data(callback) {
         frappe.call({
             method: 'nexus_supply_chain.nexus_supply_chain.page.load_desk.load_desk.get_load_desk_plans',
@@ -574,7 +558,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         });
     }
 
-    // ── HTML Print Engine (High-Contrast Ink-Friendly Styling) ────────────
     function trigger_print(load_plans_array, print_type) {
         frappe.call({
             method: 'nexus_supply_chain.nexus_supply_chain.page.load_desk.load_desk.get_print_data',
@@ -595,7 +578,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
     function build_print_html(data, print_type) {
         let date_str = frappe.datetime.str_to_user(frappe.datetime.get_today());
         
-        // CSS engineered for clean, ink-saving printing with solid borders
         let style = `
             <style>
                 @media all {
@@ -737,7 +719,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
                 </html>`;
     }
 
-    // ── Bulk Modal Binding (Fixed: buttons live outside #lp-list) ─────────
     $(page.main).on('click', '#btn-bulk-loading, #btn-bulk-packing', function() {
         let print_type = $(this).attr('id') === 'btn-bulk-loading' ? 'loading_sheet' : 'packing_list';
         let modal_title = print_type === 'loading_sheet' ? 'Master Loading Sheet' : 'Master Packing List';
@@ -788,7 +769,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
                 ${options}
             </div>`);
 
-        // Select All logic
         d.$wrapper.on('change', '#bulk-select-all', function() {
             d.$wrapper.find('.bulk-lp-check').prop('checked', $(this).is(':checked'));
         });
@@ -802,7 +782,6 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         d.show();
     });
 
-    // ── Visual helpers ────────────────────────────────────────────────────
     function get_reservation_badge(status) {
         var map = {
             'Reserved': 'badge-success',
@@ -826,6 +805,5 @@ frappe.pages['load_desk'].on_page_load = function(wrapper) {
         return `<span class="badge ${e[0]}" style="font-size:12px;">${e[1]}</span>`;
     }
 
-    // ── Boot ─────────────────────────────────────────────────────────────
     fetch_initial_data();
 };
