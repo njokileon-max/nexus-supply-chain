@@ -49,6 +49,7 @@ doc_events = {
         "on_submit": [
             # "nexus_supply_chain.reservation_hooks.process_delivery_note",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+            #"nexus_supply_chain.nexus_supply_chain.utils.delivery_note_hooks.set_cogs_snapshot"
         ],
         "on_cancel": [
             # "nexus_supply_chain.reservation_hooks.process_delivery_note_cancel",
