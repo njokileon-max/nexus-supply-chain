@@ -5,7 +5,7 @@ import requests
 import json
 import math
 from datetime import datetime
-from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime
+from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime, flt, getdate
 
 def queue_customer_geocoding(doc, method=None):
 
@@ -74,11 +74,7 @@ def execute_external_geocode_call(doc_name, link):
         frappe.log_error(message=str(e), title="Frappe Background Geocode Error")
 
 def process_bulk_geocoding_queue():
-    """
-    Scheduled cron job (runs every 10 minutes).
-    Finds up to 20 customers who have a Google Maps link but no coordinates.
-    Processes them one by one with a random sleep to evade bot detection.
-    """
+
     import time
     import random
     
@@ -135,10 +131,7 @@ def process_bulk_geocoding_queue():
 
 @frappe.whitelist()
 def check_mobile_app_access():
-    """
-    Strictly checks the user's native ERPNext Role Profile against the allowed 
-    roles in Nexus App Settings. No hardcoded admin bypasses.
-    """
+
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "denied", "message": "Please log in first."}
@@ -170,10 +163,7 @@ def check_mobile_app_access():
 
 @frappe.whitelist(allow_guest=True)
 def get_user_profile():
-    """
-    Called by the React Native app immediately after native login. 
-    Returns the user's details, roles, CSRF token, and the SID to authorize proxy requests.
-    """
+
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "failed", "message": "Unauthorized"}
@@ -582,6 +572,30 @@ def get_authorized_sales_persons(user_email):
     return [sp[0] for sp in authorized_sps] if authorized_sps else []
 
 
+def get_authorized_sales_emails(user_email):
+
+    auth_sps = get_authorized_sales_persons(user_email)
+    if not auth_sps:
+        return []
+
+    format_sps = ','.join(['%s'] * len(auth_sps))
+    rows = frappe.db.sql(f"""
+        SELECT employee FROM `tabSales Person` WHERE name IN ({format_sps})
+    """, tuple(auth_sps), as_dict=True)
+
+    emails = set()
+    for r in rows:
+        if not r.employee:
+            continue
+        if "@" in r.employee:
+            emails.add(r.employee.lower())
+        else:
+            resolved = frappe.db.get_value("Employee", r.employee, "user_id")
+            if resolved:
+                emails.add(resolved.lower())
+    return list(emails)
+
+
 @frappe.whitelist()
 def get_sales_dashboard_data():
     user = frappe.session.user
@@ -660,15 +674,8 @@ def get_sales_dashboard_data():
 
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
-
-
 @frappe.whitelist()
 def get_sales_context():
-    """
-    Fetches the App's core operational data in ONE call for FastAPI to hash.
-    Optimized via Nested Sets to pull all customers for the rep's authorized branch.
-    Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
-    """
 
     target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
     
@@ -686,9 +693,13 @@ def get_sales_context():
             c.default_price_list, 
             c.payment_terms,
             c.mobile_no,
+            c.custom_phone_number,
+            c.custom_location,
             c.custom_latitude,
             c.custom_longitude,
             c.custom_google_maps_link,
+            c.custom_combined_coordinates,
+            c.creation as customer_creation_date,
             c.name as customer_id,
             (SELECT MAX(posting_date) FROM `tabSales Invoice` WHERE customer = c.name AND docstatus = 1) as last_invoiced_date
         FROM `tabCustomer` c
@@ -756,13 +767,24 @@ def get_sales_context():
         tax_categories = []
 
     thirty_days_ago = add_days(today(), -30)
-    recent_orders = frappe.db.sql("""
-        SELECT name as id, customer_name as customer, custom_delivery_region as region, 
-               grand_total as total, status, transaction_date as date
-        FROM `tabSales Order`
-        WHERE docstatus < 2 AND owner = %s AND transaction_date >= %s
-        ORDER BY creation DESC
-    """, (frappe.session.user, thirty_days_ago), as_dict=True)
+
+    has_rejection_field = frappe.db.has_column("Sales Order", "custom_finance_rejection_reason")
+    rejection_select = "so.custom_finance_rejection_reason as rejection_reason," if has_rejection_field else "NULL as rejection_reason,"
+
+    recent_orders = frappe.db.sql(f"""
+        SELECT DISTINCT
+               so.name as id, so.customer_name as customer, so.custom_delivery_region as region,
+               so.grand_total as total, so.status as status, so.transaction_date as date,
+               so.creation as order_creation_datetime,
+               {rejection_select}
+               so.owner as created_by
+        FROM `tabSales Order` so
+        JOIN `tabSales Team` st ON st.parent = so.name AND st.parenttype = 'Sales Order'
+        WHERE so.docstatus < 2
+        AND so.transaction_date >= %(thirty_days_ago)s
+        AND st.sales_person IN %(sp_list)s
+        ORDER BY so.creation DESC
+    """, {"thirty_days_ago": thirty_days_ago, "sp_list": tuple_sps}, as_dict=True)
     
     if recent_orders:
         order_names = [o.id for o in recent_orders]
@@ -847,37 +869,129 @@ def get_sales_context():
         SELECT SUM(custom_sales_target) as sales_target, SUM(custom_collections_target) as collection_target
         FROM `tabSales Person` WHERE name IN ({format_sps})
     """, tuple_sps, as_dict=True)[0]
-    
+
     sales_target = targets.get("sales_target") or 0.0
     collection_target = targets.get("collection_target") or 0.0
 
-    mtd_sales = 0.0
-    mtd_collections = 0.0
+    total_orders = 0
+    total_invoiced_orders = 0.0
+    total_collections = 0.0
+    total_outstanding_sum = 0.0
+    total_overdue_sum = 0.0
+
+    BANK_AGAINST_ACCOUNTS = (
+        '213503 - I&M Bank Ltd - CAL',
+        '213501 - Equity Bank -Accra Road - CAL',
+        '502410 - Miscellaneous Income - CAL, 213503 - I&M Bank Ltd - CAL'
+    )
+
+    gl_params = {
+        "sp_list": tuple_sps,
+        "from_date": start_of_month,
+        "to_date": end_of_month,
+        "as_of": today(),
+        "against_accounts": BANK_AGAINST_ACCOUNTS
+    }
+
+    order_agg = frappe.db.sql("""
+        SELECT COUNT(*) as cnt, SUM(grand_total) as total_value
+        FROM (
+            SELECT DISTINCT so.name, so.grand_total
+            FROM `tabSales Order` so
+            JOIN `tabSales Team` st ON st.parent = so.name AND st.parenttype = 'Sales Order'
+            WHERE so.docstatus IN (0, 1)
+            AND so.transaction_date BETWEEN %(from_date)s AND %(to_date)s
+            AND st.sales_person IN %(sp_list)s
+        ) distinct_orders
+    """, gl_params, as_dict=True)
+    total_orders = order_agg[0]['cnt'] if order_agg and order_agg[0]['cnt'] else 0
+    total_orders_value = flt(order_agg[0]['total_value']) if order_agg and order_agg[0]['total_value'] else 0.0
 
     if customer_ids:
         format_custs = ','.join(['%s'] * len(customer_ids))
-        
-        sales_data = frappe.db.sql(f"""
+        gl_params["customer_list"] = tuple(customer_ids)
+
+        invoiced_data = frappe.db.sql(f"""
             SELECT SUM(grand_total) as value
             FROM `tabSales Invoice`
             WHERE docstatus = 1 AND posting_date BETWEEN %s AND %s
             AND customer IN ({format_custs})
         """, tuple([start_of_month, end_of_month] + customer_ids), as_dict=True)
-        mtd_sales = sales_data[0]['value'] if sales_data and sales_data[0]['value'] else 0.0
+        total_invoiced_orders = flt(invoiced_data[0]['value']) if invoiced_data and invoiced_data[0]['value'] else 0.0
 
-        collection_data = frappe.db.sql(f"""
-            SELECT SUM(paid_amount) as value
-            FROM `tabPayment Entry`
-            WHERE docstatus = 1 AND payment_type = 'Receive' AND posting_date BETWEEN %s AND %s
-            AND party_type = 'Customer' AND party IN ({format_custs})
-        """, tuple([start_of_month, end_of_month] + customer_ids), as_dict=True)
-        mtd_collections = collection_data[0]['value'] if collection_data and collection_data[0]['value'] else 0.0
+        try:
+            collections_data = frappe.db.sql("""
+                WITH bounced_only AS (
+                    SELECT
+                        gl.voucher_no,
+                        (gl.debit)*-1 AS amount,
+                        ROW_NUMBER() OVER (PARTITION BY gl.voucher_no ORDER BY gl.posting_date, gl.name) AS rn
+                    FROM `tabGL Entry` AS gl
+                    WHERE gl.voucher_type = 'Journal Entry'
+                        AND gl.party_type = 'Customer'
+                        AND gl.party IN %(customer_list)s
+                        AND gl.against IN %(against_accounts)s
+                        AND gl.posting_date BETWEEN %(from_date)s AND %(to_date)s
+                        AND gl.debit <> 0
+                )
+                SELECT SUM(amount) as total FROM (
+                    SELECT pe.paid_amount AS amount
+                    FROM `tabPayment Entry` pe
+                    WHERE pe.docstatus = 1 AND pe.payment_type = 'Receive'
+                        AND pe.posting_date BETWEEN %(from_date)s AND %(to_date)s
+                        AND pe.party_type = 'Customer'
+                        AND pe.party IN %(customer_list)s
+                    UNION ALL
+                    SELECT amount FROM bounced_only WHERE rn = 1
+                    UNION ALL
+                    SELECT gl.credit AS amount
+                    FROM `tabGL Entry` AS gl
+                    WHERE gl.voucher_type = 'Journal Entry'
+                        AND gl.party_type = 'Customer'
+                        AND gl.party IN %(customer_list)s
+                        AND gl.against IN %(against_accounts)s
+                        AND gl.posting_date BETWEEN %(from_date)s AND %(to_date)s
+                        AND gl.credit <> 0
+                ) combined
+            """, gl_params, as_dict=True)
+            total_collections = flt(collections_data[0]['total']) if collections_data and collections_data[0]['total'] else 0.0
+        except Exception as e:
+            frappe.log_error(title="Collections Query Fallback", message=str(e))
+            simple_collections = frappe.db.sql("""
+                SELECT SUM(paid_amount) as value FROM `tabPayment Entry`
+                WHERE docstatus = 1 AND payment_type = 'Receive'
+                AND posting_date BETWEEN %(from_date)s AND %(to_date)s
+                AND party_type = 'Customer' AND party IN %(customer_list)s
+            """, gl_params, as_dict=True)
+            total_collections = flt(simple_collections[0]['value']) if simple_collections and simple_collections[0]['value'] else 0.0
+
+        gl_totals = frappe.db.sql("""
+            SELECT gl.party as customer, SUM(gl.debit - gl.credit) as total_outstanding
+            FROM `tabGL Entry` gl
+            WHERE gl.party_type = 'Customer' AND gl.party IN %(customer_list)s
+                AND gl.posting_date <= %(as_of)s AND gl.is_cancelled = 0
+            GROUP BY gl.party
+            HAVING total_outstanding != 0
+        """, gl_params, as_dict=True)
+        total_outstanding_sum = sum(flt(r.total_outstanding) for r in gl_totals if flt(r.total_outstanding) > 0)
+
+        overdue_data = frappe.db.sql("""
+            SELECT outstanding_amount
+            FROM `tabSales Invoice`
+            WHERE docstatus = 1 AND outstanding_amount > 0 AND due_date < %(as_of)s
+            AND customer IN %(customer_list)s
+        """, gl_params, as_dict=True)
+        total_overdue_sum = sum(flt(r.outstanding_amount) for r in overdue_data)
 
     dashboard_stats = {
         "sales_target": float(sales_target),
         "collection_target": float(collection_target),
-        "mtd_sales": float(mtd_sales),
-        "mtd_collections": float(mtd_collections)
+        "total_orders": int(total_orders),
+        "total_orders_value": float(total_orders_value),
+        "total_invoiced_orders": float(total_invoiced_orders),
+        "total_collections": float(total_collections),
+        "total_outstanding": float(total_outstanding_sum),
+        "total_overdue": float(total_overdue_sum)
     }
 
     return {
@@ -916,6 +1030,351 @@ def get_invoice_details_for_order(order_id):
     
     return {"status": "success", "data": items}
 
+@frappe.whitelist()
+def get_customer_financial_brief(customer_id):
+
+    if not customer_id:
+        return {"status": "error", "message": "customer_id is required."}
+    if not frappe.db.exists("Customer", customer_id):
+        return {"status": "error", "message": "Customer not found."}
+
+    today_date = today()
+    start_of_year = datetime(getdate(today_date).year, 1, 1).strftime('%Y-%m-%d')
+    start_of_month = get_first_day(today_date)
+    end_of_month = get_last_day(today_date)
+
+    sales_row = frappe.db.sql("""
+        SELECT
+            SUM(CASE WHEN posting_date >= %(start_of_year)s THEN grand_total ELSE 0 END) as ytd,
+            SUM(CASE WHEN posting_date BETWEEN %(start_of_month)s AND %(end_of_month)s THEN grand_total ELSE 0 END) as mtd
+        FROM `tabSales Invoice`
+        WHERE docstatus = 1 AND customer = %(customer_id)s
+    """, {
+        "start_of_year": start_of_year,
+        "start_of_month": start_of_month,
+        "end_of_month": end_of_month,
+        "customer_id": customer_id
+    }, as_dict=True)
+    row = sales_row[0] if sales_row else {}
+
+    # GL-based outstanding — matches the dashboard aggregate & Outstanding Debts report
+    gl_row = frappe.db.sql("""
+        SELECT SUM(gl.debit - gl.credit) as total_outstanding
+        FROM `tabGL Entry` gl
+        WHERE gl.party_type = 'Customer' AND gl.party = %(customer_id)s
+            AND gl.posting_date <= %(today_date)s AND gl.is_cancelled = 0
+    """, {"customer_id": customer_id, "today_date": today_date}, as_dict=True)
+    outstanding = flt(gl_row[0].total_outstanding) if gl_row and gl_row[0].total_outstanding else 0.0
+    outstanding = outstanding if outstanding > 0 else 0.0
+
+    overdue_row = frappe.db.sql("""
+        SELECT SUM(outstanding_amount) as overdue
+        FROM `tabSales Invoice`
+        WHERE docstatus = 1 AND outstanding_amount > 0 AND due_date < %(today_date)s
+        AND customer = %(customer_id)s
+    """, {"customer_id": customer_id, "today_date": today_date}, as_dict=True)
+    overdue = flt(overdue_row[0].overdue) if overdue_row and overdue_row[0].overdue else 0.0
+
+    return {
+        "status": "success",
+        "data": {
+            "ytd": flt(row.get("ytd")),
+            "mtd": flt(row.get("mtd")),
+            "outstanding": round(outstanding, 2),
+            "overdue": round(overdue, 2)
+        }
+    }
+
+@frappe.whitelist()
+def get_pdc_breakdown():
+
+    target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
+    auth_sps = get_authorized_sales_persons(target_email)
+    if not auth_sps:
+        return {"status": "error", "message": "No assigned sales profile hierarchy."}
+
+    format_sps = ','.join(['%s'] * len(auth_sps))
+    tuple_sps = tuple(auth_sps)
+
+    customer_rows = frappe.db.sql(f"""
+        SELECT DISTINCT c.name as customer_id, c.customer_name
+        FROM `tabCustomer` c
+        JOIN `tabSales Team` st ON c.name = st.parent AND st.parenttype = 'Customer'
+        WHERE st.sales_person IN ({format_sps}) AND c.disabled = 0
+    """, tuple_sps, as_dict=True)
+
+    if not customer_rows:
+        return {"status": "success", "data": []}
+
+    customer_ids = [c.customer_id for c in customer_rows]
+    name_map = {c.customer_id: c.customer_name for c in customer_rows}
+    format_custs = ','.join(['%s'] * len(customer_ids))
+    today_date = today()
+
+    pdc_rows = frappe.db.sql(f"""
+        SELECT
+            party as customer_id,
+            name as payment_entry,
+            reference_date,
+            posting_date,
+            paid_amount,
+            reference_no,
+            DATEDIFF(reference_date, %s) as days_out
+        FROM `tabPayment Entry`
+        WHERE party_type = 'Customer'
+        AND party IN ({format_custs})
+        AND docstatus IN (0, 1)
+        AND payment_type = 'Receive'
+        AND (reference_date >= %s OR posting_date >= %s)
+        ORDER BY reference_date ASC
+    """, tuple([today_date] + customer_ids + [today_date, today_date]), as_dict=True)
+
+    grouped = {}
+    for row in pdc_rows:
+        cid = row.customer_id
+        if cid not in grouped:
+            grouped[cid] = {
+                "customer_id": cid,
+                "customer_name": name_map.get(cid, cid),
+                "total_amount": 0.0,
+                "bucket_0_30": 0.0,
+                "bucket_31_60": 0.0,
+                "bucket_61_90": 0.0,
+                "bucket_91_120": 0.0,
+                "bucket_121_plus": 0.0,
+                "entries": []
+            }
+
+        days_out = row.days_out if row.days_out is not None else 0
+        amount = flt(row.paid_amount)
+        grouped[cid]["total_amount"] += amount
+
+        if days_out <= 30:
+            grouped[cid]["bucket_0_30"] += amount
+        elif days_out <= 60:
+            grouped[cid]["bucket_31_60"] += amount
+        elif days_out <= 90:
+            grouped[cid]["bucket_61_90"] += amount
+        elif days_out <= 120:
+            grouped[cid]["bucket_91_120"] += amount
+        else:
+            grouped[cid]["bucket_121_plus"] += amount
+
+        grouped[cid]["entries"].append({
+            "payment_entry": row.payment_entry,
+            "reference_date": str(row.reference_date) if row.reference_date else None,
+            "posting_date": str(row.posting_date) if row.posting_date else None,
+            "amount": amount,
+            "reference_no": row.reference_no,
+            "days_out": days_out
+        })
+
+    data = sorted(grouped.values(), key=lambda g: -g["total_amount"])
+    return {"status": "success", "data": data}
+
+@frappe.whitelist()
+def get_activity_stats(from_date=None, to_date=None):
+
+    target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
+    auth_emails = get_authorized_sales_emails(target_email)
+    if not auth_emails:
+        return {"status": "error", "message": "No assigned sales profile hierarchy."}
+
+    range_from = from_date or get_first_day(today())
+    range_to = to_date or get_last_day(today())
+
+    format_emails = ','.join(['%s'] * len(auth_emails))
+    params = tuple(auth_emails) + (range_from, range_to)
+
+    visits = frappe.db.sql(f"""
+        SELECT
+            name, sales_person, customer, check_in_time, check_out_time,
+            distance_from_target_meters, duration_minutes
+        FROM `tabNexus Sales Visit`
+        WHERE sales_person IN ({format_emails})
+        AND DATE(check_in_time) BETWEEN %s AND %s
+    """, params, as_dict=True)
+
+    total_visits = len(visits)
+    on_site_count = 0
+    off_site_count = 0
+    completed_durations = []
+
+    for v in visits:
+        dist = flt(v.distance_from_target_meters)
+        if dist <= 100:
+            on_site_count += 1
+        else:
+            off_site_count += 1
+        if v.check_out_time and v.duration_minutes:
+            completed_durations.append(flt(v.duration_minutes))
+
+    on_site_ratio = round((on_site_count / total_visits) * 100, 1) if total_visits > 0 else 0.0
+    avg_duration = round(sum(completed_durations) / len(completed_durations), 1) if completed_durations else 0.0
+    completed_visits = len(completed_durations)
+    open_visits = total_visits - completed_visits
+
+    today_visits_raw = frappe.db.sql(f"""
+        SELECT distance_from_target_meters
+        FROM `tabNexus Sales Visit`
+        WHERE sales_person IN ({format_emails})
+        AND DATE(check_in_time) = %s
+    """, tuple(auth_emails) + (today(),), as_dict=True)
+
+    today_total = len(today_visits_raw)
+    today_on_site = sum(1 for v in today_visits_raw if flt(v.distance_from_target_meters) <= 100)
+    today_off_site = today_total - today_on_site
+    today_ratio = round((today_on_site / today_total) * 100, 1) if today_total > 0 else 0.0
+
+    auth_sps_for_orders = get_authorized_sales_persons(target_email)
+    today_orders_count = 0
+    today_orders_value = 0.0
+    if auth_sps_for_orders:
+        format_sps_orders = ','.join(['%s'] * len(auth_sps_for_orders))
+        order_agg = frappe.db.sql(f"""
+            SELECT COUNT(*) as cnt, SUM(grand_total) as total_value
+            FROM (
+                SELECT DISTINCT so.name, so.grand_total
+                FROM `tabSales Order` so
+                JOIN `tabSales Team` st ON st.parent = so.name AND st.parenttype = 'Sales Order'
+                WHERE so.docstatus IN (0, 1)
+                AND so.transaction_date = %s
+                AND st.sales_person IN ({format_sps_orders})
+            ) distinct_orders
+        """, tuple([today()] + auth_sps_for_orders), as_dict=True)
+        today_orders_count = order_agg[0]['cnt'] if order_agg and order_agg[0]['cnt'] else 0
+        today_orders_value = flt(order_agg[0]['total_value']) if order_agg and order_agg[0]['total_value'] else 0.0
+
+
+    per_rep = {}
+    for v in visits:
+        rep = v.sales_person
+        if rep not in per_rep:
+            per_rep[rep] = {"sales_person": rep, "total": 0, "on_site": 0, "off_site": 0}
+        per_rep[rep]["total"] += 1
+        if flt(v.distance_from_target_meters) <= 100:
+            per_rep[rep]["on_site"] += 1
+        else:
+            per_rep[rep]["off_site"] += 1
+
+    return {
+        "status": "success",
+        "data": {
+            "from_date": str(range_from),
+            "to_date": str(range_to),
+            "total_visits": total_visits,
+            "on_site_count": on_site_count,
+            "off_site_count": off_site_count,
+            "on_site_ratio": on_site_ratio,
+            "completed_visits": completed_visits,
+            "open_visits": open_visits,
+            "avg_duration_minutes": avg_duration,
+            "per_rep": list(per_rep.values()),
+            "today_visits": today_total,
+            "today_on_site": today_on_site,
+            "today_off_site": today_off_site,
+            "today_on_site_ratio": today_ratio,
+            "today_orders_count": today_orders_count,
+            "today_orders_value": today_orders_value
+        }
+    }
+
+@frappe.whitelist()
+def get_my_sales_order_analysis(from_date=None, to_date=None):
+
+    target_email = frappe.request.headers.get("sales-rep-email") or frappe.session.user
+    auth_sps = get_authorized_sales_persons(target_email)
+    if not auth_sps:
+        return {"status": "error", "message": "No assigned sales profile hierarchy."}
+
+    format_sps = ','.join(['%s'] * len(auth_sps))
+    tuple_sps = tuple(auth_sps)
+
+    customer_rows = frappe.db.sql(f"""
+        SELECT DISTINCT parent FROM `tabSales Team`
+        WHERE parenttype = 'Customer' AND sales_person IN ({format_sps})
+    """, tuple_sps, as_dict=False)
+    customer_ids = [c[0] for c in customer_rows] if customer_rows else []
+
+    if not customer_ids:
+        return {"status": "success", "data": {"items": [], "totals": {
+            "total_revenue": 0.0, "total_qty": 0.0, "invoice_count": 0,
+            "distinct_items": 0, "distinct_customers": 0
+        }}}
+
+    range_from = from_date or get_first_day(today())
+    range_to = to_date or get_last_day(today())
+
+    format_custs = ','.join(['%s'] * len(customer_ids))
+    params = tuple([range_from, range_to] + customer_ids)
+
+    rows = frappe.db.sql(f"""
+        SELECT
+            sii.item_code,
+            sii.item_name,
+            sii.qty,
+            sii.amount,
+            si.name as invoice_id,
+            si.customer
+        FROM `tabSales Invoice Item` sii
+        JOIN `tabSales Invoice` si ON sii.parent = si.name
+        WHERE si.docstatus = 1
+        AND si.posting_date BETWEEN %s AND %s
+        AND si.customer IN ({format_custs})
+    """, params, as_dict=True)
+
+    item_map = {}
+    invoice_ids = set()
+    customer_set = set()
+
+    for r in rows:
+        invoice_ids.add(r.invoice_id)
+        customer_set.add(r.customer)
+        key = r.item_code
+        if key not in item_map:
+            item_map[key] = {
+                "item_code": r.item_code,
+                "item_name": r.item_name,
+                "total_qty": 0.0,
+                "total_amount": 0.0,
+                "invoice_count": set(),
+                "customer_count": set()
+            }
+        item_map[key]["total_qty"] += flt(r.qty)
+        item_map[key]["total_amount"] += flt(r.amount)
+        item_map[key]["invoice_count"].add(r.invoice_id)
+        item_map[key]["customer_count"].add(r.customer)
+
+    items_out = []
+    for v in item_map.values():
+        items_out.append({
+            "item_code": v["item_code"],
+            "item_name": v["item_name"],
+            "total_qty": round(v["total_qty"], 2),
+            "total_amount": round(v["total_amount"], 2),
+            "invoice_count": len(v["invoice_count"]),
+            "customer_count": len(v["customer_count"])
+        })
+    items_out.sort(key=lambda x: -x["total_amount"])
+
+    total_revenue = sum(i["total_amount"] for i in items_out)
+    total_qty = sum(i["total_qty"] for i in items_out)
+
+    return {
+        "status": "success",
+        "data": {
+            "from_date": str(range_from),
+            "to_date": str(range_to),
+            "items": items_out,
+            "totals": {
+                "total_revenue": round(total_revenue, 2),
+                "total_qty": round(total_qty, 2),
+                "invoice_count": len(invoice_ids),
+                "distinct_items": len(items_out),
+                "distinct_customers": len(customer_set)
+            }
+        }
+    }
 
 @frappe.whitelist()
 def submit_sales_order_from_app(payload):
@@ -1200,19 +1659,37 @@ def trigger_app_catalog_refresh(doc, method=None):
 
 
 def trigger_financial_refresh(doc, method=None):
+    increment_collection = 0.0
+    party = None
 
-    if doc.party_type != 'Customer' or not doc.party:
+    if doc.doctype == "Payment Entry":
+        if doc.party_type != 'Customer' or not doc.party:
+            return
+        party = doc.party
+        if doc.payment_type == 'Receive':
+            if doc.docstatus == 1:
+                increment_collection = float(doc.paid_amount or 0.0)
+            elif doc.docstatus == 2:
+                increment_collection = -float(doc.paid_amount or 0.0)
+
+    elif doc.doctype == "Journal Entry":
+
+        sign = 1 if doc.docstatus == 1 else -1
+        for jea in doc.get("accounts", []):
+            if jea.party_type == "Customer" and jea.party:
+                party = jea.party  # last matching row wins if a JE somehow splits across >1 customer
+                row_amount = float(jea.credit_in_account_currency or 0.0) - float(jea.debit_in_account_currency or 0.0)
+                increment_collection += sign * row_amount
+        if not party:
+            return
+    else:
         return
 
-    increment_collection = 0.0
-    if doc.payment_type == 'Receive':
-        if doc.docstatus == 1:
-            increment_collection = float(doc.paid_amount or 0.0)
-        elif doc.docstatus == 2:
-            increment_collection = -float(doc.paid_amount or 0.0)
+    if increment_collection == 0.0:
+        return
 
     invoice_ids = []
-    if hasattr(doc, 'references'):
+    if hasattr(doc, 'references'):  # only Payment Entry has this child table; safely False for Journal Entry
         for ref in doc.references:
             if ref.reference_doctype == 'Sales Invoice' and ref.reference_name:
                 invoice_ids.append(ref.reference_name)
@@ -1254,7 +1731,7 @@ def trigger_financial_refresh(doc, method=None):
     sales_team = frappe.db.sql("""
         SELECT sales_person FROM `tabSales Team` 
         WHERE parent = %s AND parenttype = 'Customer'
-    """, (doc.party,), as_dict=True)
+    """, (party,), as_dict=True)
     
     if not sales_team:
         return
@@ -1293,7 +1770,7 @@ def trigger_financial_refresh(doc, method=None):
                 json={
                     "emails": list(affected_emails), 
                     "command": "PAYMENT_RECEIVED",
-                    "customer_id": doc.party,
+                    "customer_id": party,
                     "invoice_ids": invoice_ids,
                     "updated_orders": updated_orders,
                     "increment_collection": increment_collection
@@ -1306,9 +1783,17 @@ def trigger_financial_refresh(doc, method=None):
 
 def trigger_order_status_update(doc, method=None):
 
-    if not doc.owner or "@" not in doc.owner:
+    affected_emails = set()
+    if doc.owner and "@" in doc.owner:
+        affected_emails.add(doc.owner)
+
+    for row in doc.get("sales_team", []):
+        if row.sales_person:
+            _add_sp_and_ancestors(row.sales_person, affected_emails)
+
+    if not affected_emails:
         return
-        
+
     payment_status = "Unpaid"
     invoice_id = None
     
@@ -1329,17 +1814,22 @@ def trigger_order_status_update(doc, method=None):
             payment_status = "Partially Paid"
         else:
             payment_status = "Unpaid"
-            
+
+    rejection_reason = None
+    if frappe.db.has_column("Sales Order", "custom_finance_rejection_reason"):
+        rejection_reason = doc.get("custom_finance_rejection_reason")
+
     try:
         requests.post(
             "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
             json={
-                "emails": [doc.owner], 
+                "emails": list(affected_emails), 
                 "command": "UPDATE_ORDER_STATUS",
                 "order_id": doc.name,
                 "status": doc.status,
                 "payment_status": payment_status,
-                "invoice_id": invoice_id 
+                "invoice_id": invoice_id,
+                "rejection_reason": rejection_reason
             },
             timeout=3
         )
@@ -1347,10 +1837,7 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
-    """
-    🚨 NEW HOOK: Triggered on Sales Person update.
-    Checks if targets changed, and forces a silent background vault sync for that specific rep.
-    """
+
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
@@ -1507,6 +1994,7 @@ def create_mobile_customer(payload):
     if isinstance(payload, str):
         payload = json.loads(payload)
         
+    mobile_no = payload.get("mobile_no")
     phone_number = payload.get("phone_number")
     location_text = payload.get("location_text")  
     customer_name = payload.get("customer_name")
@@ -1526,8 +2014,10 @@ def create_mobile_customer(payload):
         doc.tax_category = payload.get("tax_category")
         doc.payment_terms = payload.get("payment_terms")
         
+
+        if mobile_no:
+            doc.mobile_no = mobile_no
         if phone_number:
-            doc.mobile_no = phone_number
             doc.custom_phone_number = phone_number
             
         if location_text:
@@ -1567,10 +2057,7 @@ def create_mobile_customer(payload):
 
 @frappe.whitelist()
 def update_customer_coordinates(customer, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None):
-    """
-    Strategy D: Direct db.set_value write for background coordinate updates.
-    Bypasses doc.save() to prevent recursive on_change webhook loops.
-    """
+
     try:
         if not frappe.db.exists("Customer", customer):
             return {"status": "error", "message": "Customer not found."}
@@ -1652,12 +2139,45 @@ def register_sales_check_in_correction(visit_id, distance_m):
     except Exception as e:
         frappe.log_error(title="Distance Correction Failed", message=str(e))
         return {"status": "error", "message": str(e)}
-    
+
+@frappe.whitelist()
+def submit_visit_report(visit_id, outcome=None, notes=None, next_follow_up_date=None, competitor_notes=None):
+
+    if not visit_id:
+        return {"status": "error", "message": "visit_id is required."}
+    if not frappe.db.exists("Nexus Sales Visit", visit_id):
+        return {"status": "error", "message": "Visit record not found. It may predate this feature or the check-in failed to save."}
+
+    # Ownership check: a rep can only file a report against their own visit
+    visit_owner = frappe.db.get_value("Nexus Sales Visit", visit_id, "sales_person")
+    if visit_owner and visit_owner.lower() != frappe.session.user.lower():
+        return {"status": "error", "message": "You can only submit a report for your own visit."}
+
+    update_dict = {}
+    if outcome and frappe.db.has_column("Nexus Sales Visit", "visit_outcome"):
+        update_dict["visit_outcome"] = outcome
+    if notes and frappe.db.has_column("Nexus Sales Visit", "visit_notes"):
+        update_dict["visit_notes"] = notes
+    if next_follow_up_date and frappe.db.has_column("Nexus Sales Visit", "next_follow_up_date"):
+        update_dict["next_follow_up_date"] = next_follow_up_date
+    if competitor_notes and frappe.db.has_column("Nexus Sales Visit", "competitor_notes"):
+        update_dict["competitor_notes"] = competitor_notes
+    if frappe.db.has_column("Nexus Sales Visit", "report_submitted_at"):
+        update_dict["report_submitted_at"] = frappe.utils.now_datetime()
+
+    if not update_dict:
+        return {"status": "error", "message": "Visit Report fields are not configured on this site yet. Contact your administrator."}
+
+    try:
+        frappe.db.set_value("Nexus Sales Visit", visit_id, update_dict, update_modified=False)
+        frappe.db.commit()
+        return {"status": "success", "message": "Visit report submitted successfully."}
+    except Exception as e:
+        frappe.log_error(title="Visit Report Submission Failed", message=str(e))
+        return {"status": "error", "message": str(e)}
+
 def trigger_post_import_cache_eviction(doc, method=None):
-    """
-    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
-    Simply sets the debounce flag to let the 1-minute orchestrator handle it safely.
-    """
+
     try:
         if doc.status not in ["Success", "Partial Success"]:
             return
@@ -1679,11 +2199,7 @@ def publish_catalog_update(doc, method):
     frappe.publish_realtime('nexus_catalog_sync', message={'status': 'updated'})
 
 def process_debounced_cache_eviction():
-    """
-    Scheduled Orchestrator: Runs every 1 minute.
-    Reads the Redis debounce flag. If True, fires a single lightweight webhook to FastAPI.
-    FastAPI will handle the heavy lifting of tree calculations and FCM pushes.
-    """
+
     import requests
     import frappe
     
@@ -1706,10 +2222,7 @@ def process_debounced_cache_eviction():
 
 @frappe.whitelist()
 def get_active_companies_for_dispatch():
-    """
-    Fetches all companies with valid GPS coordinates to serve as the final 
-    yard/destination for returning drivers.
-    """
+
     try:
         companies = frappe.db.sql("""
             SELECT name, custom_latitude, custom_longitude 
