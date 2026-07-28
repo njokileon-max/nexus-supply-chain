@@ -1,7 +1,9 @@
 import frappe
 import math
+import requests
 from frappe.utils import getdate, today, add_days
 
+CRYSTAL_API_BASE_URL = "https://crystal-api.crystalapps.dev"
 
 def _haversine_km(lat1, lon1, lat2, lon2):
 
@@ -24,7 +26,8 @@ def _compute_distance_recorded(start_datetime, end_datetime, sales_person_filter
 
     params = {"start": start_datetime, "end": end_datetime}
     query = """
-        SELECT v.sales_person AS email, v.latitude, v.longitude, v.check_in_time
+        SELECT v.sales_person AS email, v.latitude, v.longitude, v.check_in_time,
+               DATE(v.check_in_time) AS visit_date
         FROM `tabNexus Sales Visit` v
         LEFT JOIN `tabEmployee` emp ON emp.user_id = v.sales_person
         LEFT JOIN `tabSales Person` sp ON sp.employee = emp.name
@@ -40,20 +43,77 @@ def _compute_distance_recorded(start_datetime, end_datetime, sales_person_filter
 
     rows = frappe.db.sql(query, params, as_dict=True)
 
-    by_rep = {}
+    by_rep_day = {}
     for r in rows:
-        by_rep.setdefault(r.email, []).append(r)
+        try:
+            lat, lng = float(r.latitude), float(r.longitude)
+        except (TypeError, ValueError):
+            continue
+        key = f"{r.email}|{r.visit_date}"
+        by_rep_day.setdefault(key, {"email": r.email, "coords": []})
+        by_rep_day[key]["coords"].append([lat, lng])
+
+    groups = [
+        {"key": key, "coordinates": v["coords"]}
+        for key, v in by_rep_day.items()
+        if len(v["coords"]) >= 2   # single-checkpoint days = 0 km, skip the call
+    ]
+
+    day_distances = _fetch_ors_route_distance_batch(groups)
 
     distance_map = {}
-    for email, visits in by_rep.items():
-        total_km = 0.0
-        for i in range(1, len(visits)):
-            prev, curr = visits[i - 1], visits[i]
-            total_km += _haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
-        distance_map[email] = round(total_km, 2)
+    for key, v in by_rep_day.items():
+        km = day_distances.get(key, 0.0)
+        distance_map[v["email"]] = round(distance_map.get(v["email"], 0.0) + km, 2)
 
     return distance_map
 
+def _fetch_ors_route_distance(coordinates, include_geometry=False):
+
+    try:
+        resp = requests.post(
+            f"{CRYSTAL_API_BASE_URL}/telemetry/sales-route-distance",
+            json={"coordinates": coordinates, "include_geometry": include_geometry},
+            timeout=20
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") == "success":
+            return (
+                float(data.get("distance_km") or 0.0),
+                data.get("geometry"),
+                data.get("source", "ors")
+            )
+    except Exception as e:
+        frappe.log_error(f"Crystal API route-distance call failed: {e}", "Nexus Sales Route Distance")
+
+    return 0.0, None, "error"
+
+def _fetch_ors_route_distance_batch(groups):
+
+    if not groups:
+        return {}
+
+    try:
+        resp = requests.post(
+            f"{CRYSTAL_API_BASE_URL}/telemetry/sales-route-distance-batch",
+            json={"groups": groups},
+            timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") == "success":
+            sources = data.get("sources") or {}
+
+            return {
+                k: float(v or 0.0)
+                for k, v in (data.get("distances") or {}).items()
+                if sources.get(k) == "ors"
+            }
+    except Exception as e:
+        frappe.log_error(f"Crystal API batch route-distance call failed: {e}", "Nexus Sales Route Distance Batch")
+
+    return {}
 
 @frappe.whitelist()
 def get_sales_team():
@@ -102,10 +162,13 @@ def get_sales_person_route(sales_person_email, route_date):
     if not visits:
         return {"status": "success", "checkpoints": [], "total_km": 0.0, "order_totals": {}}
 
-    total_km = 0.0
-    for i in range(1, len(visits)):
-        prev, curr = visits[i - 1], visits[i]
-        total_km += _haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+    ordered_coords = [[float(v.latitude), float(v.longitude)] for v in visits]
+    if len(ordered_coords) >= 2:
+        total_km, route_geometry, distance_source = _fetch_ors_route_distance(
+            ordered_coords, include_geometry=True
+        )
+    else:
+        total_km, route_geometry, distance_source = 0.0, None, "single_point"
 
     order_totals = {}
     emp = frappe.db.get_value("Employee", {"user_id": sales_person_email}, "name")
@@ -143,7 +206,9 @@ def get_sales_person_route(sales_person_email, route_date):
         "status": "success",
         "checkpoints": checkpoints,
         "total_km": round(total_km, 2),
-        "order_totals": order_totals
+        "order_totals": order_totals,
+        "route_geometry": route_geometry,
+        "distance_source": distance_source
     }
 
 @frappe.whitelist()

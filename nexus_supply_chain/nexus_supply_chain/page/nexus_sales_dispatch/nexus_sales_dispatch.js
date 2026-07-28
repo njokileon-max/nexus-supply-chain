@@ -651,6 +651,7 @@ function render_attendance_table(data, d) {
 
         const fmt_time_only = (time_str) => {
             if (!time_str) return '—';
+            // time_str comes in as HH:MM:SS from SQL TIME()
             const parts = String(time_str).split(':');
             if (parts.length < 2) return time_str;
             let hh = parseInt(parts[0], 10);
@@ -882,7 +883,11 @@ function render_attendance_table(data, d) {
         routeLayerGroup = L.layerGroup().addTo(map);
 
         const latlngs = checkpoints.map(cp => [cp.lat, cp.lng]);
-        if (latlngs.length > 1) {
+        if (data.route_geometry) {
+            L.geoJSON(data.route_geometry, {
+                style: { color: '#3b82f6', weight: 5, opacity: 0.85, lineJoin: 'round' }
+            }).addTo(routeLayerGroup);
+        } else if (latlngs.length > 1) {
             const routeLine = L.polyline(latlngs, {
                 color: '#3b82f6',
                 weight: 4,
@@ -943,7 +948,7 @@ function render_attendance_table(data, d) {
                         <i class="fa fa-times"></i>
                     </button>
                 </div>
-                <div class="mb-1"><i class="fa fa-route text-primary me-1"></i> Distance Traveled: <b>${(data.total_km || 0).toFixed(2)} km</b></div>
+                <div class="mb-1"><i class="fa fa-route text-primary me-1"></i> Distance Traveled: <b>${data.distance_source === 'ors' ? (data.total_km || 0).toFixed(2) + ' km' : '<span class="text-danger">Unavailable</span>'}</b></div>
                 <div class="mb-1"><i class="fa fa-map-marker-alt text-danger me-1"></i> Checkpoints: <b>${checkpoints.length}</b></div>
                 <div><i class="fa fa-coins text-success me-1"></i> Total Order Value: <b>Sh ${totalOrderValue.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
             </div>
