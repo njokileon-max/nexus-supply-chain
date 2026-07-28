@@ -128,6 +128,39 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             .theme-offline .rep-name { color: #475569; }
 
             .leaflet-marker-icon { transition: transform 0.8s linear !important; }
+
+            /* 🚨 FIX: Replaces Bootstrap's .btn-close (broken/missing icon in
+               Frappe desk theme — no reliable SVG background asset) with a
+               self-contained FontAwesome-based close button. Used both by
+               the Route Summary panel's close (X) and available for any
+               other overlay/card close action on this page. */
+            .route-close-btn {
+                background: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                color: #64748b;
+                width: 24px;
+                height: 24px;
+                min-width: 24px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 12px;
+                cursor: pointer;
+                transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+                padding: 0;
+                line-height: 1;
+                flex-shrink: 0;
+            }
+            .route-close-btn:hover {
+                background: #ef4444;
+                color: #ffffff;
+                border-color: #ef4444;
+            }
+            .route-close-btn:focus {
+                outline: none;
+                box-shadow: 0 0 0 2px rgba(239,68,68,0.25);
+            }
         </style>
     `);
 
@@ -141,11 +174,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let renderLoopId = null;
     let staleCheckId = null;
 
-    // 🚨 BATCH 7: VIEW ROUTE STATE
-    // suppressLiveMarkers only gates the MAP MARKER paint step in
-    // flushRenderQueue — latestSalesState keeps receiving fresh pings from
-    // the WebSocket exactly as before, they're just not drawn for 10s so
-    // the route overlay isn't visually fought over by live rep dots.
     let suppressLiveMarkers = false;
     let routeSuppressTimeout = null;
     let routeLayerGroup = null;
@@ -171,7 +199,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             const speedChanged = !prev || Math.abs((prev.speed || 0) - (rep.speed || 0)) > 0.5;
             const positionChanged = !prev || prev.lat !== rep.lat || prev.lng !== rep.lng;
             const headingChanged = !prev || Math.abs((prev.heading || 0) - (rep.heading || 0)) > 2;
-            const wasStale = prev && prev.is_stale === true && rep.is_stale === false; // 🚨 Check if recovered from weak signal
+            const wasStale = prev && prev.is_stale === true && rep.is_stale === false;
             const isNewRep = !prev;
 
             if (!isNewRep && !statusChanged && !customerChanged && !speedChanged && !positionChanged && !headingChanged && !wasStale) {
@@ -249,8 +277,8 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         staleCheckId = setInterval(function() {
             const now = Date.now();
             
-            const SYNCING_THRESHOLD = 45000; // 45s: Signal delayed, show warning
-            const OFFLINE_THRESHOLD = 90000; // 90s: Connection lost, move to offline
+            const SYNCING_THRESHOLD = 45000;
+            const OFFLINE_THRESHOLD = 90000;
 
             Object.keys(latestSalesState).forEach(email => {
                 const rep = latestSalesState[email];
@@ -417,10 +445,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     const incoming_rep = raw_team[k];
 
                     latestSalesState[email] = {
-                        ...latestSalesState[email],  // Retain existing state
-                        ...incoming_rep,             // Overwrite with new payload
-                        last_ping_ms: now,           // Stamp arrival time
-                        is_stale: false              // Reset stale flag immediately on fresh ping
+                        ...latestSalesState[email],
+                        ...incoming_rep,
+                        last_ping_ms: now,
+                        is_stale: false
                     };
                 });
 
@@ -471,14 +499,17 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // 🚨 BATCH 7: VIEW ROUTE — stopPropagation so this doesn't also trigger
-    // the card-click flyTo/select handler above.
     $(wrapper).on('click', '.view-route-btn', function(e) {
         e.stopPropagation();
         const $card = $(this).closest('.sales-card');
         const email = $card.attr('data-tid');
         const repName = $card.find('.rep-name').text() || email;
         show_route_dialog(email, repName);
+    });
+
+    $(wrapper).on('click', '.leaflet-popup-close-button', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
     });
 
     function show_attendance_dialog() {
@@ -594,6 +625,7 @@ function render_attendance_table(data, d) {
         let grand_invoiced          = 0;
         let grand_returns           = 0;
         let grand_returned          = 0;
+        let grand_distance          = 0;
 
         data.forEach(row => {
             grand_visits           += parseInt(row.total_visits || 0);
@@ -605,8 +637,9 @@ function render_attendance_table(data, d) {
             grand_confirmed_val    += parseFloat(row.total_confirmed_value || 0);
             grand_invoices         += parseInt(row.total_invoices || 0);
             grand_invoiced         += parseFloat(row.invoiced_amount || 0);
-            grand_returns          += parseInt(row.total_returns || 0);
-            grand_returned         += parseFloat(row.returned_amount || 0);
+            grand_returns           += parseInt(row.total_returns || 0);
+            grand_returned          += parseFloat(row.returned_amount || 0);
+            grand_distance          += parseFloat(row.distance_recorded_km || 0);
         });
 
         const fmt_currency = (val) => {
@@ -618,7 +651,6 @@ function render_attendance_table(data, d) {
 
         const fmt_time_only = (time_str) => {
             if (!time_str) return '—';
-            // time_str comes in as HH:MM:SS from SQL TIME()
             const parts = String(time_str).split(':');
             if (parts.length < 2) return time_str;
             let hh = parseInt(parts[0], 10);
@@ -649,6 +681,7 @@ function render_attendance_table(data, d) {
                             <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Returned Value</th>
                             <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">First Check-In</th>
                             <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Last Check-In</th>
+                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Distance Recorded</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -674,6 +707,7 @@ function render_attendance_table(data, d) {
             const invoiced           = parseFloat(row.invoiced_amount || 0);
             const returns            = parseInt(row.total_returns || 0);
             const returned           = parseFloat(row.returned_amount || 0);
+            const distance_km        = parseFloat(row.distance_recorded_km || 0);
 
             html += `
                 <tr>
@@ -692,6 +726,7 @@ function render_attendance_table(data, d) {
                     <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(returned)}</td>
                     <td class="p-3 align-middle text-dark" style="font-size: 13px;">${f_visit_time}</td>
                     <td class="p-3 align-middle text-dark" style="font-size: 13px;">${l_visit_time}</td>
+                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${distance_km.toFixed(2)} km</td>
                 </tr>
             `;
         });
@@ -718,6 +753,7 @@ function render_attendance_table(data, d) {
                             <td colspan="2" class="p-3 text-muted fw-semibold align-middle" style="font-size: 12px; font-style: italic;">
                                 <i class="fa fa-info-circle me-1"></i> Aggregated period totals
                             </td>
+                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_distance.toFixed(2)} km</td>
                         </tr>
                     </tfoot>
                 </table>
@@ -728,7 +764,7 @@ function render_attendance_table(data, d) {
     }
 
     function export_attendance_excel(data) {
-        let csv = 'Sales Person Name,Email,Date,Total Visits,On-Site Visits,Off-Site Visits,Total Orders,Total Order Value (Sh),Confirmed Orders,Confirmed Order Value (Sh),Total Invoices,Invoiced Amount (Sh),Total Returns,Returned Amount (Sh),First Check-In,Last Check-In\n';
+        let csv = 'Sales Person Name,Email,Date,Total Visits,On-Site Visits,Off-Site Visits,Total Orders,Total Order Value (Sh),Confirmed Orders,Confirmed Order Value (Sh),Total Invoices,Invoiced Amount (Sh),Total Returns,Returned Amount (Sh),First Check-In,Last Check-In,Distance Recorded (km)\n';
 
         const fmt_time_only_csv = (time_str) => {
             if (!time_str) return '';
@@ -762,8 +798,9 @@ function render_attendance_table(data, d) {
             let returned          = parseFloat(row.returned_amount || 0).toFixed(2);
             let f_visit_time      = fmt_time_only_csv(row.first_visit_time);
             let l_visit_time      = fmt_time_only_csv(row.last_visit_time);
+            let distance_km       = parseFloat(row.distance_recorded_km || 0).toFixed(2);
 
-            csv += `"${name}","${email}","${period_date}",${visits},${onsite},${offsite},${orders},${order_val},${confirmed_orders},${confirmed_val},${invoices},${invoiced},${returns},${returned},"${f_visit_time}","${l_visit_time}"\n`;
+            csv += `"${name}","${email}","${period_date}",${visits},${onsite},${offsite},${orders},${order_val},${confirmed_orders},${confirmed_val},${invoices},${invoiced},${returns},${returned},"${f_visit_time}","${l_visit_time}",${distance_km}\n`;
         });
 
         let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -798,10 +835,7 @@ function render_attendance_table(data, d) {
     }
 
     function toggleRouteView(email, route_date, repName) {
-        // 🚨 Hide live rep markers for 10s so the route overlay isn't visually
-        // competing with moving dots while it renders/settles. Live pings
-        // keep flowing into latestSalesState the entire time — nothing about
-        // ingestion changes, only the paint step in flushRenderQueue skips.
+
         suppressLiveMarkers = true;
         if (routeSuppressTimeout) clearTimeout(routeSuppressTimeout);
         routeSuppressTimeout = setTimeout(() => {
@@ -823,8 +857,12 @@ function render_attendance_table(data, d) {
         });
     }
 
+    function strip_microseconds(ts) {
+        if (!ts) return null;
+        return String(ts).split('.')[0];
+    }
+
     function render_route_overlay(data, repName, route_date) {
-        // Clear any previously rendered route before drawing a new one
         if (routeLayerGroup) {
             map.removeLayer(routeLayerGroup);
             routeLayerGroup = null;
@@ -843,7 +881,6 @@ function render_attendance_table(data, d) {
 
         routeLayerGroup = L.layerGroup().addTo(map);
 
-        // 🚨 Blue animated route line connecting checkpoints in visit order
         const latlngs = checkpoints.map(cp => [cp.lat, cp.lng]);
         if (latlngs.length > 1) {
             const routeLine = L.polyline(latlngs, {
@@ -854,7 +891,6 @@ function render_attendance_table(data, d) {
                 lineJoin: 'round'
             }).addTo(routeLayerGroup);
 
-            // Simple "marching ants" animation via dashOffset
             let dashOffset = 0;
             routeAnimInterval = setInterval(() => {
                 dashOffset = (dashOffset - 1) % 18;
@@ -863,7 +899,6 @@ function render_attendance_table(data, d) {
             }, 60);
         }
 
-        // 🚨 Red Google-Maps-style pin per checkpoint, in visit order
         let totalOrderValue = 0;
         checkpoints.forEach((cp, idx) => {
             totalOrderValue += (cp.order_value || 0);
@@ -882,27 +917,31 @@ function render_attendance_table(data, d) {
                 ? `Sh ${cp.order_value.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                 : 'No orders';
 
+            const checkInStr = strip_microseconds(cp.check_in_time) || '—';
+            const checkOutStr = strip_microseconds(cp.check_out_time) || 'Still open';
+
             L.marker([cp.lat, cp.lng], { icon: pinIcon })
                 .addTo(routeLayerGroup)
                 .bindPopup(`
-                    <div class="p-1" style="font-size:12px;">
-                        <b>Stop ${idx + 1}: ${cp.customer_name}</b><br>
-                        <span class="text-muted">Check-In: ${cp.check_in_time || '—'}</span><br>
-                        <span class="text-muted">Check-Out: ${cp.check_out_time || 'Still open'}</span><br>
-                        <b>Order Value: ${orderValStr}</b>
+                    <div class="p-1" style="font-size:12px; line-height:1.6;">
+                        <div style="margin-bottom:8px; font-size:13px;"><b>Stop ${idx + 1}: ${cp.customer_name}</b></div>
+                        <div class="text-muted" style="margin-bottom:5px;">Check-In: ${checkInStr}</div>
+                        <div class="text-muted" style="margin-bottom:8px;">Check-Out: ${checkOutStr}</div>
+                        <div><b>Order Value: ${orderValStr}</b></div>
                     </div>
-                `);
+                `, { minWidth: 230 });
         });
 
         map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
 
-        // 🚨 Summary panel — total km, total order value, checkpoint count
         const $panel = $(`
             <div id="route-summary-panel" class="position-absolute p-3 bg-white shadow rounded border"
                  style="z-index:999; bottom:16px; left:16px; font-size:12px; min-width:220px; border-color:#e5e7eb !important;">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="fw-bold text-dark">${repName} — ${route_date}</span>
-                    <button type="button" class="btn-close" id="close-route-view" style="font-size:10px;"></button>
+                    <button type="button" class="route-close-btn" id="close-route-view" title="Close">
+                        <i class="fa fa-times"></i>
+                    </button>
                 </div>
                 <div class="mb-1"><i class="fa fa-route text-primary me-1"></i> Distance Traveled: <b>${(data.total_km || 0).toFixed(2)} km</b></div>
                 <div class="mb-1"><i class="fa fa-map-marker-alt text-danger me-1"></i> Checkpoints: <b>${checkpoints.length}</b></div>

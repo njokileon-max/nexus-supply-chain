@@ -4,14 +4,7 @@ from frappe.utils import getdate, today, add_days
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
-    """
-    Standard haversine distance in kilometers between two lat/lng points.
-    Used only for the rep's own consecutive check-in-to-check-in legs (their
-    own GPS trail recorded at check-in time) — deliberately NOT computed
-    against raw live-ping data, since pings are ephemeral/in-RAM and pruned,
-    while Nexus Sales Visit rows are the durable, already-indexed record of
-    where the rep actually stood when they checked in.
-    """
+
     if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
         return 0.0
     try:
@@ -25,6 +18,42 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     a = (math.sin(dlat / 2) ** 2
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+
+def _compute_distance_recorded(start_datetime, end_datetime, sales_person_filter_name=None):
+
+    params = {"start": start_datetime, "end": end_datetime}
+    query = """
+        SELECT v.sales_person AS email, v.latitude, v.longitude, v.check_in_time
+        FROM `tabNexus Sales Visit` v
+        LEFT JOIN `tabEmployee` emp ON emp.user_id = v.sales_person
+        LEFT JOIN `tabSales Person` sp ON sp.employee = emp.name
+        WHERE v.check_in_time BETWEEN %(start)s AND %(end)s
+        AND v.latitude IS NOT NULL AND v.latitude != ''
+        AND v.longitude IS NOT NULL AND v.longitude != ''
+    """
+    if sales_person_filter_name:
+        query += " AND sp.name = %(sales_person)s"
+        params["sales_person"] = sales_person_filter_name
+
+    query += " ORDER BY v.sales_person ASC, v.check_in_time ASC"
+
+    rows = frappe.db.sql(query, params, as_dict=True)
+
+    by_rep = {}
+    for r in rows:
+        by_rep.setdefault(r.email, []).append(r)
+
+    distance_map = {}
+    for email, visits in by_rep.items():
+        total_km = 0.0
+        for i in range(1, len(visits)):
+            prev, curr = visits[i - 1], visits[i]
+            total_km += _haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+        distance_map[email] = round(total_km, 2)
+
+    return distance_map
+
 
 @frappe.whitelist()
 def get_sales_team():
@@ -48,22 +77,7 @@ def get_sales_team():
 
 @frappe.whitelist()
 def get_sales_person_route(sales_person_email, route_date):
-    """
-    Reconstructs a rep's route for a given date as the ORDERED SEQUENCE of
-    their own Nexus Sales Visit check-in coordinates (visit-time order, not
-    a live-ping trail) — the same durable, already-indexed dataset the
-    Attendance report reads from. Total distance is the sum of consecutive
-    checkpoint-to-checkpoint haversine legs, which is deliberately simpler
-    and cheaper than reconstructing a path from raw GPS pings: it needs no
-    new persistence layer, and "how far did the rep travel between the
-    places they actually checked into" is exactly what a route view for
-    accountability purposes needs.
 
-    Order value per checkpoint uses the same Sales Team attribution as
-    get_sales_attendance (direct sales_person match on the Sales Person
-    record resolved from the rep's own Employee/User), scoped to Sales
-    Orders placed on that same date for that checked-in customer.
-    """
     if not sales_person_email or not route_date:
         frappe.throw("sales_person_email and route_date are required.")
 
@@ -88,14 +102,11 @@ def get_sales_person_route(sales_person_email, route_date):
     if not visits:
         return {"status": "success", "checkpoints": [], "total_km": 0.0, "order_totals": {}}
 
-    # Total distance: sum of consecutive-checkpoint haversine legs, in visit order
     total_km = 0.0
     for i in range(1, len(visits)):
         prev, curr = visits[i - 1], visits[i]
         total_km += _haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
 
-    # Order value per checked-in customer that same date — same Sales Team
-    # attribution pattern as get_sales_attendance's `ord` subquery.
     order_totals = {}
     emp = frappe.db.get_value("Employee", {"user_id": sales_person_email}, "name")
     sp_name = frappe.db.get_value("Sales Person", {"employee": emp}, "name") if emp else None
@@ -287,4 +298,10 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
 
     query += " GROUP BY v.sales_person ORDER BY total_visits DESC"
 
-    return frappe.db.sql(query, filters, as_dict=True)
+    data = frappe.db.sql(query, filters, as_dict=True)
+
+    distance_map = _compute_distance_recorded(start_datetime, end_datetime, sales_person)
+    for row in data:
+        row["distance_recorded_km"] = distance_map.get(row.get("email"), 0.0)
+
+    return data

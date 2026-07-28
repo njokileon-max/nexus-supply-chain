@@ -77,7 +77,7 @@ def process_bulk_geocoding_queue():
 
     import time
     import random
-    
+
     targets = frappe.db.sql("""
         SELECT name, custom_google_maps_link 
         FROM `tabCustomer`
@@ -131,10 +131,7 @@ def process_bulk_geocoding_queue():
 
 @frappe.whitelist()
 def check_mobile_app_access():
-    """
-    Strictly checks the user's native ERPNext Role Profile against the allowed 
-    roles in Nexus App Settings. No hardcoded admin bypasses.
-    """
+
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "denied", "message": "Please log in first."}
@@ -166,10 +163,7 @@ def check_mobile_app_access():
 
 @frappe.whitelist(allow_guest=True)
 def get_user_profile():
-    """
-    Called by the React Native app immediately after native login. 
-    Returns the user's details, roles, CSRF token, and the SID to authorize proxy requests.
-    """
+
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "failed", "message": "Unauthorized"}
@@ -709,7 +703,7 @@ def get_team_target_breakdown():
     breakdown = []
     for m in members:
         member_customer_ids = get_direct_customer_ids(m.sales_person)
-        member_financials = get_customer_scoped_financial_totals(member_customer_ids, start_of_month, end_of_month)
+        member_financials = get_customer_scoped_financial_totals(member_customer_ids, start_of_month, end_of_month, sales_person_ids=[m.sales_person])
 
         breakdown.append({
             "sales_person": m.sales_person,
@@ -855,7 +849,7 @@ def get_sales_dashboard_data():
     frappe.cache().set_value(cache_key, payload, expires_in_sec=1800)
     return {"status": "success", "source": "db", "data": payload}
 
-def get_customer_scoped_financial_totals(customer_ids, start_date, end_date):
+def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sales_person_ids=None):
 
     result = {
         "gross_invoiced": 0.0,
@@ -883,24 +877,56 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date):
         "against_accounts": BANK_AGAINST_ACCOUNTS
     }
 
-    invoiced_data = frappe.db.sql("""
-        SELECT SUM(grand_total) as value
-        FROM `tabSales Invoice`
-        WHERE docstatus = 1 AND is_return = 0
-        AND posting_date BETWEEN %(from_date)s AND %(to_date)s
-        AND customer IN %(customer_list)s
-    """, gl_params, as_dict=True)
-    result["gross_invoiced"] = flt(invoiced_data[0]['value']) if invoiced_data and invoiced_data[0]['value'] else 0.0
+    if sales_person_ids:
+        format_sps = ','.join(['%s'] * len(sales_person_ids))
+        sp_tuple = tuple(sales_person_ids)
 
-    returns_data = frappe.db.sql("""
-        SELECT SUM(grand_total) as value
-        FROM `tabSales Invoice`
-        WHERE docstatus = 1 AND is_return = 1
-        AND posting_date BETWEEN %(from_date)s AND %(to_date)s
-        AND customer IN %(customer_list)s
-    """, gl_params, as_dict=True)
-    raw_returns = flt(returns_data[0]['value']) if returns_data and returns_data[0]['value'] else 0.0
-    result["returns"] = abs(raw_returns)
+        invoiced_data = frappe.db.sql(f"""
+            SELECT SUM(grand_total) as value FROM (
+                SELECT DISTINCT si.name, si.grand_total
+                FROM `tabSales Invoice` si
+                INNER JOIN `tabSales Team` st
+                    ON st.parent = si.name AND st.parenttype = 'Sales Invoice'
+                WHERE si.docstatus = 1 AND si.is_return = 0
+                AND si.posting_date BETWEEN %s AND %s
+                AND st.sales_person IN ({format_sps})
+            ) distinct_invoices
+        """, tuple([start_date, end_date] + list(sp_tuple)), as_dict=True)
+        result["gross_invoiced"] = flt(invoiced_data[0]['value']) if invoiced_data and invoiced_data[0]['value'] else 0.0
+
+        returns_data = frappe.db.sql(f"""
+            SELECT SUM(grand_total) as value FROM (
+                SELECT DISTINCT si.name, si.grand_total
+                FROM `tabSales Invoice` si
+                INNER JOIN `tabSales Team` st
+                    ON st.parent = si.name AND st.parenttype = 'Sales Invoice'
+                WHERE si.docstatus = 1 AND si.is_return = 1
+                AND si.posting_date BETWEEN %s AND %s
+                AND st.sales_person IN ({format_sps})
+            ) distinct_invoices
+        """, tuple([start_date, end_date] + list(sp_tuple)), as_dict=True)
+        raw_returns = flt(returns_data[0]['value']) if returns_data and returns_data[0]['value'] else 0.0
+        result["returns"] = abs(raw_returns)
+    else:
+
+        invoiced_data = frappe.db.sql("""
+            SELECT SUM(grand_total) as value
+            FROM `tabSales Invoice`
+            WHERE docstatus = 1 AND is_return = 0
+            AND posting_date BETWEEN %(from_date)s AND %(to_date)s
+            AND customer IN %(customer_list)s
+        """, gl_params, as_dict=True)
+        result["gross_invoiced"] = flt(invoiced_data[0]['value']) if invoiced_data and invoiced_data[0]['value'] else 0.0
+
+        returns_data = frappe.db.sql("""
+            SELECT SUM(grand_total) as value
+            FROM `tabSales Invoice`
+            WHERE docstatus = 1 AND is_return = 1
+            AND posting_date BETWEEN %(from_date)s AND %(to_date)s
+            AND customer IN %(customer_list)s
+        """, gl_params, as_dict=True)
+        raw_returns = flt(returns_data[0]['value']) if returns_data and returns_data[0]['value'] else 0.0
+        result["returns"] = abs(raw_returns)
 
     try:
         collections_data = frappe.db.sql("""
@@ -972,11 +998,6 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date):
 
 @frappe.whitelist()
 def get_sales_context():
-    """
-    Fetches the App's core operational data in ONE call for FastAPI to hash.
-    Optimized via Nested Sets to pull all customers for the rep's authorized branch.
-    Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
-    """
 
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
@@ -1149,7 +1170,6 @@ def get_sales_context():
 
     debt_snapshot = []
     if customer_ids:
-
         customer_owner_map = {c['name']: c.get('owning_sales_person_name') for c in customers}
 
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -1204,7 +1224,7 @@ def get_sales_context():
     total_orders = order_agg[0]['cnt'] if order_agg and order_agg[0]['cnt'] else 0
     total_orders_value = flt(order_agg[0]['total_value']) if order_agg and order_agg[0]['total_value'] else 0.0
 
-    financial_totals = get_customer_scoped_financial_totals(customer_ids, start_of_month, end_of_month)
+    financial_totals = get_customer_scoped_financial_totals(customer_ids, start_of_month, end_of_month, sales_person_ids=auth_sps)
 
     team_roster = []
     personal_sales_block = None
@@ -1227,7 +1247,7 @@ def get_sales_context():
         personal_customer_ids = get_direct_customer_ids(root_sp)
         personal_target = flt(root_sp_doc.custom_sales_target) if root_sp_doc else 0.0
         personal_collection_target = flt(root_sp_doc.custom_collections_target) if root_sp_doc else 0.0
-        personal_financials = get_customer_scoped_financial_totals(personal_customer_ids, start_of_month, end_of_month)
+        personal_financials = get_customer_scoped_financial_totals(personal_customer_ids, start_of_month, end_of_month, sales_person_ids=[root_sp])
 
         personal_sales_block = {
             "target": personal_target,
@@ -1301,10 +1321,7 @@ def get_sales_context():
 
 @frappe.whitelist()
 def get_invoice_details_for_order(order_id):
-    """
-    On-Demand fetch for the Differential Viewer.
-    Pulls strictly the invoiced items associated with a specific Sales Order intent.
-    """
+
     items = frappe.db.sql("""
         SELECT si.item_code, si.item_name, si.qty, si.rate, si.amount
         FROM `tabSales Invoice Item` si
@@ -1341,7 +1358,6 @@ def get_customer_financial_brief(customer_id):
     }, as_dict=True)
     row = sales_row[0] if sales_row else {}
 
-    # GL-based outstanding — matches the dashboard aggregate & Outstanding Debts report
     gl_row = frappe.db.sql("""
         SELECT SUM(gl.debit - gl.credit) as total_outstanding
         FROM `tabGL Entry` gl
@@ -1702,32 +1718,6 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
     format_sps = ','.join(['%s'] * len(scoped_sps))
     tuple_sps = tuple(scoped_sps)
 
-    customer_rows = frappe.db.sql(f"""
-        SELECT
-            c.name as customer_id,
-            c.customer_name,
-            MIN(sp.sales_person_name) as owning_sales_person_name
-        FROM `tabCustomer` c
-        JOIN `tabSales Team` st ON c.name = st.parent AND st.parenttype = 'Customer'
-        LEFT JOIN `tabSales Person` sp ON sp.name = st.sales_person
-        WHERE st.sales_person IN ({format_sps}) AND c.disabled = 0
-        GROUP BY c.name
-    """, tuple_sps, as_dict=True)
-
-    if not customer_rows:
-        return {
-            "status": "success",
-            "data": {
-                "from_date": None, "to_date": None,
-                "returns": [],
-                "totals": {"total_amount": 0.0, "return_count": 0, "distinct_customers": 0}
-            }
-        }
-
-    customer_ids = [c.customer_id for c in customer_rows]
-    owner_map = {c.customer_id: c.owning_sales_person_name for c in customer_rows}
-    format_custs = ','.join(['%s'] * len(customer_ids))
-
     range_from = from_date or get_first_day(today())
     range_to = to_date or today()
 
@@ -1746,13 +1736,26 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
         FROM `tabSales Invoice` si
         WHERE si.docstatus = 1 AND si.is_return = 1
         AND si.posting_date BETWEEN %s AND %s
-        AND si.customer IN ({format_custs})
+        AND si.name IN (
+            SELECT DISTINCT st.parent FROM `tabSales Team` st
+            WHERE st.parenttype = 'Sales Invoice' AND st.sales_person IN ({format_sps})
+        )
         ORDER BY si.posting_date DESC
-    """, tuple([range_from, range_to] + customer_ids), as_dict=True)
+    """, tuple([range_from, range_to] + list(tuple_sps)), as_dict=True)
 
     if returns:
         inv_names = [r.invoice_id for r in returns]
         format_invs = ','.join(['%s'] * len(inv_names))
+
+        owner_rows = frappe.db.sql(f"""
+            SELECT st.parent as invoice_id, MIN(sp.sales_person_name) as owning_sales_person_name
+            FROM `tabSales Team` st
+            LEFT JOIN `tabSales Person` sp ON sp.name = st.sales_person
+            WHERE st.parenttype = 'Sales Invoice' AND st.parent IN ({format_invs})
+            GROUP BY st.parent
+        """, tuple(inv_names), as_dict=True)
+        owner_map = {o.invoice_id: o.owning_sales_person_name for o in owner_rows}
+
         items = frappe.db.sql(f"""
             SELECT parent, item_code, item_name, qty, rate, amount
             FROM `tabSales Invoice Item`
@@ -1764,9 +1767,10 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
             item_map.setdefault(it.parent, []).append(it)
 
         for r in returns:
-
+            # Credit notes store negative qty/amount/grand_total in ERPNext —
+            # normalize to positive magnitudes for display purposes only.
             r['grand_total'] = abs(flt(r.grand_total))
-            r['owning_sales_person_name'] = owner_map.get(r.customer_id)
+            r['owning_sales_person_name'] = owner_map.get(r.invoice_id)
             raw_items = item_map.get(r.invoice_id, [])
             r['items'] = [
                 {
@@ -2132,7 +2136,6 @@ def trigger_financial_refresh(doc, method=None):
     party = None
 
     if doc.doctype == "Payment Entry":
-        # party_type/party ARE real top-level fields on Payment Entry — safe to access directly here
         if doc.party_type != 'Customer' or not doc.party:
             return
         party = doc.party
@@ -2147,7 +2150,7 @@ def trigger_financial_refresh(doc, method=None):
         sign = 1 if doc.docstatus == 1 else -1
         for jea in doc.get("accounts", []):
             if jea.party_type == "Customer" and jea.party:
-                party = jea.party  # last matching row wins if a JE somehow splits across >1 customer
+                party = jea.party  
                 row_amount = float(jea.credit_in_account_currency or 0.0) - float(jea.debit_in_account_currency or 0.0)
                 increment_collection += sign * row_amount
         if not party:
@@ -2159,7 +2162,7 @@ def trigger_financial_refresh(doc, method=None):
         return
 
     invoice_ids = []
-    if hasattr(doc, 'references'):  # only Payment Entry has this child table; safely False for Journal Entry
+    if hasattr(doc, 'references'):
         for ref in doc.references:
             if ref.reference_doctype == 'Sales Invoice' and ref.reference_name:
                 invoice_ids.append(ref.reference_name)
@@ -2307,10 +2310,7 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
-    """
-    🚨 NEW HOOK: Triggered on Sales Person update.
-    Checks if targets changed, and forces a silent background vault sync for that specific rep.
-    """
+
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
