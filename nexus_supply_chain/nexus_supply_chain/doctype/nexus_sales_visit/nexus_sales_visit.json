@@ -12,7 +12,17 @@
   "latitude",
   "distance_from_target_meters",
   "check_out_time",
-  "duration_minutes"
+  "duration_minutes",
+  "visit_report_section",
+  "visit_outcome",
+  "visit_notes",
+  "next_follow_up_date",
+  "competitor_notes",
+  "visit_with_report",
+  "report_submitted_at",
+  "collections_report_section",
+  "collections_report",
+  "is_collections_report"
  ],
  "fields": [
   {
@@ -56,6 +66,65 @@
    "fieldname": "duration_minutes",
    "fieldtype": "Float",
    "label": "Duration (Minutes)"
+  },
+  {
+   "fieldname": "visit_report_section",
+   "fieldtype": "Section Break",
+   "label": "Visit Report"
+  },
+  {
+   "fieldname": "visit_outcome",
+   "fieldtype": "Select",
+   "label": "Visit Outcome",
+   "options": "\nOrder Placed\nNo Order - Interested\nNo Order - Not Interested\nCustomer Unavailable\nFollow-Up Required\nStock/Delivery Complaint"
+  },
+  {
+   "fieldname": "visit_notes",
+   "fieldtype": "Text",
+   "label": "Visit Notes"
+  },
+  {
+   "fieldname": "next_follow_up_date",
+   "fieldtype": "Date",
+   "label": "Next Follow-Up Date"
+  },
+  {
+   "fieldname": "competitor_notes",
+   "fieldtype": "Text",
+   "label": "Competitor Notes"
+  },
+  {
+   "fieldname": "visit_with_report",
+   "fieldtype": "Check",
+   "label": "Visit With Report",
+   "default": "0",
+   "read_only": 1,
+   "description": "Automatically set when a visit report is submitted for this check-in. Never editable directly."
+  },
+  {
+   "fieldname": "report_submitted_at",
+   "fieldtype": "Datetime",
+   "label": "Report Submitted At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "collections_report_section",
+   "fieldtype": "Section Break",
+   "label": "Collections Report"
+  },
+  {
+   "fieldname": "collections_report",
+   "fieldtype": "Small Text",
+   "label": "Collections Report",
+   "description": "Composed on submission as: 'Outstanding = X & Overdue = Y : <rep's note>'"
+  },
+  {
+   "fieldname": "is_collections_report",
+   "fieldtype": "Check",
+   "label": "Is Collections Report",
+   "default": "0",
+   "read_only": 1,
+   "description": "Automatically set when the rep files a report through the 'Send Report on Current Collections' flow. Lets future reporting/filtering pull just the collections-flavored visit reports without parsing collections_report's text."
   }
  ],
  "grid_page_length": 50,

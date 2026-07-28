@@ -1,5 +1,30 @@
 import frappe
+import math
 from frappe.utils import getdate, today, add_days
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """
+    Standard haversine distance in kilometers between two lat/lng points.
+    Used only for the rep's own consecutive check-in-to-check-in legs (their
+    own GPS trail recorded at check-in time) — deliberately NOT computed
+    against raw live-ping data, since pings are ephemeral/in-RAM and pruned,
+    while Nexus Sales Visit rows are the durable, already-indexed record of
+    where the rep actually stood when they checked in.
+    """
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return 0.0
+    try:
+        lat1, lon1, lat2, lon2 = float(lat1), float(lon1), float(lat2), float(lon2)
+    except (TypeError, ValueError):
+        return 0.0
+
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 @frappe.whitelist()
 def get_sales_team():
@@ -21,6 +46,94 @@ def get_sales_team():
 
     return team_data or []
 
+@frappe.whitelist()
+def get_sales_person_route(sales_person_email, route_date):
+    """
+    Reconstructs a rep's route for a given date as the ORDERED SEQUENCE of
+    their own Nexus Sales Visit check-in coordinates (visit-time order, not
+    a live-ping trail) — the same durable, already-indexed dataset the
+    Attendance report reads from. Total distance is the sum of consecutive
+    checkpoint-to-checkpoint haversine legs, which is deliberately simpler
+    and cheaper than reconstructing a path from raw GPS pings: it needs no
+    new persistence layer, and "how far did the rep travel between the
+    places they actually checked into" is exactly what a route view for
+    accountability purposes needs.
+
+    Order value per checkpoint uses the same Sales Team attribution as
+    get_sales_attendance (direct sales_person match on the Sales Person
+    record resolved from the rep's own Employee/User), scoped to Sales
+    Orders placed on that same date for that checked-in customer.
+    """
+    if not sales_person_email or not route_date:
+        frappe.throw("sales_person_email and route_date are required.")
+
+    visits = frappe.db.sql("""
+        SELECT
+            v.name,
+            v.customer,
+            c.customer_name,
+            v.check_in_time,
+            v.check_out_time,
+            v.latitude,
+            v.longitude
+        FROM `tabNexus Sales Visit` v
+        LEFT JOIN `tabCustomer` c ON c.name = v.customer
+        WHERE v.sales_person = %(email)s
+        AND DATE(v.check_in_time) = %(route_date)s
+        AND v.latitude IS NOT NULL AND v.latitude != ''
+        AND v.longitude IS NOT NULL AND v.longitude != ''
+        ORDER BY v.check_in_time ASC
+    """, {"email": sales_person_email, "route_date": route_date}, as_dict=True)
+
+    if not visits:
+        return {"status": "success", "checkpoints": [], "total_km": 0.0, "order_totals": {}}
+
+    # Total distance: sum of consecutive-checkpoint haversine legs, in visit order
+    total_km = 0.0
+    for i in range(1, len(visits)):
+        prev, curr = visits[i - 1], visits[i]
+        total_km += _haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+
+    # Order value per checked-in customer that same date — same Sales Team
+    # attribution pattern as get_sales_attendance's `ord` subquery.
+    order_totals = {}
+    emp = frappe.db.get_value("Employee", {"user_id": sales_person_email}, "name")
+    sp_name = frappe.db.get_value("Sales Person", {"employee": emp}, "name") if emp else None
+
+    customer_names = list({v.customer for v in visits if v.customer})
+    if sp_name and customer_names:
+        format_custs = ','.join(['%s'] * len(customer_names))
+        rows = frappe.db.sql(f"""
+            SELECT so.customer, SUM(so.grand_total) as total
+            FROM `tabSales Order` so
+            JOIN `tabSales Team` st ON st.parent = so.name AND st.parenttype = 'Sales Order'
+            WHERE so.docstatus != 2
+            AND so.transaction_date = %s
+            AND st.sales_person = %s
+            AND so.customer IN ({format_custs})
+            GROUP BY so.customer
+        """, tuple([route_date, sp_name] + customer_names), as_dict=True)
+        order_totals = {r.customer: float(r.total or 0.0) for r in rows}
+
+    checkpoints = []
+    for v in visits:
+        checkpoints.append({
+            "visit_id": v.name,
+            "customer": v.customer,
+            "customer_name": v.customer_name or v.customer,
+            "check_in_time": str(v.check_in_time) if v.check_in_time else None,
+            "check_out_time": str(v.check_out_time) if v.check_out_time else None,
+            "lat": float(v.latitude),
+            "lng": float(v.longitude),
+            "order_value": order_totals.get(v.customer, 0.0)
+        })
+
+    return {
+        "status": "success",
+        "checkpoints": checkpoints,
+        "total_km": round(total_km, 2),
+        "order_totals": order_totals
+    }
 
 @frappe.whitelist()
 def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_person=None):

@@ -5,7 +5,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         single_column: true 
     });
 
-    // 🚨 FIX: Removed HTML tags from button label to ensure flawless click bubbling in Frappe v15
     page.add_inner_button('Pull Sales Attendance', function() {
     try {
         console.log("🔔 [Nexus Dispatch] Pull Sales Attendance clicked.");
@@ -142,6 +141,16 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let renderLoopId = null;
     let staleCheckId = null;
 
+    // 🚨 BATCH 7: VIEW ROUTE STATE
+    // suppressLiveMarkers only gates the MAP MARKER paint step in
+    // flushRenderQueue — latestSalesState keeps receiving fresh pings from
+    // the WebSocket exactly as before, they're just not drawn for 10s so
+    // the route overlay isn't visually fought over by live rep dots.
+    let suppressLiveMarkers = false;
+    let routeSuppressTimeout = null;
+    let routeLayerGroup = null;
+    let routeAnimInterval = null;
+
     const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/sales-ws";
     const TILE_SERVER_URL = "https://crystal-map.crystalapps.dev/styles/basic-preview/style.json";
 
@@ -165,12 +174,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             const wasStale = prev && prev.is_stale === true && rep.is_stale === false; // 🚨 Check if recovered from weak signal
             const isNewRep = !prev;
 
-            // Only ignore if NOTHING changed
             if (!isNewRep && !statusChanged && !customerChanged && !speedChanged && !positionChanged && !headingChanged && !wasStale) {
                 return;
             }
 
-            // Skip rendering standard green UI if the Stale Evaluator flagged them as yellow
             if (rep.is_stale) return; 
 
             let $card = cardElementCache[email];
@@ -185,7 +192,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 $('#active-sales-container').append($card);
             }
 
-            // 🚨 Update Themes (Adding wasStale recovery)
             if (isNewRep || statusChanged || wasStale) {
                 $card.removeClass('theme-offline theme-traveling theme-checked-in theme-syncing');
                 $card.addClass(rep.status === 'Checked-In' ? 'theme-checked-in' : 'theme-traveling');
@@ -206,7 +212,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 $card.find('.customer-val').text(customerDisplay);
             }
 
-            if (rep.lat && rep.lng && (isNewRep || positionChanged || headingChanged || statusChanged || wasStale)) {
+            if (!suppressLiveMarkers && rep.lat && rep.lng && (isNewRep || positionChanged || headingChanged || statusChanged || wasStale)) {
                 const color = rep.status === 'Checked-In' ? '#10b981' : '#3b82f6';
                 const heading = rep.heading || 0;
 
@@ -243,7 +249,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         staleCheckId = setInterval(function() {
             const now = Date.now();
             
-            // Expected max interval from Android is 30s. 
             const SYNCING_THRESHOLD = 45000; // 45s: Signal delayed, show warning
             const OFFLINE_THRESHOLD = 90000; // 90s: Connection lost, move to offline
 
@@ -254,7 +259,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 const elapsed = now - rep.last_ping_ms;
 
                 if (elapsed > OFFLINE_THRESHOLD) {
-                    // 🚨 Hard drop: Move to offline container
                     const $card = cardElementCache[email];
                     if ($card && $card.length > 0) {
                         if ($card.parent().attr('id') !== 'standby-sales-container') {
@@ -278,7 +282,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     delete renderedSalesState[email];
 
                 } else if (elapsed > SYNCING_THRESHOLD && !rep.is_stale) {
-                    // 🚨 Soft drop: Weak signal, turn orange but keep in active container
                     rep.is_stale = true;
                     renderedSalesState[email].is_stale = true;
 
@@ -297,7 +300,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     }
                 }
             });
-        }, 5000); // Evaluates TTL every 5 seconds
+        }, 5000);
     }
 
     function build_marker_icon(color, heading) {
@@ -338,6 +341,9 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     <span class="ping-dot ping-offline"></span>
                     <span class="stat-text text-muted">Awaiting Connection...</span>
                 </div>
+                <button type="button" class="btn btn-outline-primary btn-sm view-route-btn w-100 mt-2">
+                    <i class="fa fa-route me-1"></i> View Route
+                </button>
             </div>
         `);
     }
@@ -402,13 +408,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 const raw_team = data.sales_team || {};
                 
                 if (Object.keys(raw_team).length > 0) {
-                    // Optional: comment out to reduce console spam in production
-                    // console.log("📡 [Nexus Dispatch] Received Live Coordinates:", raw_team);
                 }
 
                 const now = Date.now();
 
-                // 🚨 STATE MERGING: Accumulate and stamp TTL
                 Object.keys(raw_team).forEach(k => {
                     const email = k.toLowerCase();
                     const incoming_rep = raw_team[k];
@@ -468,9 +471,16 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // ─────────────────────────────────────────────────────────────────
-    // 🚨 FIX: SALES ATTENDANCE ENGINE (Native 'depends_on' Evaluators)
-    // ─────────────────────────────────────────────────────────────────
+    // 🚨 BATCH 7: VIEW ROUTE — stopPropagation so this doesn't also trigger
+    // the card-click flyTo/select handler above.
+    $(wrapper).on('click', '.view-route-btn', function(e) {
+        e.stopPropagation();
+        const $card = $(this).closest('.sales-card');
+        const email = $card.attr('data-tid');
+        const repName = $card.find('.rep-name').text() || email;
+        show_route_dialog(email, repName);
+    });
+
     function show_attendance_dialog() {
         let d = new frappe.ui.Dialog({
             title: 'Pull Sales Attendance',
@@ -573,19 +583,30 @@ function render_attendance_table(data, d) {
             return;
         }
 
-        // Compute totals for the summary footer row
-        let grand_visits      = 0;
-        let grand_orders      = 0;
-        let grand_order_val   = 0;
-        let grand_invoices    = 0;
-        let grand_invoiced    = 0;
+        let grand_visits            = 0;
+        let grand_onsite            = 0;
+        let grand_offsite           = 0;
+        let grand_orders            = 0;
+        let grand_order_val         = 0;
+        let grand_confirmed_orders  = 0;
+        let grand_confirmed_val     = 0;
+        let grand_invoices          = 0;
+        let grand_invoiced          = 0;
+        let grand_returns           = 0;
+        let grand_returned          = 0;
 
         data.forEach(row => {
-            grand_visits      += parseInt(row.total_visits || 0);
-            grand_orders      += parseInt(row.total_orders || 0);
-            grand_order_val   += parseFloat(row.total_order_value || 0);
-            grand_invoices    += parseInt(row.total_invoices || 0);
-            grand_invoiced    += parseFloat(row.invoiced_amount || 0);
+            grand_visits           += parseInt(row.total_visits || 0);
+            grand_onsite           += parseInt(row.onsite_visits || 0);
+            grand_offsite          += parseInt(row.offsite_visits || 0);
+            grand_orders           += parseInt(row.total_orders || 0);
+            grand_order_val        += parseFloat(row.total_order_value || 0);
+            grand_confirmed_orders += parseInt(row.total_confirmed_orders || 0);
+            grand_confirmed_val    += parseFloat(row.total_confirmed_value || 0);
+            grand_invoices         += parseInt(row.total_invoices || 0);
+            grand_invoiced         += parseFloat(row.invoiced_amount || 0);
+            grand_returns          += parseInt(row.total_returns || 0);
+            grand_returned         += parseFloat(row.returned_amount || 0);
         });
 
         const fmt_currency = (val) => {
@@ -595,50 +616,86 @@ function render_attendance_table(data, d) {
             });
         };
 
+        const fmt_time_only = (time_str) => {
+            if (!time_str) return '—';
+            // time_str comes in as HH:MM:SS from SQL TIME()
+            const parts = String(time_str).split(':');
+            if (parts.length < 2) return time_str;
+            let hh = parseInt(parts[0], 10);
+            const mm = parts[1];
+            const ampm = hh >= 12 ? 'PM' : 'AM';
+            hh = hh % 12;
+            if (hh === 0) hh = 12;
+            return `${hh}:${mm} ${ampm}`;
+        };
+
         let html = `
             <div class="table-responsive border rounded" style="max-height: 500px; overflow-y: auto;">
                 <table class="table table-bordered table-hover m-0" style="font-size: 14px; background: #fff; white-space: nowrap;">
                     <thead class="table-light position-sticky top-0" style="z-index: 10; border-bottom: 2px solid #e2e8f0;">
                         <tr>
                             <th class="p-3 text-uppercase text-muted fw-bold align-middle" style="font-size: 12px; min-width:160px;">Sales Person</th>
+                            <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Date</th>
                             <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Total Visits</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Orders</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Order Value</th>
+                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">On-Site Visits</th>
+                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Off-Site Visits</th>
+                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Total Orders</th>
+                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Total Order Value</th>
+                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Confirmed Orders</th>
+                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Confirmed Value</th>
                             <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Invoices</th>
                             <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Invoiced Value</th>
-                            <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">First Visit</th>
-                            <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Last Visit</th>
+                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Returns</th>
+                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Returned Value</th>
+                            <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">First Check-In</th>
+                            <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Last Check-In</th>
                         </tr>
                     </thead>
                     <tbody>
         `;
 
         data.forEach(row => {
-            const name       = row.sales_person_name || row.email || 'Unknown';
-            const f_visit    = row.first_visit ? frappe.datetime.str_to_user(row.first_visit) : '—';
-            const l_visit    = row.last_visit  ? frappe.datetime.str_to_user(row.last_visit)  : '—';
-            
-            const visits     = parseInt(row.total_visits || 0);
-            const orders     = parseInt(row.total_orders || 0);
-            const order_val  = parseFloat(row.total_order_value || 0);
-            const invoices   = parseInt(row.total_invoices || 0);
-            const invoiced   = parseFloat(row.invoiced_amount || 0);
+            const name              = row.sales_person_name || row.email || 'Unknown';
+            const period_date       = row.period_start_date === row.period_end_date
+                                        ? frappe.datetime.str_to_user(row.period_start_date)
+                                        : `${frappe.datetime.str_to_user(row.period_start_date)} → ${frappe.datetime.str_to_user(row.period_end_date)}`;
+
+            const f_visit_time      = fmt_time_only(row.first_visit_time);
+            const l_visit_time      = fmt_time_only(row.last_visit_time);
+
+            const visits            = parseInt(row.total_visits || 0);
+            const onsite             = parseInt(row.onsite_visits || 0);
+            const offsite            = parseInt(row.offsite_visits || 0);
+            const orders             = parseInt(row.total_orders || 0);
+            const order_val          = parseFloat(row.total_order_value || 0);
+            const confirmed_orders   = parseInt(row.total_confirmed_orders || 0);
+            const confirmed_val      = parseFloat(row.total_confirmed_value || 0);
+            const invoices           = parseInt(row.total_invoices || 0);
+            const invoiced           = parseFloat(row.invoiced_amount || 0);
+            const returns            = parseInt(row.total_returns || 0);
+            const returned           = parseFloat(row.returned_amount || 0);
 
             html += `
                 <tr>
                     <td class="p-3 text-dark align-middle">${name}</td>
+                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${period_date}</td>
                     <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${visits}</td>
+                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${onsite}</td>
+                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${offsite}</td>
                     <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${orders}</td>
                     <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(order_val)}</td>
+                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${confirmed_orders}</td>
+                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(confirmed_val)}</td>
                     <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${invoices}</td>
                     <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(invoiced)}</td>
-                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${f_visit}</td>
-                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${l_visit}</td>
+                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${returns}</td>
+                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(returned)}</td>
+                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${f_visit_time}</td>
+                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${l_visit_time}</td>
                 </tr>
             `;
         });
 
-        // 🚨 UPDATE: Applied pastel yellow background and fw-semibold for slightly bold text
         html += `
                     </tbody>
                     <tfoot style="border-top: 3px solid #cbd5e1; background-color: #fef9c3;">
@@ -646,13 +703,20 @@ function render_attendance_table(data, d) {
                             <td class="p-3 fw-semibold text-dark align-middle" style="font-size: 12px; text-transform: uppercase;">
                                 TOTALS
                             </td>
+                            <td class="p-3 align-middle"></td>
                             <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_visits}</td>
+                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_onsite}</td>
+                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_offsite}</td>
                             <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_orders}</td>
                             <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_order_val)}</td>
+                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_confirmed_orders}</td>
+                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_confirmed_val)}</td>
                             <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_invoices}</td>
                             <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_invoiced)}</td>
+                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_returns}</td>
+                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_returned)}</td>
                             <td colspan="2" class="p-3 text-muted fw-semibold align-middle" style="font-size: 12px; font-style: italic;">
-                                <i class="fa fa-info-circle me-1"></i> Aggregated workspace period totals
+                                <i class="fa fa-info-circle me-1"></i> Aggregated period totals
                             </td>
                         </tr>
                     </tfoot>
@@ -664,19 +728,42 @@ function render_attendance_table(data, d) {
     }
 
     function export_attendance_excel(data) {
-        let csv = 'Sales Person Name,EmailF,Total Visits,Total Orders,Order Value (Sh),Total Invoices,Invoiced Amount (Sh),First Visit,Last Visit\n';
+        let csv = 'Sales Person Name,Email,Date,Total Visits,On-Site Visits,Off-Site Visits,Total Orders,Total Order Value (Sh),Confirmed Orders,Confirmed Order Value (Sh),Total Invoices,Invoiced Amount (Sh),Total Returns,Returned Amount (Sh),First Check-In,Last Check-In\n';
+
+        const fmt_time_only_csv = (time_str) => {
+            if (!time_str) return '';
+            const parts = String(time_str).split(':');
+            if (parts.length < 2) return time_str;
+            let hh = parseInt(parts[0], 10);
+            const mm = parts[1];
+            const ampm = hh >= 12 ? 'PM' : 'AM';
+            hh = hh % 12;
+            if (hh === 0) hh = 12;
+            return `${hh}:${mm} ${ampm}`;
+        };
+
         data.forEach(row => {
-            let name       = row.sales_person_name || 'Unknown';
-            let email      = row.email             || '';
-            let visits     = row.total_visits      || 0;
-            let orders     = row.total_orders      || 0;
-            let order_val  = parseFloat(row.total_order_value || 0).toFixed(2);
-            let invoices   = row.total_invoices    || 0;
-            let invoiced   = parseFloat(row.invoiced_amount || 0).toFixed(2);
-            let f_visit    = row.first_visit       || '';
-            let l_visit    = row.last_visit        || '';
-            
-            csv += `"${name}","${email}",${visits},${orders},${order_val},${invoices},${invoiced},"${f_visit}","${l_visit}"\n`;
+            let name              = row.sales_person_name || 'Unknown';
+            let email             = row.email              || '';
+            let period_date       = row.period_start_date === row.period_end_date
+                                        ? (row.period_start_date || '')
+                                        : `${row.period_start_date || ''} to ${row.period_end_date || ''}`;
+
+            let visits            = row.total_visits            || 0;
+            let onsite            = row.onsite_visits           || 0;
+            let offsite           = row.offsite_visits          || 0;
+            let orders            = row.total_orders            || 0;
+            let order_val         = parseFloat(row.total_order_value || 0).toFixed(2);
+            let confirmed_orders  = row.total_confirmed_orders  || 0;
+            let confirmed_val     = parseFloat(row.total_confirmed_value || 0).toFixed(2);
+            let invoices          = row.total_invoices          || 0;
+            let invoiced          = parseFloat(row.invoiced_amount || 0).toFixed(2);
+            let returns           = row.total_returns           || 0;
+            let returned          = parseFloat(row.returned_amount || 0).toFixed(2);
+            let f_visit_time      = fmt_time_only_csv(row.first_visit_time);
+            let l_visit_time      = fmt_time_only_csv(row.last_visit_time);
+
+            csv += `"${name}","${email}","${period_date}",${visits},${onsite},${offsite},${orders},${order_val},${confirmed_orders},${confirmed_val},${invoices},${invoiced},${returns},${returned},"${f_visit_time}","${l_visit_time}"\n`;
         });
 
         let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -689,27 +776,152 @@ function render_attendance_table(data, d) {
         document.body.removeChild(link);
     }
 
-    function export_attendance_excel(data) {
-        let csv = 'Sales Person Name,Email,Total Visits,Total Orders,Invoiced Amount (Sh),First Visit,Last Visit\n';
-        data.forEach(row => {
-            let name     = row.sales_person_name || 'Unknown';
-            let email    = row.email             || '';
-            let visits   = row.total_visits      || 0;
-            let orders   = row.total_orders      || 0;
-            let invoiced = parseFloat(row.invoiced_amount || 0).toFixed(2);
-            let f_visit  = row.first_visit       || '';
-            let l_visit  = row.last_visit        || '';
-            csv += `"${name}","${email}",${visits},${orders},${invoiced},"${f_visit}","${l_visit}"\n`;
+    function show_route_dialog(email, repName) {
+        let d = new frappe.ui.Dialog({
+            title: `View Route — ${repName}`,
+            fields: [
+                {
+                    fieldtype: 'Date',
+                    fieldname: 'route_date',
+                    label: 'Date',
+                    default: frappe.datetime.nowdate(),
+                    reqd: 1
+                }
+            ],
+            primary_action_label: 'View Route',
+            primary_action(values) {
+                d.hide();
+                toggleRouteView(email, values.route_date, repName);
+            }
+        });
+        d.show();
+    }
+
+    function toggleRouteView(email, route_date, repName) {
+        // 🚨 Hide live rep markers for 10s so the route overlay isn't visually
+        // competing with moving dots while it renders/settles. Live pings
+        // keep flowing into latestSalesState the entire time — nothing about
+        // ingestion changes, only the paint step in flushRenderQueue skips.
+        suppressLiveMarkers = true;
+        if (routeSuppressTimeout) clearTimeout(routeSuppressTimeout);
+        routeSuppressTimeout = setTimeout(() => {
+            suppressLiveMarkers = false;
+        }, 10000);
+
+        frappe.show_alert({ message: `Loading route for ${repName} on ${route_date}...`, indicator: 'blue' });
+
+        frappe.call({
+            method: "nexus_supply_chain.nexus_supply_chain.page.nexus_sales_dispatch.nexus_sales_dispatch.get_sales_person_route",
+            args: { sales_person_email: email, route_date: route_date },
+            callback: function(r) {
+                if (!r.exc && r.message && r.message.status === 'success') {
+                    render_route_overlay(r.message, repName, route_date);
+                } else {
+                    frappe.msgprint({ title: 'No Route Data', indicator: 'orange', message: 'No check-in records found for this rep on the selected date.' });
+                }
+            }
+        });
+    }
+
+    function render_route_overlay(data, repName, route_date) {
+        // Clear any previously rendered route before drawing a new one
+        if (routeLayerGroup) {
+            map.removeLayer(routeLayerGroup);
+            routeLayerGroup = null;
+        }
+        if (routeAnimInterval) {
+            clearInterval(routeAnimInterval);
+            routeAnimInterval = null;
+        }
+        $('#route-summary-panel').remove();
+
+        const checkpoints = data.checkpoints || [];
+        if (checkpoints.length === 0) {
+            frappe.msgprint({ title: 'No Route Data', indicator: 'orange', message: 'No check-in records found for this rep on the selected date.' });
+            return;
+        }
+
+        routeLayerGroup = L.layerGroup().addTo(map);
+
+        // 🚨 Blue animated route line connecting checkpoints in visit order
+        const latlngs = checkpoints.map(cp => [cp.lat, cp.lng]);
+        if (latlngs.length > 1) {
+            const routeLine = L.polyline(latlngs, {
+                color: '#3b82f6',
+                weight: 4,
+                opacity: 0.85,
+                dashArray: '10, 8',
+                lineJoin: 'round'
+            }).addTo(routeLayerGroup);
+
+            // Simple "marching ants" animation via dashOffset
+            let dashOffset = 0;
+            routeAnimInterval = setInterval(() => {
+                dashOffset = (dashOffset - 1) % 18;
+                const el = routeLine.getElement();
+                if (el) el.style.strokeDashoffset = dashOffset;
+            }, 60);
+        }
+
+        // 🚨 Red Google-Maps-style pin per checkpoint, in visit order
+        let totalOrderValue = 0;
+        checkpoints.forEach((cp, idx) => {
+            totalOrderValue += (cp.order_value || 0);
+
+            const pinHtml = `
+                <div style="position:relative;width:28px;height:40px;">
+                    <svg width="28" height="40" viewBox="0 0 28 40" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26c0-7.7-6.3-14-14-14z" fill="#EA4335"/>
+                        <circle cx="14" cy="14" r="6" fill="#ffffff"/>
+                    </svg>
+                    <div style="position:absolute;top:6px;left:0;width:28px;text-align:center;font-size:10px;font-weight:800;color:#7f1d1d;">${idx + 1}</div>
+                </div>`;
+            const pinIcon = L.divIcon({ className: '', html: pinHtml, iconSize: [28, 40], iconAnchor: [14, 40] });
+
+            const orderValStr = cp.order_value > 0
+                ? `Sh ${cp.order_value.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : 'No orders';
+
+            L.marker([cp.lat, cp.lng], { icon: pinIcon })
+                .addTo(routeLayerGroup)
+                .bindPopup(`
+                    <div class="p-1" style="font-size:12px;">
+                        <b>Stop ${idx + 1}: ${cp.customer_name}</b><br>
+                        <span class="text-muted">Check-In: ${cp.check_in_time || '—'}</span><br>
+                        <span class="text-muted">Check-Out: ${cp.check_out_time || 'Still open'}</span><br>
+                        <b>Order Value: ${orderValStr}</b>
+                    </div>
+                `);
         });
 
-        let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        let url  = URL.createObjectURL(blob);
-        let link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", `Sales_Attendance_Export_${frappe.datetime.nowdate()}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+
+        // 🚨 Summary panel — total km, total order value, checkpoint count
+        const $panel = $(`
+            <div id="route-summary-panel" class="position-absolute p-3 bg-white shadow rounded border"
+                 style="z-index:999; bottom:16px; left:16px; font-size:12px; min-width:220px; border-color:#e5e7eb !important;">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="fw-bold text-dark">${repName} — ${route_date}</span>
+                    <button type="button" class="btn-close" id="close-route-view" style="font-size:10px;"></button>
+                </div>
+                <div class="mb-1"><i class="fa fa-route text-primary me-1"></i> Distance Traveled: <b>${(data.total_km || 0).toFixed(2)} km</b></div>
+                <div class="mb-1"><i class="fa fa-map-marker-alt text-danger me-1"></i> Checkpoints: <b>${checkpoints.length}</b></div>
+                <div><i class="fa fa-coins text-success me-1"></i> Total Order Value: <b>Sh ${totalOrderValue.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
+            </div>
+        `);
+        $('#fleet-map').parent().append($panel);
+
+        $('#close-route-view').on('click', function() {
+            if (routeLayerGroup) {
+                map.removeLayer(routeLayerGroup);
+                routeLayerGroup = null;
+            }
+            if (routeAnimInterval) {
+                clearInterval(routeAnimInterval);
+                routeAnimInterval = null;
+            }
+            $('#route-summary-panel').remove();
+        });
     }
 
     frappe.require([
