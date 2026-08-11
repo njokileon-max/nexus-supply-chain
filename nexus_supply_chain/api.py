@@ -2734,3 +2734,4 @@ def get_active_companies_for_dispatch():
     except Exception as e:
         frappe.log_error(title="Company Coordinates Fetch Failed", message=str(e))
         return {"status": "error", "message": str(e)}
+
