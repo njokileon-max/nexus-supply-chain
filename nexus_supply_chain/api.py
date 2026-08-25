@@ -33,6 +33,47 @@ def parse_combined_coords(combined, fallback_lat=None, fallback_lng=None):
 
     return None
 
+class NexusVersionOutdatedError(frappe.ValidationError):
+
+    http_status_code = 426
+
+
+def _version_tuple(v):
+
+    if not v:
+        return (0,)
+    parts = []
+    for p in str(v).strip().split('.'):
+        try:
+            parts.append(int(p))
+        except (TypeError, ValueError):
+            parts.append(0)
+    return tuple(parts)
+
+
+def enforce_minimum_app_version():
+
+    client_version = frappe.request.headers.get("X-App-Version")
+    if not client_version:
+        return
+
+    try:
+        settings = frappe.get_cached_doc("Nexus App Version")
+        min_version = getattr(settings, "minimum_version", None)
+    except Exception as e:
+        frappe.log_error(title="Nexus Version Gate Lookup Failed", message=str(e))
+        return
+
+    if not min_version:
+        return
+
+    if _version_tuple(client_version) < _version_tuple(min_version):
+        frappe.throw(
+            msg="This version of Nexus Sales is no longer supported. Please update to continue.",
+            exc=NexusVersionOutdatedError,
+            title="Update Required"
+        )
+
 def queue_customer_geocoding(doc, method=None):
 
     if getattr(frappe.flags, "in_import", False):
@@ -1910,11 +1951,12 @@ def submit_sales_order_from_app(payload):
             so.inter_company_reference = payload.get("notes") 
 
         for item in payload.get("items", []):
+            line_note = item.get("notes")
             so.append("items", {
                 "item_code": item.get("item_code"),
                 "qty": float(item.get("qty")),
                 "rate": float(item.get("rate")),
-                "description": payload.get("notes", "") 
+                "description": line_note if line_note else payload.get("notes", "")
             })
 
         target_email = payload.get("sales_rep_email") or frappe.session.user
@@ -1965,10 +2007,12 @@ def edit_draft_sales_order(order_id, payload):
 
         so.set("items", [])
         for item in items:
+            line_note = item.get("notes")
             so.append("items", {
                 "item_code": item.get("item_code"),
                 "qty": float(item.get("qty")),
                 "rate": float(item.get("rate")),
+                "description": line_note if line_note else (payload.get("notes") or ""),
             })
 
         if payload.get("delivery_region"):

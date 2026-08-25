@@ -156,6 +156,10 @@ scheduler_events = {
     }
 }
 
+before_request = [
+    "nexus_supply_chain.api.enforce_minimum_app_version"
+]
+
 # -----------------------------------------------------------
 # ENTERPRISE SECURITY HOOKS: Row-Level Access Control
 # -----------------------------------------------------------
