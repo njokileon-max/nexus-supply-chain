@@ -7,6 +7,32 @@ import math
 from datetime import datetime
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime, flt, getdate
 
+def parse_combined_coords(combined, fallback_lat=None, fallback_lng=None):
+
+    if combined:
+        try:
+            combined_str = str(combined).strip()
+            if ',' in combined_str:
+                parts = combined_str.split(',')
+                if len(parts) >= 2:
+                    lat = float(parts[0].strip())
+                    lng = float(parts[1].strip())
+                    if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0 and not (lat == 0.0 and lng == 0.0):
+                        return (lat, lng)
+        except (ValueError, TypeError):
+            pass
+
+    if fallback_lat not in (None, '') and fallback_lng not in (None, ''):
+        try:
+            lat = float(fallback_lat)
+            lng = float(fallback_lng)
+            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0 and not (lat == 0.0 and lng == 0.0):
+                return (lat, lng)
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
 def queue_customer_geocoding(doc, method=None):
 
     if getattr(frappe.flags, "in_import", False):
@@ -79,29 +105,29 @@ def process_bulk_geocoding_queue():
     import random
 
     targets = frappe.db.sql("""
-        SELECT name, custom_google_maps_link 
+        SELECT name, custom_google_maps_link
         FROM `tabCustomer`
-        WHERE custom_google_maps_link IS NOT NULL 
+        WHERE custom_google_maps_link IS NOT NULL
         AND custom_google_maps_link != ''
         AND (custom_latitude = 0.0 OR custom_latitude IS NULL OR custom_latitude = '')
         LIMIT 20
     """, as_dict=True)
-    
+
     if not targets:
         return
 
     frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher starting for {len(targets)} customers.")
-    
+
     fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
     successful_updates = 0
 
     for target in targets:
         doc_name = target.name
         link = target.custom_google_maps_link
-        
+
         try:
             response = requests.post(fastapi_url, json={"url": link}, timeout=15)
-            
+
             if response.status_code == 200:
                 data = response.json()
                 if data.get("status") == "success":
@@ -119,12 +145,12 @@ def process_bulk_geocoding_queue():
                     frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
                     frappe.db.commit()
                     successful_updates += 1
-            
+
         except Exception as e:
             frappe.log_error(message=str(e), title=f"Slow-Drip Geocode Error: {doc_name}")
-            
+
         time.sleep(random.uniform(4.0, 7.0))
-        
+
     if successful_updates > 0:
         frappe.cache().set_value('nexus_needs_sync', True)
         frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher finished. Synced {successful_updates} customers.")
@@ -138,10 +164,10 @@ def check_mobile_app_access():
 
     try:
         settings = frappe.get_doc("Nexus App Settings")
-        
+
         table_rows = settings.get("allowed_roles", [])
         allowed_roles = [str(row.role).strip() for row in table_rows if row.role]
-        
+
     except Exception as e:
         return {"status": "denied", "message": f"Server Error: {str(e)}"}
 
@@ -149,7 +175,7 @@ def check_mobile_app_access():
     clean_user_roles = [str(r).strip() for r in user_roles]
 
     has_access = any(role in allowed_roles for role in clean_user_roles)
-    
+
     if has_access:
         return {"status": "success", "message": "Access Granted"}
     else:
@@ -178,7 +204,7 @@ def get_user_profile():
             "email": user_doc.email,
             "roles": roles,
             "csrf_token": frappe.sessions.get_csrf_token(),
-            "sid": frappe.session.sid 
+            "sid": frappe.session.sid
         }
     }
 
@@ -233,8 +259,8 @@ def get_nexus_live_inventory():
         "reservations": reservations
     }
 
-    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/live-inventory" 
-    
+    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/live-inventory"
+
     try:
         response = requests.post(fastapi_url, json=payload, timeout=15)
         response.raise_for_status()
@@ -242,7 +268,7 @@ def get_nexus_live_inventory():
     except Exception as e:
         frappe.log_error(message=str(e), title="Nexus Live Inventory Sync Failed")
         return []
-    
+
 
 @frappe.whitelist()
 def get_nexus_production_data():
@@ -265,13 +291,13 @@ def get_nexus_production_data():
         SELECT i.name as item_code
         FROM `tabItem` i
         LEFT JOIN `tabBin` b ON i.name = b.item_code AND b.warehouse = 'Finished Goods - CAL'
-        WHERE i.custom_linked_bip IS NOT NULL 
+        WHERE i.custom_linked_bip IS NOT NULL
         AND i.custom_minimum_reorder_level > 0
         AND IFNULL(b.actual_qty, 0) <= i.custom_minimum_reorder_level
     """, as_dict=True)
 
     active_items = list(set(
-        [so['item_code'] for so in sales_orders] + 
+        [so['item_code'] for so in sales_orders] +
         [r['item_code'] for r in reservations] +
         [m['item_code'] for m in mrl_breaches]
     ))
@@ -282,18 +308,18 @@ def get_nexus_production_data():
     tuple_items = tuple(active_items)
 
     fgs = frappe.db.sql(f"""
-        SELECT 
-            i.name as item_code, 
-            i.item_name, 
+        SELECT
+            i.name as item_code,
+            i.item_name,
             i.custom_linked_bip,
             i.custom_minimum_reorder_level as mrl,
             i.custom_maximum_shelf_capacity as max_shelf,
             i.weight_per_unit,
-            (SELECT bi.item_code 
-             FROM `tabBOM Item` bi 
-             JOIN `tabBOM` b ON bi.parent = b.name 
+            (SELECT bi.item_code
+             FROM `tabBOM Item` bi
+             JOIN `tabBOM` b ON bi.parent = b.name
              JOIN `tabItem` pack_item ON bi.item_code = pack_item.name
-             WHERE b.item = i.name AND b.is_default = 1 AND b.docstatus = 1 
+             WHERE b.item = i.name AND b.is_default = 1 AND b.docstatus = 1
              AND pack_item.item_group = 'Packaging Materials' LIMIT 1) as pack_code
         FROM `tabItem` i
         WHERE i.name IN ({format_items}) AND i.custom_linked_bip IS NOT NULL
@@ -319,7 +345,7 @@ def get_nexus_production_data():
 
     payload = {"bips": bips, "fgs": fgs, "stock": stock, "sales_orders": sales_orders, "reservations": reservations}
     fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/production-cards" 
-    
+
     try:
         response = requests.post(fastapi_url, json=payload, timeout=15)
         response.raise_for_status()
@@ -327,7 +353,7 @@ def get_nexus_production_data():
     except Exception as e:
         frappe.log_error(message=str(e), title="Nexus Production Sync Failed")
         return []
-    
+
 @frappe.whitelist(allow_guest=False)
 def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
     doc = frappe.get_doc("Vehicle Delivery Manifest", manifest_name)
@@ -338,7 +364,7 @@ def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
     if stops:
         if isinstance(stops, str):
             stops = json.loads(stops)
-            
+
         for app_stop in stops:
             target_sales_order = None
             for d in doc.stops:
@@ -347,7 +373,7 @@ def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
                     d.driver_notes = app_stop.get("driver_notes")
                     target_sales_order = d.sales_order
                     break
-                    
+
             returned_items = app_stop.get("returned_items")
             if returned_items and isinstance(returned_items, list) and target_sales_order:
                 for item in returned_items:
@@ -359,7 +385,7 @@ def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
                     })
 
     has_pending_stops = any(d.delivery_status == 'Pending' for d in doc.stops)
-    
+
     if not has_pending_stops and doc.trip_status == 'Dispatched':
         doc.trip_status = 'Returning'
         vehicle_transit_name = frappe.db.get_value("Vehicle In Transit", {"current_driver": doc.driver}, "name")
@@ -373,13 +399,13 @@ def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
 
     doc.flags.ignore_validate_update_after_submit = True
     doc.save(ignore_permissions=True)
-    
+
     return {"status": "success", "message": "Manifest synced securely."}
 
 @frappe.whitelist()
 def get_my_active_manifests_and_context():
     driver_email = frappe.session.user
-    
+
     manifest_records = frappe.get_all(
         "Vehicle Delivery Manifest",
         filters=[
@@ -388,19 +414,19 @@ def get_my_active_manifests_and_context():
         ],
         fields=["name", "vehicle", "trip_status", "route_geojson", "cumulative_additional_fuel_cost"]
     )
-    
+
     manifests = []
     for record in manifest_records:
         doc = frappe.get_doc("Vehicle Delivery Manifest", record.name)
         manifest_dict = doc.as_dict()
-        
+
         for stop in manifest_dict.get("stops", []):
             if stop.get("customer"):
                 try:
                     coords = frappe.db.get_value(
-                        "Customer", 
-                        stop.get("customer"), 
-                        ["custom_latitude", "custom_longitude"], 
+                        "Customer",
+                        stop.get("customer"),
+                        ["custom_latitude", "custom_longitude"],
                         as_dict=True
                     )
                     if coords:
@@ -412,7 +438,7 @@ def get_my_active_manifests_and_context():
                 except Exception:
                     stop["custom_latitude"] = stop.get("latitude")
                     stop["custom_longitude"] = stop.get("longitude")
-            
+
             stop["items"] = []
             if stop.get("sales_order"):
                 try:
@@ -424,18 +450,18 @@ def get_my_active_manifests_and_context():
                     stop["items"] = so_items
                 except Exception:
                     pass
-        
+
         manifests.append(manifest_dict)
 
     vehicle = frappe.db.get_value("Vehicle In Transit", {"current_driver": driver_email}, "name") or "Idle"
-    
+
     active_manifest = None
     if manifests:
         dispatched = [m.name for m in manifests if m.trip_status == "Dispatched"]
         returning = [m.name for m in manifests if m.trip_status == "Returning"]
         ready = [m.name for m in manifests if m.trip_status == "Ready"]
         completed = [m.name for m in manifests if m.trip_status == "Completed"]
-        
+
         if dispatched:
             active_manifest = dispatched[0]
         elif returning:
@@ -472,16 +498,16 @@ def log_driver_additional_fuel(manifest_id, amount):
 
         current_fuel = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "cumulative_additional_fuel_cost") or 0.0
         current_profit = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "profit_loss") or 0.0
-        
+
         load_plan_id = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "load_plan")
         total_order_value = frappe.db.get_value("Nexus Load Plan", load_plan_id, "total_amount") if load_plan_id else 0.0
 
         new_cumulative_fuel = float(current_fuel) + fuel_amount_to_add
-        
+
         new_profit_loss = float(current_profit) - fuel_amount_to_add
-        
+
         new_net_margin = (new_profit_loss / float(total_order_value) * 100) if total_order_value and float(total_order_value) > 0 else 0.0
-        
+
         new_profitability_status = "Profitable" if new_profit_loss >= 0 else "Loss"
 
         update_dict = {
@@ -490,14 +516,14 @@ def log_driver_additional_fuel(manifest_id, amount):
             "net_margin": new_net_margin,
             "profitability_status": new_profitability_status
         }
-        
+
         frappe.db.set_value("Vehicle Delivery Manifest", manifest_id, update_dict, update_modified=False)
         frappe.db.commit()
 
         frappe.publish_realtime('doc_update', message={'doctype': 'Vehicle Delivery Manifest', 'name': manifest_id})
 
         return {
-            "status": "success", 
+            "status": "success",
             "message": "Fuel expense logged successfully.",
             "new_cumulative_total": new_cumulative_fuel
         }
@@ -513,7 +539,7 @@ def save_fcm_token(fcm_token):
     if user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "failed", "message": "Unauthorized"}
-        
+
     try:
         existing_device = frappe.db.get_value("Nexus FCM Device", {"user": user, "fcm_token": fcm_token}, "name")
         if not existing_device:
@@ -522,7 +548,7 @@ def save_fcm_token(fcm_token):
             doc.fcm_token = fcm_token
             doc.insert(ignore_permissions=True)
             frappe.db.commit()
-            
+
         return {"status": "success", "message": "Device registered for push notifications."}
     except Exception as e:
         frappe.log_error("FCM Token Save Error", str(e))
@@ -532,15 +558,15 @@ def save_fcm_token(fcm_token):
 def get_driver_context():
     driver_email = frappe.session.user
     vehicle = frappe.db.get_value("Vehicle In Transit", {"current_driver": driver_email}, "name")
-    
+
     if not vehicle:
         return {"status": "failed", "message": "No vehicle assigned to this driver."}
-        
+
     manifest = frappe.db.get_value("Vehicle Delivery Manifest", {
         "vehicle": vehicle, 
         "trip_status": ["in", ["Ready", "Dispatched"]]
     }, "name")
-    
+
     return {
         "status": "success",
         "vehicle": vehicle,
@@ -552,7 +578,7 @@ def get_root_sales_person(user_email):
     if employee_name:
         sales_person = frappe.db.get_value("Sales Person", {"employee": employee_name}, "name")
         if sales_person: return sales_person
-            
+
     fallback_sp = frappe.db.get_value("Sales Person", {"employee": user_email}, "name")
     if fallback_sp: return fallback_sp
     return None
@@ -565,10 +591,10 @@ def get_authorized_sales_persons(user_email):
     if not sp_doc: return []
 
     authorized_sps = frappe.db.sql("""
-        SELECT name FROM `tabSales Person` 
+        SELECT name FROM `tabSales Person`
         WHERE lft >= %s AND rgt <= %s
     """, (sp_doc.lft, sp_doc.rgt), as_dict=False)
-    
+
     return [sp[0] for sp in authorized_sps] if authorized_sps else []
 
 
@@ -856,8 +882,7 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         "returns": 0.0,
         "collections": 0.0,
         "outstanding": 0.0,
-        "overdue": 0.0,
-        "net_invoiced": 0.0
+        "overdue": 0.0
     }
 
     if not customer_ids:
@@ -1055,8 +1080,10 @@ def get_sales_context():
     """, as_dict=True)
 
     prices = frappe.db.sql("""
-        SELECT item_code, price_list, price_list_rate
-        FROM `tabItem Price`
+        SELECT ip.item_code, ip.price_list, ip.price_list_rate
+        FROM `tabItem Price` ip
+        INNER JOIN `tabPrice List` pl ON pl.name = ip.price_list
+        WHERE pl.enabled = 1 AND pl.selling = 1
     """, as_dict=True)
 
     bins = frappe.db.sql("""
@@ -1171,6 +1198,7 @@ def get_sales_context():
 
     debt_snapshot = []
     if customer_ids:
+
         customer_owner_map = {c['name']: c.get('owning_sales_person_name') for c in customers}
 
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -1322,7 +1350,10 @@ def get_sales_context():
 
 @frappe.whitelist()
 def get_invoice_details_for_order(order_id):
-
+    """
+    On-Demand fetch for the Differential Viewer.
+    Pulls strictly the invoiced items associated with a specific Sales Order intent.
+    """
     items = frappe.db.sql("""
         SELECT si.item_code, si.item_name, si.qty, si.rate, si.amount
         FROM `tabSales Invoice Item` si
@@ -1519,8 +1550,9 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
     completed_durations = []
 
     for v in visits:
-        dist = flt(v.distance_from_target_meters)
-        if dist <= 100:
+
+        raw_dist = v.distance_from_target_meters
+        if raw_dist is not None and flt(raw_dist) <= 100:
             on_site_count += 1
         else:
             off_site_count += 1
@@ -1540,7 +1572,10 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
     """, tuple(auth_emails) + (today(),), as_dict=True)
 
     today_total = len(today_visits_raw)
-    today_on_site = sum(1 for v in today_visits_raw if flt(v.distance_from_target_meters) <= 100)
+    today_on_site = sum(
+        1 for v in today_visits_raw
+        if v.distance_from_target_meters is not None and flt(v.distance_from_target_meters) <= 100
+    )
     today_off_site = today_total - today_on_site
     today_ratio = round((today_on_site / today_total) * 100, 1) if today_total > 0 else 0.0
 
@@ -1563,13 +1598,14 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
         today_orders_count = order_agg[0]['cnt'] if order_agg and order_agg[0]['cnt'] else 0
         today_orders_value = flt(order_agg[0]['total_value']) if order_agg and order_agg[0]['total_value'] else 0.0
 
-    per_rep = {}
+        per_rep = {}
     for v in visits:
         rep = v.sales_person
         if rep not in per_rep:
             per_rep[rep] = {"sales_person": rep, "total": 0, "on_site": 0, "off_site": 0}
         per_rep[rep]["total"] += 1
-        if flt(v.distance_from_target_meters) <= 100:
+        raw_dist = v.distance_from_target_meters
+        if raw_dist is not None and flt(raw_dist) <= 100:
             per_rep[rep]["on_site"] += 1
         else:
             per_rep[rep]["off_site"] += 1
@@ -1704,6 +1740,61 @@ def get_my_sales_order_analysis(from_date=None, to_date=None, filter_sales_perso
     }
 
 @frappe.whitelist()
+def get_customer_analysis(filter_sales_person=None):
+
+    requested_email = frappe.request.headers.get("sales-rep-email")
+    target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
+    auth_sps = get_authorized_sales_persons(target_email)
+    if not auth_sps:
+        return {"status": "error", "message": "No assigned sales profile hierarchy."}
+
+    scoped_sps = auth_sps
+    if filter_sales_person and filter_sales_person in auth_sps:
+        scoped_sps = [filter_sales_person]
+
+    format_sps = ','.join(['%s'] * len(scoped_sps))
+    tuple_sps = tuple(scoped_sps)
+
+    current_month_start = get_first_day(today())
+    range_end = add_days(current_month_start, -1)
+    range_start = get_first_day(add_months(current_month_start, -3))
+
+    rows = frappe.db.sql(f"""
+        SELECT
+            si.customer as customer_id,
+            si.customer_name as customer_name,
+            SUM(si.grand_total) as total
+        FROM `tabSales Invoice` si
+        WHERE si.docstatus = 1 AND si.is_return = 0
+        AND si.posting_date BETWEEN %s AND %s
+        AND si.name IN (
+            SELECT DISTINCT st.parent FROM `tabSales Team` st
+            WHERE st.parenttype = 'Sales Invoice' AND st.sales_person IN ({format_sps})
+        )
+        GROUP BY si.customer
+        ORDER BY total DESC
+        LIMIT 20
+    """, tuple([range_start, range_end] + list(tuple_sps)), as_dict=True)
+
+    customers_out = [
+        {
+            "customer_id": r.customer_id,
+            "customer_name": r.customer_name,
+            "total_invoiced": round(flt(r.total), 2)
+        } for r in rows
+    ]
+
+    return {
+        "status": "success",
+        "data": {
+            "from_date": str(range_start),
+            "to_date": str(range_end),
+            "filter_sales_person": scoped_sps[0] if len(scoped_sps) == 1 and scoped_sps != auth_sps else None,
+            "customers": customers_out
+        }
+    }
+
+@frappe.whitelist()
 def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
 
     requested_email = frappe.request.headers.get("sales-rep-email")
@@ -1768,8 +1859,7 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
             item_map.setdefault(it.parent, []).append(it)
 
         for r in returns:
-            # Credit notes store negative qty/amount/grand_total in ERPNext —
-            # normalize to positive magnitudes for display purposes only.
+
             r['grand_total'] = abs(flt(r.grand_total))
             r['owning_sales_person_name'] = owner_map.get(r.invoice_id)
             raw_items = item_map.get(r.invoice_id, [])
@@ -1812,10 +1902,10 @@ def submit_sales_order_from_app(payload):
         so.order_type = "Sales"
         so.transaction_date = today()
         so.delivery_date = add_days(today(), 1)
-        
+
         if payload.get("delivery_region"):
             so.custom_delivery_region = payload.get("delivery_region")
-            
+
         if payload.get("notes"):
             so.inter_company_reference = payload.get("notes") 
 
@@ -1829,7 +1919,7 @@ def submit_sales_order_from_app(payload):
 
         target_email = payload.get("sales_rep_email") or frappe.session.user
         sales_person = get_root_sales_person(target_email)
-        
+
         if sales_person:
             so.append("sales_team", {
                 "sales_person": sales_person,
@@ -1837,10 +1927,10 @@ def submit_sales_order_from_app(payload):
             })
 
         so.insert(ignore_permissions=True)
-        
+
         return {
-            "status": "success", 
-            "erp_order_id": so.name, 
+            "status": "success",
+            "erp_order_id": so.name,
             "message": f"Order {so.name} successfully created."
         }
 
@@ -1902,23 +1992,33 @@ def edit_draft_sales_order(order_id, payload):
 @frappe.whitelist()
 def register_sales_check_in(customer, lat, lng):
     user_email = frappe.session.user
-    
-    cust_coords = frappe.db.get_value("Customer", customer, ["custom_latitude", "custom_longitude"], as_dict=True)
-    
-    distance = 0.0
-    if cust_coords and cust_coords.get("custom_latitude") and cust_coords.get("custom_longitude"):
+
+    cust_coords = frappe.db.get_value(
+        "Customer", customer,
+        ["custom_combined_coordinates", "custom_latitude", "custom_longitude"],
+        as_dict=True
+    )
+
+    distance = None
+    target = parse_combined_coords(
+        cust_coords.get("custom_combined_coordinates") if cust_coords else None,
+        cust_coords.get("custom_latitude") if cust_coords else None,
+        cust_coords.get("custom_longitude") if cust_coords else None
+    )
+
+    if target:
         try:
-            clat, clng = float(cust_coords.custom_latitude), float(cust_coords.custom_longitude)
+            clat, clng = target
             dlat = math.radians(float(lat) - clat)
             dlng = math.radians(float(lng) - clng)
             a = math.sin(dlat/2)**2 + math.cos(math.radians(clat)) * math.cos(math.radians(float(lat))) * math.sin(dlng/2)**2
             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            distance = 6371.0 * c * 1000 
-        except:
-            pass
+            distance = 6371.0 * c * 1000
+        except Exception:
+            distance = None
 
     doc = frappe.new_doc("Nexus Sales Visit")
-    doc.sales_person = user_email 
+    doc.sales_person = user_email
     doc.customer = customer
     doc.check_in_time = frappe.utils.now_datetime()
     doc.latitude = str(lat)
@@ -1933,9 +2033,15 @@ def register_sales_check_in(customer, lat, lng):
             timeout=2
         )
     except Exception:
-        pass 
+        pass
 
-    return {"status": "success", "message": "Check-In recorded successfully.", "distance_m": distance, "visit_id": doc.name}
+    return {
+        "status": "success",
+        "message": "Check-In recorded successfully.",
+        "distance_m": distance,
+        "is_auto_offsite": distance is None,
+        "visit_id": doc.name
+    }
 
 @frappe.whitelist()
 def register_sales_check_out(customer):
@@ -1988,10 +2094,10 @@ def get_extended_sales_reports(report_type):
     assigned_customers = frappe.db.sql(f"""
         SELECT parent FROM `tabSales Team` WHERE parenttype = 'Customer' AND sales_person IN ({format_sps})
     """, tuple_sps, as_dict=False)
-    
+
     customer_list = [c[0] for c in assigned_customers] if assigned_customers else []
     if not customer_list: return {"status": "success", "data": []}
-    
+
     format_customers = ','.join(['%s'] * len(customer_list))
     data = []
 
@@ -2060,9 +2166,9 @@ def trigger_app_customer_refresh(doc, method=None):
 
     old_sales_persons = set([row.sales_person for row in old_doc.get("sales_team", []) if row.sales_person])
     new_sales_persons = set([row.sales_person for row in doc.get("sales_team", []) if row.sales_person])
-    
+
     affected_sales_persons = old_sales_persons.symmetric_difference(new_sales_persons)
-    
+
     if vault_data_changed:
         affected_sales_persons.update(new_sales_persons)
 
@@ -2071,7 +2177,7 @@ def trigger_app_customer_refresh(doc, method=None):
 
     affected_emails = set()
     format_affected = ','.join(['%s'] * len(affected_sales_persons))
-    
+
     affected_coords = frappe.db.sql(f"""
         SELECT lft, rgt FROM `tabSales Person` WHERE name IN ({format_affected})
     """, tuple(affected_sales_persons), as_dict=True)
@@ -2105,22 +2211,22 @@ def trigger_app_customer_refresh(doc, method=None):
 def trigger_app_catalog_refresh(doc, method=None):
     if hasattr(doc, 'docstatus') and doc.docstatus == 0:
         return
-        
+
     reps = frappe.db.sql("""
         SELECT e.user_id 
         FROM `tabSales Person` sp
         JOIN `tabEmployee` e ON sp.employee = e.name
         WHERE e.user_id IS NOT NULL AND e.status = 'Active'
     """, as_dict=True)
-    
+
     affected_emails = set([r.user_id for r in reps if r.user_id])
-    
+
     fallback = frappe.db.sql("""
         SELECT employee FROM `tabSales Person` WHERE employee LIKE '%@%'
     """, as_dict=True)
     for r in fallback:
         affected_emails.add(r.employee)
-        
+
     if affected_emails:
         try:
             requests.post(
@@ -2151,7 +2257,7 @@ def trigger_financial_refresh(doc, method=None):
         sign = 1 if doc.docstatus == 1 else -1
         for jea in doc.get("accounts", []):
             if jea.party_type == "Customer" and jea.party:
-                party = jea.party  
+                party = jea.party  # last matching row wins if a JE somehow splits across >1 customer
                 row_amount = float(jea.credit_in_account_currency or 0.0) - float(jea.debit_in_account_currency or 0.0)
                 increment_collection += sign * row_amount
         if not party:
@@ -2172,28 +2278,28 @@ def trigger_financial_refresh(doc, method=None):
     if invoice_ids:
         format_invs = ','.join(['%s'] * len(invoice_ids))
         sos = frappe.db.sql(f"""
-            SELECT DISTINCT sales_order 
-            FROM `tabSales Invoice Item` 
+            SELECT DISTINCT sales_order
+            FROM `tabSales Invoice Item`
             WHERE parent IN ({format_invs}) AND sales_order IS NOT NULL AND sales_order != ''
         """, tuple(invoice_ids), as_dict=True)
-        
+
         if sos:
             so_names = [s.sales_order for s in sos]
             format_sos = ','.join(['%s'] * len(so_names))
             so_invs = frappe.db.sql(f"""
-                SELECT si.sales_order, s.outstanding_amount, s.grand_total 
-                FROM `tabSales Invoice Item` si 
-                JOIN `tabSales Invoice` s ON si.parent = s.name 
+                SELECT si.sales_order, s.outstanding_amount, s.grand_total
+                FROM `tabSales Invoice Item` si
+                JOIN `tabSales Invoice` s ON si.parent = s.name
                 WHERE si.sales_order IN ({format_sos}) AND s.docstatus = 1
             """, tuple(so_names), as_dict=True)
-            
+
             so_map = {}
             for inv in so_invs:
                 if inv.sales_order not in so_map:
                     so_map[inv.sales_order] = {'grand': 0, 'out': 0}
                 so_map[inv.sales_order]['grand'] += inv.grand_total
                 so_map[inv.sales_order]['out'] += inv.outstanding_amount
-                
+
             for so_name in so_names:
                 data = so_map.get(so_name)
                 if data:
@@ -2203,20 +2309,20 @@ def trigger_financial_refresh(doc, method=None):
                     updated_orders.append({"id": so_name, "payment_status": p_status})
 
     sales_team = frappe.db.sql("""
-        SELECT sales_person FROM `tabSales Team` 
+        SELECT sales_person FROM `tabSales Team`
         WHERE parent = %s AND parenttype = 'Customer'
     """, (party,), as_dict=True)
-    
+
     if not sales_team:
         return
-        
+
     affected_sales_persons = set([row.sales_person for row in sales_team if row.sales_person])
     if not affected_sales_persons:
-        return 
+        return
 
     affected_emails = set()
     format_affected = ','.join(['%s'] * len(affected_sales_persons))
-    
+
     affected_coords = frappe.db.sql(f"""
         SELECT lft, rgt FROM `tabSales Person` WHERE name IN ({format_affected})
     """, tuple(affected_sales_persons), as_dict=True)
@@ -2311,7 +2417,10 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
-
+    """
+    🚨 NEW HOOK: Triggered on Sales Person update.
+    Checks if targets changed, and forces a silent background vault sync for that specific rep.
+    """
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
@@ -2380,8 +2489,8 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
             return
 
-        bulk_doctypes = ["Item", "Item Price", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note", "Customer Group", "Territory", "Currency", "Tax Category", "Sales Person"]
-        
+        bulk_doctypes = ["Item", "Item Price", "Price List", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note", "Customer Group", "Territory", "Currency", "Tax Category", "Sales Person"]
+
         if doc.doctype in bulk_doctypes:
             if doc.doctype == "Item Price" and doc.price_list not in ["Nairobi Prices", "Other Regions"]:
                 return
@@ -2389,7 +2498,7 @@ def trigger_cache_eviction_and_notify(doc, method=None):
             return
 
         affected_emails = set()
-        
+
         if doc.doctype == "Customer":
             for row in doc.get("sales_team", []):
                 if row.sales_person: _add_sp_and_ancestors(row.sales_person, affected_emails)
@@ -2419,7 +2528,7 @@ def trigger_cache_eviction_and_notify(doc, method=None):
             command="FORCE_VAULT_SYNC",
             enqueue_after_commit=True
         )
-        
+
     except Exception as e:
         frappe.log_error(title="Nexus Cache Eviction Flag Failed", message=f"Doctype: {doc.doctype}, Error: {str(e)}")
 
@@ -2427,7 +2536,7 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
 
     import requests
     import frappe
-    
+
     try:
         fcm_tokens = {}
         if affected_emails:
@@ -2437,7 +2546,7 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command):
                 FROM `tabNexus FCM Device` 
                 WHERE user IN ({format_emails})
             """, tuple(affected_emails), as_dict=True)
-            
+
             for row in tokens_data:
                 if row.user not in fcm_tokens:
                     fcm_tokens[row.user] = []
@@ -2462,15 +2571,15 @@ def create_mobile_customer(payload):
 
     if isinstance(payload, str):
         payload = json.loads(payload)
-        
+
     mobile_no = payload.get("mobile_no")
     phone_number = payload.get("phone_number")
     location_text = payload.get("location_text")  
     customer_name = payload.get("customer_name")
-    
+
     if not customer_name:
         return {"status": "error", "message": "Customer name is required."}
-    
+
     try:
         doc = frappe.new_doc("Customer")
         doc.customer_name = customer_name
@@ -2487,17 +2596,17 @@ def create_mobile_customer(payload):
             doc.mobile_no = mobile_no
         if phone_number:
             doc.custom_phone_number = phone_number
-            
+
         if location_text:
             doc.custom_location = location_text
-        
+
         lat = payload.get("latitude") or payload.get("lat")
         lng = payload.get("longitude") or payload.get("lng")
-        
+
         if lat and lng:
             doc.custom_latitude = str(lat)
             doc.custom_longitude = str(lng)
-            
+
         if payload.get("custom_combined_coordinates"):
             doc.custom_combined_coordinates = payload.get("custom_combined_coordinates")
 
@@ -2601,7 +2710,14 @@ def update_customer_coordinates(customer, latitude, longitude, custom_combined_c
 def register_sales_check_in_correction(visit_id, distance_m):
     try:
         if frappe.db.exists("Nexus Sales Visit", visit_id):
-            frappe.db.set_value("Nexus Sales Visit", visit_id, "distance_from_target_meters", float(distance_m))
+
+            parsed_distance = None
+            if distance_m is not None and str(distance_m).strip().lower() not in ('', 'none', 'null'):
+                try:
+                    parsed_distance = float(distance_m)
+                except (TypeError, ValueError):
+                    parsed_distance = None
+            frappe.db.set_value("Nexus Sales Visit", visit_id, "distance_from_target_meters", parsed_distance)
             return {"status": "success", "message": "Distance corrected successfully."}
         return {"status": "error", "message": "Active visit record not found."}
     except Exception as e:
@@ -2677,7 +2793,10 @@ def submit_visit_report(visit_id=None, customer_id=None, outcome=None, notes=Non
         return {"status": "error", "message": str(e)}
 
 def trigger_post_import_cache_eviction(doc, method=None):
-
+    """
+    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
+    Simply sets the debounce flag to let the 1-minute orchestrator handle it safely.
+    """
     try:
         if doc.status not in ["Success", "Partial Success"]:
             return
@@ -2702,7 +2821,7 @@ def process_debounced_cache_eviction():
 
     import requests
     import frappe
-    
+
     try:
         if frappe.cache().get_value('nexus_needs_sync'):
             requests.post(
@@ -2714,7 +2833,7 @@ def process_debounced_cache_eviction():
                 },
                 timeout=5
             )
-            
+
             frappe.cache().set_value('nexus_needs_sync', False)
     except Exception as e:
         frappe.log_error(title="Scheduled Orchestrator Sync Failed", message=str(e))

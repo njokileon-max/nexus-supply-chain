@@ -199,7 +199,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
             const speedChanged = !prev || Math.abs((prev.speed || 0) - (rep.speed || 0)) > 0.5;
             const positionChanged = !prev || prev.lat !== rep.lat || prev.lng !== rep.lng;
             const headingChanged = !prev || Math.abs((prev.heading || 0) - (rep.heading || 0)) > 2;
-            const wasStale = prev && prev.is_stale === true && rep.is_stale === false;
+            const wasStale = prev && prev.is_stale === true && rep.is_stale === false; // 🚨 Check if recovered from weak signal
             const isNewRep = !prev;
 
             if (!isNewRep && !statusChanged && !customerChanged && !speedChanged && !positionChanged && !headingChanged && !wasStale) {
@@ -271,61 +271,66 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
+    function handleRepLogout(email) {
+        const $card = cardElementCache[email];
+        if ($card && $card.length > 0) {
+            if ($card.parent().attr('id') !== 'standby-sales-container') {
+                $('#standby-sales-container').append($card);
+            }
+
+            $card.removeClass('theme-traveling theme-checked-in theme-syncing').addClass('theme-offline');
+            $card.find('.ping-dot').removeClass('ping-online ping-syncing').addClass('ping-offline');
+            $card.find('.stat-text').text('Offline').removeClass('text-dark fw-bold text-warning').addClass('text-muted');
+            $card.find('.speed-val').text('--');
+            $card.find('.status-val').text('● OFFLINE');
+            $card.find('.customer-val').text('None');
+        }
+
+        if (sales_markers[email]) {
+            map.removeLayer(sales_markers[email]);
+            delete sales_markers[email];
+        }
+
+        delete latestSalesState[email];
+        delete renderedSalesState[email];
+    }
+
     function startStaleCheckLoop() {
         if (staleCheckId) clearInterval(staleCheckId);
-        
+
+        const WEAK_SIGNAL_THRESHOLD_MS = 150000; // 2.5 minutes
+
         staleCheckId = setInterval(function() {
             const now = Date.now();
-            
-            const SYNCING_THRESHOLD = 45000;
-            const OFFLINE_THRESHOLD = 90000;
 
             Object.keys(latestSalesState).forEach(email => {
                 const rep = latestSalesState[email];
-                if (!rep || !rep.last_ping_ms) return;
+                if (!rep || !rep.last_updated) return;
 
-                const elapsed = now - rep.last_ping_ms;
+                // Server sends last_updated as epoch SECONDS (time.time()).
+                const lastUpdatedMs = rep.last_updated * 1000;
+                const elapsed = now - lastUpdatedMs;
+                const shouldBeStale = elapsed > WEAK_SIGNAL_THRESHOLD_MS;
 
-                if (elapsed > OFFLINE_THRESHOLD) {
-                    const $card = cardElementCache[email];
-                    if ($card && $card.length > 0) {
-                        if ($card.parent().attr('id') !== 'standby-sales-container') {
-                            $('#standby-sales-container').append($card);
-                        }
-
-                        $card.removeClass('theme-traveling theme-checked-in theme-syncing').addClass('theme-offline');
-                        $card.find('.ping-dot').removeClass('ping-online ping-syncing').addClass('ping-offline');
-                        $card.find('.stat-text').text('Offline').removeClass('text-dark fw-bold text-warning').addClass('text-muted');
-                        $card.find('.speed-val').text('--');
-                        $card.find('.status-val').text('● OFFLINE');
-                        $card.find('.customer-val').text('None');
-                    }
-
-                    if (sales_markers[email]) {
-                        map.removeLayer(sales_markers[email]);
-                        delete sales_markers[email];
-                    }
-
-                    delete latestSalesState[email];
-                    delete renderedSalesState[email];
-
-                } else if (elapsed > SYNCING_THRESHOLD && !rep.is_stale) {
+                if (shouldBeStale && !rep.is_stale) {
                     rep.is_stale = true;
-                    renderedSalesState[email].is_stale = true;
+                    if (renderedSalesState[email]) renderedSalesState[email].is_stale = true;
 
                     const $card = cardElementCache[email];
                     if ($card && $card.length > 0) {
                         $card.removeClass('theme-traveling theme-checked-in theme-offline').addClass('theme-syncing');
                         $card.find('.ping-dot').removeClass('ping-online ping-offline').addClass('ping-syncing');
                         $card.find('.stat-text').text('Weak Signal...').removeClass('text-dark fw-bold text-muted').addClass('text-warning fw-bold');
-                        $card.find('.status-val').text('● SYNCING');
+                        $card.find('.status-val').text('● WEAK SIGNAL');
                     }
 
-                    // Turn map marker orange
                     if (sales_markers[email]) {
                         const heading = rep.heading || 0;
-                        sales_markers[email].setIcon(build_marker_icon('#f59e0b', heading)); 
+                        sales_markers[email].setIcon(build_marker_icon('#f59e0b', heading));
                     }
+
+                } else if (!shouldBeStale && rep.is_stale) {
+                    rep.is_stale = false;
                 }
             });
         }, 5000);
@@ -434,9 +439,13 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 if (data.action === "pong") return;
 
                 const raw_team = data.sales_team || {};
-                
-                if (Object.keys(raw_team).length > 0) {
-                }
+                const incoming_emails = new Set(Object.keys(raw_team).map(k => k.toLowerCase()));
+
+                Object.keys(latestSalesState).forEach(email => {
+                    if (!incoming_emails.has(email)) {
+                        handleRepLogout(email);
+                    }
+                });
 
                 const now = Date.now();
 
@@ -445,10 +454,9 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     const incoming_rep = raw_team[k];
 
                     latestSalesState[email] = {
-                        ...latestSalesState[email],
-                        ...incoming_rep,
-                        last_ping_ms: now,
-                        is_stale: false
+                        ...latestSalesState[email],  // Retain existing state (incl. is_stale)
+                        ...incoming_rep,              // Overwrite with new payload (incl. fresh last_updated)
+                        last_ping_ms: now             // Kept for diagnostics only — no longer drives staleness
                     };
                 });
 

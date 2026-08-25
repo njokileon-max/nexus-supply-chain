@@ -5,6 +5,9 @@ from frappe.utils import getdate, today, add_days
 
 CRYSTAL_API_BASE_URL = "https://crystal-api.crystalapps.dev"
 
+CRYSTAL_API_INTERNAL_SECRET = frappe.conf.get("crystal_api_internal_secret")
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
 
     if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
@@ -74,6 +77,7 @@ def _fetch_ors_route_distance(coordinates, include_geometry=False):
         resp = requests.post(
             f"{CRYSTAL_API_BASE_URL}/telemetry/sales-route-distance",
             json={"coordinates": coordinates, "include_geometry": include_geometry},
+            headers={"x-internal-secret": CRYSTAL_API_INTERNAL_SECRET or ""},
             timeout=20
         )
         resp.raise_for_status()
@@ -98,6 +102,7 @@ def _fetch_ors_route_distance_batch(groups):
         resp = requests.post(
             f"{CRYSTAL_API_BASE_URL}/telemetry/sales-route-distance-batch",
             json={"groups": groups},
+            headers={"x-internal-secret": CRYSTAL_API_INTERNAL_SECRET or ""},
             timeout=30
         )
         resp.raise_for_status()
@@ -119,15 +124,15 @@ def _fetch_ors_route_distance_batch(groups):
 def get_sales_team():
 
     team_data = frappe.db.sql("""
-        SELECT 
-            usr.name as email, 
+        SELECT
+            usr.name as email,
             usr.full_name
         FROM `tabSales Person` sp
         JOIN `tabEmployee` emp ON sp.employee = emp.name
         JOIN `tabUser` usr ON emp.user_id = usr.name
-        WHERE 
-            sp.enabled = 1 
-            AND emp.status = 'Active' 
+        WHERE
+            sp.enabled = 1
+            AND emp.status = 'Active'
             AND usr.enabled = 1
             AND usr.user_type = 'System User'
         ORDER BY usr.full_name ASC
@@ -171,23 +176,48 @@ def get_sales_person_route(sales_person_email, route_date):
         total_km, route_geometry, distance_source = 0.0, None, "single_point"
 
     order_totals = {}
+    return_totals = {}
     emp = frappe.db.get_value("Employee", {"user_id": sales_person_email}, "name")
     sp_name = frappe.db.get_value("Sales Person", {"employee": emp}, "name") if emp else None
 
     customer_names = list({v.customer for v in visits if v.customer})
     if sp_name and customer_names:
         format_custs = ','.join(['%s'] * len(customer_names))
-        rows = frappe.db.sql(f"""
-            SELECT so.customer, SUM(so.grand_total) as total
-            FROM `tabSales Order` so
-            JOIN `tabSales Team` st ON st.parent = so.name AND st.parenttype = 'Sales Order'
-            WHERE so.docstatus != 2
-            AND so.transaction_date = %s
-            AND st.sales_person = %s
-            AND so.customer IN ({format_custs})
-            GROUP BY so.customer
+
+        order_rows = frappe.db.sql(f"""
+            SELECT customer, SUM(grand_total) as total FROM (
+                SELECT DISTINCT so.name, so.customer, so.grand_total
+                FROM `tabSales Order` so
+                INNER JOIN `tabSales Team` st
+                    ON st.parent = so.name AND st.parenttype = 'Sales Order'
+                WHERE so.docstatus != 2
+                AND so.transaction_date = %s
+                AND st.sales_person = %s
+                AND so.customer IN ({format_custs})
+            ) distinct_orders
+            GROUP BY customer
         """, tuple([route_date, sp_name] + customer_names), as_dict=True)
-        order_totals = {r.customer: float(r.total or 0.0) for r in rows}
+        order_totals = {r.customer: float(r.total or 0.0) for r in order_rows}
+
+        return_rows = frappe.db.sql(f"""
+            SELECT customer, SUM(grand_total) as total FROM (
+                SELECT DISTINCT si.name, si.customer, si.grand_total
+                FROM `tabSales Invoice` si
+                INNER JOIN `tabSales Team` st
+                    ON st.parent = si.name AND st.parenttype = 'Sales Invoice'
+                WHERE si.docstatus = 1 AND si.is_return = 1
+                AND si.posting_date = %s
+                AND st.sales_person = %s
+                AND si.customer IN ({format_custs})
+            ) distinct_returns
+            GROUP BY customer
+        """, tuple([route_date, sp_name] + customer_names), as_dict=True)
+        return_totals = {r.customer: abs(float(r.total or 0.0)) for r in return_rows}
+
+        for cust in list(order_totals.keys()) | set(return_totals.keys()):
+            gross = order_totals.get(cust, 0.0)
+            returned = return_totals.get(cust, 0.0)
+            order_totals[cust] = max(0.0, gross - returned)
 
     checkpoints = []
     for v in visits:
@@ -252,16 +282,20 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
             TIME(MIN(v.check_in_time))                        AS first_visit_time,
             TIME(MAX(v.check_in_time))                        AS last_visit_time,
 
-            /* ── Visit counts ── */
+                        /* ── Visit counts ── */
             COUNT(v.name)                                     AS total_visits,
             SUM(CASE
                     WHEN v.distance_from_target_meters IS NOT NULL
                          AND v.distance_from_target_meters <= 100
                     THEN 1 ELSE 0
                 END)                                           AS onsite_visits,
+            /* 🚨 NULL is explicitly bucketed as Off-Site here (never
+               silently excluded from both counts). NULL means the
+               customer had no resolvable target coordinates at check-in —
+               that is, by definition, not verifiably on-site. */
             SUM(CASE
-                    WHEN v.distance_from_target_meters IS NOT NULL
-                         AND v.distance_from_target_meters > 100
+                    WHEN v.distance_from_target_meters IS NULL
+                         OR v.distance_from_target_meters > 100
                     THEN 1 ELSE 0
                 END)                                           AS offsite_visits,
 
@@ -370,3 +404,4 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
         row["distance_recorded_km"] = distance_map.get(row.get("email"), 0.0)
 
     return data
+
