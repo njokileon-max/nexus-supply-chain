@@ -214,7 +214,7 @@ def get_sales_person_route(sales_person_email, route_date):
         """, tuple([route_date, sp_name] + customer_names), as_dict=True)
         return_totals = {r.customer: abs(float(r.total or 0.0)) for r in return_rows}
 
-        for cust in list(order_totals.keys()) | set(return_totals.keys()):
+        for cust in set(order_totals.keys()) | set(return_totals.keys()):
             gross = order_totals.get(cust, 0.0)
             returned = return_totals.get(cust, 0.0)
             order_totals[cust] = max(0.0, gross - returned)
