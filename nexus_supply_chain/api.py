@@ -923,7 +923,8 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         "returns": 0.0,
         "collections": 0.0,
         "outstanding": 0.0,
-        "overdue": 0.0
+        "overdue": 0.0,
+        "net_invoiced": 0.0
     }
 
     if not customer_ids:
