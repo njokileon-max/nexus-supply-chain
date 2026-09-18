@@ -8,7 +8,6 @@ from nexus_supply_chain.routing.optimizer_api import calculate_trip_fuel_cost
 
 VAT_RATE = 0.16
 
-
 def _normalize_sales_orders(sales_orders):
 
     if isinstance(sales_orders, str):
@@ -186,3 +185,79 @@ def get_margin_analysis(sales_orders, distance_km=None, vehicle_type=None, truck
 
         "currency": frappe.defaults.get_global_default("default_currency") or "KES"
     }
+
+
+@frappe.whitelist()
+def get_item_wise_margin_breakdown(sales_orders):
+
+    so_names = _normalize_sales_orders(sales_orders)
+    if not so_names:
+        frappe.throw(_("No Sales Orders provided for item-wise margin analysis."))
+
+    placeholders = ", ".join(["%s"] * len(so_names))
+    item_rows = frappe.db.sql(f"""
+        SELECT parent AS sales_order, item_code, item_name, qty, rate
+        FROM `tabSales Order Item`
+        WHERE parent IN ({placeholders})
+        ORDER BY parent, idx
+    """, tuple(so_names), as_dict=True)
+
+    currency = frappe.defaults.get_global_default("default_currency") or "KES"
+
+    if not item_rows:
+        return {"status": "success", "rows": [], "currency": currency}
+
+    distinct_item_codes = list({r.item_code for r in item_rows if r.item_code})
+    default_bom_map = {}
+    if distinct_item_codes:
+        bom_placeholders = ", ".join(["%s"] * len(distinct_item_codes))
+        item_bom_rows = frappe.db.sql(f"""
+            SELECT name AS item_code, default_bom
+            FROM `tabItem`
+            WHERE name IN ({bom_placeholders})
+        """, tuple(distinct_item_codes), as_dict=True)
+        default_bom_map = {r.item_code: r.default_bom for r in item_bom_rows if r.default_bom}
+
+    distinct_boms = list(set(default_bom_map.values()))
+    bom_cost_map = {}
+    if distinct_boms:
+        bom_placeholders = ", ".join(["%s"] * len(distinct_boms))
+        bom_rows = frappe.db.sql(f"""
+            SELECT name AS bom_name, total_cost
+            FROM `tabBOM`
+            WHERE name IN ({bom_placeholders})
+        """, tuple(distinct_boms), as_dict=True)
+        bom_cost_map = {r.bom_name: flt(r.total_cost) for r in bom_rows}
+
+    rows = []
+    for r in item_rows:
+        rate = flt(r.rate)
+        rate_excl_vat = rate / (1 + VAT_RATE) if rate else 0.0
+
+        bom_name = default_bom_map.get(r.item_code)
+        has_bom = bool(bom_name) and bom_name in bom_cost_map
+        total_cogs = bom_cost_map.get(bom_name, 0.0) if has_bom else 0.0
+
+        gross_margin = rate_excl_vat - total_cogs
+        gross_margin_percentage = (gross_margin / rate_excl_vat * 100) if rate_excl_vat > 0 else 0.0
+
+        rows.append({
+            "sales_order": r.sales_order,
+            "item_code": r.item_code,
+            "item_name": r.item_name,
+            "rate": round(rate, 2),
+            "rate_excl_vat": round(rate_excl_vat, 2),
+            "qty": flt(r.qty),
+            "default_bom": bom_name if has_bom else None,
+            "total_cogs": round(total_cogs, 2),
+            "gross_margin": round(gross_margin, 2),
+            "gross_margin_percentage": round(gross_margin_percentage, 2),
+        })
+
+    return {
+        "status": "success",
+        "rows": rows,
+        "vat_rate_percentage": VAT_RATE * 100,
+        "currency": currency,
+    }
+
