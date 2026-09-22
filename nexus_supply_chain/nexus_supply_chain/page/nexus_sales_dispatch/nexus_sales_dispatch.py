@@ -284,17 +284,40 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
 
                         /* ── Visit counts ── */
             COUNT(v.name)                                     AS total_visits,
+            /* 🚨 FIX: A visit can only be On-Site if the CUSTOMER actually
+               had resolvable target coordinates at check-in time. Without
+               this, a customer with no coordinates yields
+               distance_from_target_meters = 0 (not NULL), which is
+               "<= 100" and was silently defaulting to On-Site. We now
+               require valid customer coordinates FIRST, and only then
+               trust the recorded distance. */
             SUM(CASE
-                    WHEN v.distance_from_target_meters IS NOT NULL
+                    WHEN (
+                            (c.custom_combined_coordinates IS NOT NULL
+                             AND TRIM(c.custom_combined_coordinates) != ''
+                             AND c.custom_combined_coordinates NOT LIKE '0,0'
+                             AND c.custom_combined_coordinates NOT LIKE '0.0,0.0')
+                         OR (c.custom_latitude IS NOT NULL AND c.custom_latitude != 0
+                             AND c.custom_longitude IS NOT NULL AND c.custom_longitude != 0)
+                         )
+                         AND v.distance_from_target_meters IS NOT NULL
                          AND v.distance_from_target_meters <= 100
                     THEN 1 ELSE 0
                 END)                                           AS onsite_visits,
-            /* 🚨 NULL is explicitly bucketed as Off-Site here (never
-               silently excluded from both counts). NULL means the
-               customer had no resolvable target coordinates at check-in —
-               that is, by definition, not verifiably on-site. */
+            /* 🚨 Off-Site now also catches: customer has NO valid
+               coordinates at all (regardless of what distance_from_target
+               happens to contain), in addition to the existing
+               NULL/>100 cases. */
             SUM(CASE
-                    WHEN v.distance_from_target_meters IS NULL
+                    WHEN NOT (
+                            (c.custom_combined_coordinates IS NOT NULL
+                             AND TRIM(c.custom_combined_coordinates) != ''
+                             AND c.custom_combined_coordinates NOT LIKE '0,0'
+                             AND c.custom_combined_coordinates NOT LIKE '0.0,0.0')
+                         OR (c.custom_latitude IS NOT NULL AND c.custom_latitude != 0
+                             AND c.custom_longitude IS NOT NULL AND c.custom_longitude != 0)
+                         )
+                         OR v.distance_from_target_meters IS NULL
                          OR v.distance_from_target_meters > 100
                     THEN 1 ELSE 0
                 END)                                           AS offsite_visits,
@@ -319,6 +342,10 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
 
         LEFT JOIN `tabEmployee`     emp ON emp.user_id  = v.sales_person
         LEFT JOIN `tabSales Person`  sp ON sp.employee  = emp.name
+        /* 🚨 FIX: needed so onsite/offsite classification can check the
+           customer's own coordinates first, before trusting
+           distance_from_target_meters (see onsite_visits/offsite_visits). */
+        LEFT JOIN `tabCustomer`      c   ON c.name       = v.customer
 
         /* ── Orders placed: Draft + Submitted, excludes Cancelled ── */
         LEFT JOIN (

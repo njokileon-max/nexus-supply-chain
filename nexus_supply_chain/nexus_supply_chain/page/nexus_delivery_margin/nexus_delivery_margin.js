@@ -12,7 +12,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
     let current_filtered_data = []; 
     let sort_state = { column: null, order: 'asc' };
 
-    // Define a palette of deep, bold colors for the regional headers
     const regionColorPalette = [
         '#1e3a8a', // Deep Blue
         '#065f46', // Deep Green
@@ -24,14 +23,11 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         '#3f3f46'  // Slate Gray
     ];
 
-    // Helper to generate a very light tint of a hex color for the card body
     function getLightShade(hexCode) {
-        // Convert hex to RGB
         let r = parseInt(hexCode.slice(1, 3), 16);
         let g = parseInt(hexCode.slice(3, 5), 16);
         let b = parseInt(hexCode.slice(5, 7), 16);
         
-        // Mix heavily with white (approx 93% white)
         r = Math.round(r * 0.07 + 255 * 0.93);
         g = Math.round(g * 0.07 + 255 * 0.93);
         b = Math.round(b * 0.07 + 255 * 0.93);
@@ -39,7 +35,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         return `rgb(${r}, ${g}, ${b})`;
     }
 
-    // Custom Styles for Dashboard Cards, Table, and Sticky Mechanics
     $('head').append(`
         <style>
             .controls-wrapper {
@@ -191,7 +186,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         </style>
     `);
 
-    // Add Date Filters
     let from_date_field = page.add_field({
         label: 'From Date',
         fieldtype: 'Date',
@@ -206,7 +200,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         default: frappe.datetime.get_today(),
     });
 
-    // Setup Main HTML Layout
     $(wrapper).find('.layout-main-section').append(`
         <div id="report-dashboard">
             
@@ -261,8 +254,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         </div>
     `);
 
-    // --- EVENT LISTENERS ---
-    
     $(wrapper).on('click', '#run-report-btn', function() {
         fetch_report_data();
     });
@@ -299,7 +290,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
     });
 
 
-    // --- CORE FUNCTIONS ---
 
     function formatCurrency(value) {
         return 'KES ' + parseFloat(value || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -323,12 +313,10 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
 
         current_filtered_data.forEach(r => {
             if (r.qty !== 0) {
-                // Aggregate Grand Totals
                 overall.val += r.total_amount;
                 overall.cogs += r.total_cogs;
                 overall.gp += r.gp_ex_vat;
 
-                // Aggregate Regional Data
                 let reg = r.region || "Unassigned";
                 if (!regions_data[reg]) {
                     regions_data[reg] = { val: 0, cogs: 0, gp: 0 };
@@ -351,7 +339,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         let percent_class = overall.gp_pct >= 0 ? 'bg-success text-white' : 'bg-danger text-white';
         let val_class = overall.gp >= 0 ? 'text-success-dark' : 'text-danger-dark';
 
-        // 1. Render Sticky Overall Banner
         let overall_html = `
             <div class="col-md-4">
                 <div class="margin-card" style="border-top: 4px solid #3b82f6;">
@@ -377,7 +364,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
         `;
         $('#summary-cards-container').html(overall_html);
 
-        // 2. Render Granular Region Cards Matrix
         let region_html = `
             <h6 class="fw-bold text-muted text-uppercase mb-3 mt-2"><i class="fa fa-map text-primary me-2"></i>Regional Breakdown Matrix</h6>
             <div class="row g-3">
@@ -390,7 +376,6 @@ frappe.pages['nexus_delivery_margin'].on_page_load = function(wrapper) {
             let rev = rd.val / 1.16;
             let pct = rev !== 0 ? (rd.gp / rev) * 100 : 0;
             
-            // Assign deep header color and calculate matching light body tint
             let headerColor = regionColorPalette[colorIndex % regionColorPalette.length];
             let bodyColor = getLightShade(headerColor);
             colorIndex++;
