@@ -1,21 +1,3 @@
-"""
-Ensures the Lead doctype has the four GeoLocation custom fields the Leads
-feature relies on (check-in distance, Navigate, Correct Location):
-  custom_google_maps_link, custom_latitude, custom_longitude,
-  custom_combined_coordinates
-
-Why a patch: on sites where these were added through Customize Form they
-exist only in that site's database, not in the app repo. This makes the
-release self-contained — one `bench migrate` guarantees them everywhere.
-
-Behaviour:
-  - Idempotent: any field that already exists on Lead is left untouched.
-  - Field definitions are copied from the Customer's custom fields of the
-    same name, so Lead and Customer store coordinates identically.
-    Fallback definitions are used only if Customer lacks the field.
-  - New fields are grouped in a collapsible "GeoLocation" section.
-"""
-
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_field
 

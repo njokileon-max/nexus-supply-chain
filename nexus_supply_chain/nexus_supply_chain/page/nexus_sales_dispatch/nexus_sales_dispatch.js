@@ -183,11 +183,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let renderLoopId = null;
     let staleCheckId = null;
 
-    // 🚨 BATCH 7: VIEW ROUTE STATE
-    // suppressLiveMarkers only gates the MAP MARKER paint step in
-    // flushRenderQueue — latestSalesState keeps receiving fresh pings from
-    // the WebSocket exactly as before, they're just not drawn for 10s so
-    // the route overlay isn't visually fought over by live rep dots.
     let suppressLiveMarkers = false;
     let routeSuppressTimeout = null;
     let routeLayerGroup = null;
@@ -285,16 +280,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
-    // 🚨 BATCH 8: TRUE OFFLINE HANDLER
-    // Called ONLY when a previously-known rep's key genuinely disappears
-    // from a full-state broadcast — i.e. the server actually deleted their
-    // LIVE_SALES_DATA entry (an explicit /telemetry/sales-logout call, or
-    // a single-device-eviction event on a new login — see main.py's
-    // broadcast_sales(), which no longer auto-evicts on a ping gap).
-    // This is NEVER called from elapsed time. Moves the card to the
-    // standby column and removes the map marker; the card DOM element
-    // itself is intentionally left in cardElementCache (not deleted) so a
-    // subsequent re-login reuses the same node instead of rebuilding it.
     function handleRepLogout(email) {
         const $card = cardElementCache[email];
         if ($card && $card.length > 0) {
@@ -322,20 +307,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     function startStaleCheckLoop() {
         if (staleCheckId) clearInterval(staleCheckId);
 
-        // 🚨 BATCH 8: purely a staleness ("Weak Signal") indicator now —
-        // this loop never removes a rep or touches the map marker's
-        // position. Staleness is computed from `rep.last_updated` — the
-        // server-stamped epoch-seconds timestamp carried inside the
-        // broadcast payload itself — NOT from whether this client happened
-        // to see the rep's key arrive in the most recent WS message. This
-        // is what stops false-positive weak-signal flapping from normal
-        // 15-30s ping intervals: as long as last_updated keeps advancing on
-        // the server (i.e. pings are actually landing), the rep never goes
-        // stale here, regardless of exact broadcast timing on this client.
-        // Threshold is deliberately generous so a normal signal dip inside
-        // a customer's premises never trips it, while a genuinely dead
-        // connection still surfaces a visible, non-alarming amber cue.
-        const WEAK_SIGNAL_THRESHOLD_MS = 150000; // 2.5 minutes
+        const WEAK_SIGNAL_THRESHOLD_MS = 150000;
 
         staleCheckId = setInterval(function() {
             const now = Date.now();
@@ -344,7 +316,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 const rep = latestSalesState[email];
                 if (!rep || !rep.last_updated) return;
 
-                // Server sends last_updated as epoch SECONDS (time.time()).
                 const lastUpdatedMs = rep.last_updated * 1000;
                 const elapsed = now - lastUpdatedMs;
                 const shouldBeStale = elapsed > WEAK_SIGNAL_THRESHOLD_MS;
@@ -361,21 +332,13 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         $card.find('.status-val').text('● WEAK SIGNAL');
                     }
 
-                    // 🚨 Marker stays exactly where it last reported — no
-                    // removal, no flicker, no repositioning here. Only the
-                    // badge color/text changes.
                     if (sales_markers[email]) {
                         const heading = rep.heading || 0;
                         sales_markers[email].setIcon(build_marker_icon('#f59e0b', heading));
                     }
 
                 } else if (!shouldBeStale && rep.is_stale) {
-                    // 🚨 Recovery: a fresh ping landed and last_updated
-                    // advanced back inside the threshold. Just clear the
-                    // flag here — flushRenderQueue's own `wasStale` check
-                    // (prev.is_stale === true && rep.is_stale === false)
-                    // picks this up on its next 250ms tick and repaints the
-                    // card/marker back to the correct live theme + color.
+
                     rep.is_stale = false;
                 }
             });
@@ -484,21 +447,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 const data = JSON.parse(event.data);
                 if (data.action === "pong") return;
 
-                // 🚨 Only full-state roster broadcasts may add or remove reps.
-                // Cache-invalidation / lead / order pushes also arrive on this
-                // socket (broadcast_to_all_clients) and carry no sales_team —
-                // treating them as an empty roster used to mark every rep offline.
                 if (!data || typeof data.sales_team !== 'object' || data.sales_team === null) return;
                 const raw_team = data.sales_team;
                 const incoming_emails = new Set(Object.keys(raw_team).map(k => k.toLowerCase()));
 
-                // 🚨 BATCH 8: TRUE OFFLINE SIGNAL — a rep's key genuinely
-                // disappearing from this full-state broadcast is now the
-                // ONLY thing that means "actually offline" (a real
-                // /telemetry/sales-logout call or a single-device-eviction
-                // event server-side — see broadcast_sales() in main.py,
-                // which no longer auto-evicts on a ping gap). Elapsed time
-                // alone never triggers this branch.
                 Object.keys(latestSalesState).forEach(email => {
                     if (!incoming_emails.has(email)) {
                         handleRepLogout(email);
@@ -511,17 +463,10 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     const email = k.toLowerCase();
                     const incoming_rep = raw_team[k];
 
-                    // 🚨 Note: is_stale is deliberately NOT reset here.
-                    // It's a client-only flag managed exclusively by
-                    // startStaleCheckLoop() based on rep.last_updated —
-                    // spreading latestSalesState[email] first preserves
-                    // whatever is_stale value that loop last set, and
-                    // incoming_rep (server payload) never contains an
-                    // is_stale key, so it can't accidentally clobber it.
                     latestSalesState[email] = {
-                        ...latestSalesState[email],  // Retain existing state (incl. is_stale)
-                        ...incoming_rep,              // Overwrite with new payload (incl. fresh last_updated)
-                        last_ping_ms: now             // Kept for diagnostics only — no longer drives staleness
+                        ...latestSalesState[email],
+                        ...incoming_rep,
+                        last_ping_ms: now
                     };
                 });
 
@@ -572,8 +517,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
-    // 🚨 BATCH 7: VIEW ROUTE — stopPropagation so this doesn't also trigger
-    // the card-click flyTo/select handler above.
     $(wrapper).on('click', '.view-route-btn', function(e) {
         e.stopPropagation();
         const $card = $(this).closest('.sales-card');
@@ -582,18 +525,6 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         show_route_dialog(email, repName);
     });
 
-    // 🚨 FIX: Leaflet's DEFAULT popup close button renders as
-    // <a href="#close" class="leaflet-popup-close-button">×</a>. Frappe's
-    // global document-level click handler intercepts any <a href="#...">
-    // click and tries to route to it as an internal page — hence "Page
-    // #close not found". This delegated handler on `wrapper` (an ancestor
-    // between the button and document) intercepts the click and calls
-    // stopPropagation() BEFORE it bubbles up to Frappe's router, while
-    // leaving Leaflet's own close-button click handler (bound directly on
-    // the button element, fires independently) completely untouched — so
-    // popups still close normally, they just no longer trigger navigation.
-    // Applies to every Leaflet popup on this page: rep marker popups and
-    // route checkpoint popups alike.
     $(wrapper).on('click', '.leaflet-popup-close-button', function(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -602,7 +533,7 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     function show_attendance_dialog() {
         let d = new frappe.ui.Dialog({
             title: 'Pull Sales Attendance',
-            size: 'extra-large', // 🚨 FIX: Expanded modal size to prevent squeezing
+            size: 'extra-large',
             fields: [
                 { 
                     fieldtype: 'Select', 
@@ -733,8 +664,6 @@ function render_attendance_table(data, d) {
             grand_distance         += parseFloat(row.distance_recorded_km || 0);
         });
 
-        // 🚨 Totals-row ratio comes from GRAND totals (total on-site ÷ total
-        // visits), never from averaging each rep's percentage.
         const grand_ratio = grand_visits > 0 ? (grand_onsite * 100 / grand_visits) : 0;
 
         const fmt_currency = (val) => {
@@ -910,7 +839,6 @@ function render_attendance_table(data, d) {
             ].join(',') + '\n';
         });
 
-        // 🚨 Overall ratio from grand totals, never an average of per-rep %.
         const overall_ratio = grand_visits > 0 ? (grand_onsite * 100 / grand_visits).toFixed(1) : '0.0';
         csv += `"TOTAL ON-SITE RATIO","","",${grand_visits},,,${grand_onsite},,${overall_ratio}\n`;
 
@@ -946,10 +874,7 @@ function render_attendance_table(data, d) {
     }
 
     function toggleRouteView(email, route_date, repName) {
-        // 🚨 Hide live rep markers for 10s so the route overlay isn't visually
-        // competing with moving dots while it renders/settles. Live pings
-        // keep flowing into latestSalesState the entire time — nothing about
-        // ingestion changes, only the paint step in flushRenderQueue skips.
+
         suppressLiveMarkers = true;
         if (routeSuppressTimeout) clearTimeout(routeSuppressTimeout);
         routeSuppressTimeout = setTimeout(() => {
@@ -971,18 +896,12 @@ function render_attendance_table(data, d) {
         });
     }
 
-    // 🚨 Strips the fractional-seconds/microseconds portion off the raw
-    // Python str(datetime) value (e.g. "2026-07-28 05:46:08.507254" ->
-    // "2026-07-28 05:46:08"). Everything else — date, hours, minutes,
-    // seconds — is retained exactly as-is; only the trailing ".ffffff" is
-    // dropped. Safe no-op if the value has no fractional part or is empty.
     function strip_microseconds(ts) {
         if (!ts) return null;
         return String(ts).split('.')[0];
     }
 
     function render_route_overlay(data, repName, route_date) {
-        // Clear any previously rendered route before drawing a new one
         if (routeLayerGroup) {
             map.removeLayer(routeLayerGroup);
             routeLayerGroup = null;
@@ -1001,12 +920,6 @@ function render_attendance_table(data, d) {
 
         routeLayerGroup = L.layerGroup().addTo(map);
 
-        // 🚨 UPDATED: Prefer the real road-following geometry returned by
-        // ORS (via get_sales_person_route -> Crystal API). Only falls back
-        // to the old straight dashed connector + marching-ants animation
-        // when the backend itself had to fall back (route_geometry is null,
-        // e.g. routing engine briefly unreachable) — so the map never
-        // breaks, it just degrades gracefully to the old visual.
         const latlngs = checkpoints.map(cp => [cp.lat, cp.lng]);
         if (data.route_geometry) {
             L.geoJSON(data.route_geometry, {
@@ -1021,7 +934,6 @@ function render_attendance_table(data, d) {
                 lineJoin: 'round'
             }).addTo(routeLayerGroup);
 
-            // Simple "marching ants" animation via dashOffset
             let dashOffset = 0;
             routeAnimInterval = setInterval(() => {
                 dashOffset = (dashOffset - 1) % 18;
@@ -1030,8 +942,6 @@ function render_attendance_table(data, d) {
             }, 60);
         }
 
-        // 🚨 One pin per checkpoint, in visit order. Customer stops are red,
-        // lead stops purple (see the Route Stops legend).
         const ROUTE_PIN_COLORS = {
             Customer: { fill: '#EA4335', text: '#7f1d1d' },
             Lead:     { fill: '#7C3AED', text: '#3b0764' }
@@ -1063,7 +973,6 @@ function render_attendance_table(data, d) {
 
             let detailLine;
             if (isLead) {
-                // Lead stops show the status set on THIS visit, not an order value.
                 if (cp.closed_by_conversion) {
                     detailLine = `<b>Converted to customer by the office during this visit</b>`;
                 } else if (cp.lead_status_after) {
@@ -1100,9 +1009,6 @@ function render_attendance_table(data, d) {
 
         map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
 
-        // 🚨 Summary panel — total km, total order value, checkpoint count.
-        // Uses .route-close-btn (FontAwesome-based) instead of Bootstrap's
-        // .btn-close, which renders as a broken/missing icon in this theme.
         const $panel = $(`
             <div id="route-summary-panel" class="position-absolute p-3 bg-white shadow rounded border"
                  style="z-index:999; bottom:16px; left:16px; font-size:12px; min-width:220px; border-color:#e5e7eb !important;">
