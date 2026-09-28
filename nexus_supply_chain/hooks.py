@@ -12,18 +12,32 @@ app_license = ""
 
 doc_events = {
     "Customer": {
+        # 🚨 EVENTUAL CONSISTENCY MODEL: 0-Lag Background Geocoding.
         # Fires only AFTER MariaDB has safely committed the record and released the row lock.
         # This completely eliminates UI freezing on the "Save" button.
         "after_insert": [
             "nexus_supply_chain.api.queue_customer_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
+        # 🚨 LEAD CONVERSION: fires once when a Customer is created from a Lead
+        # (lead_name newly set) — closes open lead visits and notifies the app.
+        "on_update": [
+            "nexus_supply_chain.api.handle_lead_conversion"
+        ],
         "on_change": [
             "nexus_supply_chain.api.queue_customer_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
-    
+
+    # 🚨 LEAD SYNC: office-side lead changes reach the owner's and managers'
+    # apps. on_update also fires on insert, so no separate after_insert.
+    "Lead": {
+        "on_update": "nexus_supply_chain.api.trigger_lead_refresh",
+        "on_trash": "nexus_supply_chain.api.trigger_lead_refresh"
+    },
+
+   # 🚨 UNIFIED CATALOG TRIGGERS
     "Item": {
         "on_update": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
