@@ -4250,26 +4250,35 @@ def publish_catalog_update(doc, method):
 def process_debounced_cache_eviction():
     """
     Scheduled Orchestrator: Runs every 1 minute.
-    Reads the Redis debounce flag. If True, fires a single lightweight webhook to FastAPI.
-    FastAPI will handle the heavy lifting of tree calculations and FCM pushes.
+    If the debounce flag is set, sends ONE webhook to FastAPI carrying the
+    full active sales roster. The roster is resolved here, inside ERPNext
+    (direct DB access, no session needed), because FastAPI's own roster
+    lookup runs without a session and is refused as Guest. FastAPI keeps
+    the emails from this payload whenever its lookup fails, so this works
+    with every FastAPI version.
+
+    The flag is only reset after FastAPI accepts the request, so a failed
+    call is retried on the next run instead of being silently dropped.
     """
-    import requests
-    import frappe
-
     try:
-        if frappe.cache().get_value('nexus_needs_sync'):
-            requests.post(
-                "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
-                json={
-                    "command": "GLOBAL_DEBOUNCED_SYNC",
-                    "doctype": "System",
-                    "docname": "Scheduled Sync"
-                },
-                timeout=5
-            )
+        if not frappe.cache().get_value('nexus_needs_sync'):
+            return
 
-            # Reset the flag after successfully notifying FastAPI
-            frappe.cache().set_value('nexus_needs_sync', False)
+        emails = _get_all_sales_rep_emails()
+
+        response = requests.post(
+            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
+            json={
+                "command": "GLOBAL_DEBOUNCED_SYNC",
+                "doctype": "System",
+                "docname": "Scheduled Sync",
+                "emails": emails,
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+
+        frappe.cache().set_value('nexus_needs_sync', False)
     except Exception as e:
         frappe.log_error(title="Scheduled Orchestrator Sync Failed", message=str(e))
 
