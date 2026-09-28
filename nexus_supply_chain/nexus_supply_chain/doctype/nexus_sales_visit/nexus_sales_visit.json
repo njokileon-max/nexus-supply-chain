@@ -6,13 +6,28 @@
  "engine": "InnoDB",
  "field_order": [
   "sales_person",
+  "visit_type",
   "customer",
+  "lead",
+  "party_name",
   "check_in_time",
   "longitude",
   "latitude",
   "distance_from_target_meters",
+  "target_coordinates",
+  "is_on_site",
   "check_out_time",
   "duration_minutes",
+  "location_correction_section",
+  "original_distance_from_target_meters",
+  "location_corrected",
+  "location_correction_source",
+  "location_corrected_at",
+  "lead_visit_section",
+  "lead_status_before",
+  "lead_status_after",
+  "lead_visit_notes",
+  "closed_by_conversion",
   "visit_report_section",
   "visit_outcome",
   "visit_notes",
@@ -32,10 +47,38 @@
    "options": "User"
   },
   {
+   "default": "Customer",
+   "fieldname": "visit_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Visit Type",
+   "options": "Customer\nLead",
+   "reqd": 1,
+   "description": "Customer = check-in at an existing customer. Lead = check-in at a prospect from the Leads tab. Exactly one of Customer / Lead must be filled, matching this value."
+  },
+  {
+   "depends_on": "eval:doc.visit_type=='Customer'",
    "fieldname": "customer",
    "fieldtype": "Link",
    "label": "Customer",
    "options": "Customer"
+  },
+  {
+   "depends_on": "eval:doc.visit_type=='Lead'",
+   "fieldname": "lead",
+   "fieldtype": "Link",
+   "label": "Lead",
+   "options": "Lead",
+   "search_index": 1
+  },
+  {
+   "fieldname": "party_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Visited",
+   "read_only": 1,
+   "description": "Customer name or lead name, filled automatically on save."
   },
   {
    "fieldname": "check_in_time",
@@ -58,6 +101,23 @@
    "label": "Distance From Target (Meters)"
   },
   {
+   "fieldname": "target_coordinates",
+   "fieldtype": "Data",
+   "label": "Target Coordinates (Measured Against)",
+   "read_only": 1,
+   "description": "The customer/lead pin (lat,lng) the distance was measured against. Empty = the target had no coordinates, so the visit is Off-Site."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_on_site",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "On-Site",
+   "read_only": 1,
+   "description": "Set automatically: ticked only when Target Coordinates exist AND Distance From Target is 100 m or less. Every report counts this field."
+  },
+  {
    "fieldname": "check_out_time",
    "fieldtype": "Datetime",
    "label": "Check Out Time"
@@ -66,6 +126,78 @@
    "fieldname": "duration_minutes",
    "fieldtype": "Float",
    "label": "Duration (Minutes)"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "location_correction_section",
+   "fieldtype": "Section Break",
+   "label": "Location Correction Audit"
+  },
+  {
+   "fieldname": "original_distance_from_target_meters",
+   "fieldtype": "Float",
+   "label": "Original Distance From Target (Meters)",
+   "read_only": 1,
+   "description": "Distance computed at check-in against the target's coordinates at that moment. Never changed by a location correction."
+  },
+  {
+   "default": "0",
+   "fieldname": "location_corrected",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Location Corrected",
+   "read_only": 1,
+   "description": "Set automatically when the target's location was corrected during this visit and Distance From Target was recomputed."
+  },
+  {
+   "fieldname": "location_correction_source",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Location Correction Source",
+   "options": "\nGPS Snap\nMaps Link",
+   "read_only": 1,
+   "description": "GPS Snap = target bound to the rep's own position (corrected distance is ~0 by construction). Maps Link = independent Google Maps pin."
+  },
+  {
+   "fieldname": "location_corrected_at",
+   "fieldtype": "Datetime",
+   "label": "Location Corrected At",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.visit_type=='Lead'",
+   "fieldname": "lead_visit_section",
+   "fieldtype": "Section Break",
+   "label": "Lead Visit"
+  },
+  {
+   "fieldname": "lead_status_before",
+   "fieldtype": "Data",
+   "label": "Lead Status Before",
+   "read_only": 1,
+   "description": "The lead's status at check-in."
+  },
+  {
+   "fieldname": "lead_status_after",
+   "fieldtype": "Data",
+   "label": "Lead Status After",
+   "read_only": 1,
+   "description": "The status actually stored on the Lead when the rep saved and checked out."
+  },
+  {
+   "fieldname": "lead_visit_notes",
+   "fieldtype": "Text",
+   "label": "Lead Visit Notes",
+   "description": "Notes captured during this lead visit. The Lead's own Notes table is not used."
+  },
+  {
+   "default": "0",
+   "fieldname": "closed_by_conversion",
+   "fieldtype": "Check",
+   "label": "Closed By Conversion",
+   "read_only": 1,
+   "description": "Set automatically when the office converted this lead to a customer while the visit was still open, closing the visit."
   },
   {
    "fieldname": "visit_report_section",
@@ -94,10 +226,10 @@
    "label": "Competitor Notes"
   },
   {
+   "default": "0",
    "fieldname": "visit_with_report",
    "fieldtype": "Check",
    "label": "Visit With Report",
-   "default": "0",
    "read_only": 1,
    "description": "Automatically set when a visit report is submitted for this check-in. Never editable directly."
   },
@@ -119,10 +251,10 @@
    "description": "Composed on submission as: 'Outstanding = X & Overdue = Y : <rep's note>'"
   },
   {
+   "default": "0",
    "fieldname": "is_collections_report",
    "fieldtype": "Check",
    "label": "Is Collections Report",
-   "default": "0",
    "read_only": 1,
    "description": "Automatically set when the rep files a report through the 'Send Report on Current Collections' flow. Lets future reporting/filtering pull just the collections-flavored visit reports without parsing collections_report's text."
   }
@@ -130,7 +262,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-01 11:16:44.781843",
+ "modified": "2026-09-28 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus Sales Visit",
@@ -153,5 +285,6 @@
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "party_name"
 }

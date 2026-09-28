@@ -49,6 +49,15 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                             <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2px solid #fff;box-shadow:0 0 4px rgba(16,185,129,0.4);display:inline-block;"></span> 
                             Checked-In
                         </div>
+                        <div class="fw-bold mt-2 pt-2 mb-2 border-top text-dark small text-uppercase">Route Stops</div>
+                        <div class="d-flex align-items-center mb-2">
+                            <svg class="me-2" width="12" height="17" viewBox="0 0 28 40"><path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26c0-7.7-6.3-14-14-14z" fill="#EA4335"/><circle cx="14" cy="14" r="6" fill="#fff"/></svg>
+                            Customer Visit
+                        </div>
+                        <div class="d-flex align-items-center mb-2">
+                            <svg class="me-2" width="12" height="17" viewBox="0 0 28 40"><path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26c0-7.7-6.3-14-14-14z" fill="#7C3AED"/><circle cx="14" cy="14" r="6" fill="#fff"/></svg>
+                            Lead Visit
+                        </div>
                         <div class="mt-2 pt-2 border-top text-muted small">
                             <i class="fa fa-shield-alt me-1"></i> Hosted Secure Map Engine
                         </div>
@@ -174,6 +183,11 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     let renderLoopId = null;
     let staleCheckId = null;
 
+    // 🚨 BATCH 7: VIEW ROUTE STATE
+    // suppressLiveMarkers only gates the MAP MARKER paint step in
+    // flushRenderQueue — latestSalesState keeps receiving fresh pings from
+    // the WebSocket exactly as before, they're just not drawn for 10s so
+    // the route overlay isn't visually fought over by live rep dots.
     let suppressLiveMarkers = false;
     let routeSuppressTimeout = null;
     let routeLayerGroup = null;
@@ -271,6 +285,16 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         });
     }
 
+    // 🚨 BATCH 8: TRUE OFFLINE HANDLER
+    // Called ONLY when a previously-known rep's key genuinely disappears
+    // from a full-state broadcast — i.e. the server actually deleted their
+    // LIVE_SALES_DATA entry (an explicit /telemetry/sales-logout call, or
+    // a single-device-eviction event on a new login — see main.py's
+    // broadcast_sales(), which no longer auto-evicts on a ping gap).
+    // This is NEVER called from elapsed time. Moves the card to the
+    // standby column and removes the map marker; the card DOM element
+    // itself is intentionally left in cardElementCache (not deleted) so a
+    // subsequent re-login reuses the same node instead of rebuilding it.
     function handleRepLogout(email) {
         const $card = cardElementCache[email];
         if ($card && $card.length > 0) {
@@ -298,6 +322,19 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
     function startStaleCheckLoop() {
         if (staleCheckId) clearInterval(staleCheckId);
 
+        // 🚨 BATCH 8: purely a staleness ("Weak Signal") indicator now —
+        // this loop never removes a rep or touches the map marker's
+        // position. Staleness is computed from `rep.last_updated` — the
+        // server-stamped epoch-seconds timestamp carried inside the
+        // broadcast payload itself — NOT from whether this client happened
+        // to see the rep's key arrive in the most recent WS message. This
+        // is what stops false-positive weak-signal flapping from normal
+        // 15-30s ping intervals: as long as last_updated keeps advancing on
+        // the server (i.e. pings are actually landing), the rep never goes
+        // stale here, regardless of exact broadcast timing on this client.
+        // Threshold is deliberately generous so a normal signal dip inside
+        // a customer's premises never trips it, while a genuinely dead
+        // connection still surfaces a visible, non-alarming amber cue.
         const WEAK_SIGNAL_THRESHOLD_MS = 150000; // 2.5 minutes
 
         staleCheckId = setInterval(function() {
@@ -324,12 +361,21 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                         $card.find('.status-val').text('● WEAK SIGNAL');
                     }
 
+                    // 🚨 Marker stays exactly where it last reported — no
+                    // removal, no flicker, no repositioning here. Only the
+                    // badge color/text changes.
                     if (sales_markers[email]) {
                         const heading = rep.heading || 0;
                         sales_markers[email].setIcon(build_marker_icon('#f59e0b', heading));
                     }
 
                 } else if (!shouldBeStale && rep.is_stale) {
+                    // 🚨 Recovery: a fresh ping landed and last_updated
+                    // advanced back inside the threshold. Just clear the
+                    // flag here — flushRenderQueue's own `wasStale` check
+                    // (prev.is_stale === true && rep.is_stale === false)
+                    // picks this up on its next 250ms tick and repaints the
+                    // card/marker back to the correct live theme + color.
                     rep.is_stale = false;
                 }
             });
@@ -438,9 +484,21 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                 const data = JSON.parse(event.data);
                 if (data.action === "pong") return;
 
-                const raw_team = data.sales_team || {};
+                // 🚨 Only full-state roster broadcasts may add or remove reps.
+                // Cache-invalidation / lead / order pushes also arrive on this
+                // socket (broadcast_to_all_clients) and carry no sales_team —
+                // treating them as an empty roster used to mark every rep offline.
+                if (!data || typeof data.sales_team !== 'object' || data.sales_team === null) return;
+                const raw_team = data.sales_team;
                 const incoming_emails = new Set(Object.keys(raw_team).map(k => k.toLowerCase()));
 
+                // 🚨 BATCH 8: TRUE OFFLINE SIGNAL — a rep's key genuinely
+                // disappearing from this full-state broadcast is now the
+                // ONLY thing that means "actually offline" (a real
+                // /telemetry/sales-logout call or a single-device-eviction
+                // event server-side — see broadcast_sales() in main.py,
+                // which no longer auto-evicts on a ping gap). Elapsed time
+                // alone never triggers this branch.
                 Object.keys(latestSalesState).forEach(email => {
                     if (!incoming_emails.has(email)) {
                         handleRepLogout(email);
@@ -453,6 +511,13 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
                     const email = k.toLowerCase();
                     const incoming_rep = raw_team[k];
 
+                    // 🚨 Note: is_stale is deliberately NOT reset here.
+                    // It's a client-only flag managed exclusively by
+                    // startStaleCheckLoop() based on rep.last_updated —
+                    // spreading latestSalesState[email] first preserves
+                    // whatever is_stale value that loop last set, and
+                    // incoming_rep (server payload) never contains an
+                    // is_stale key, so it can't accidentally clobber it.
                     latestSalesState[email] = {
                         ...latestSalesState[email],  // Retain existing state (incl. is_stale)
                         ...incoming_rep,              // Overwrite with new payload (incl. fresh last_updated)
@@ -507,6 +572,8 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         }
     });
 
+    // 🚨 BATCH 7: VIEW ROUTE — stopPropagation so this doesn't also trigger
+    // the card-click flyTo/select handler above.
     $(wrapper).on('click', '.view-route-btn', function(e) {
         e.stopPropagation();
         const $card = $(this).closest('.sales-card');
@@ -515,6 +582,18 @@ frappe.pages['nexus_sales_dispatch'].on_page_load = function(wrapper) {
         show_route_dialog(email, repName);
     });
 
+    // 🚨 FIX: Leaflet's DEFAULT popup close button renders as
+    // <a href="#close" class="leaflet-popup-close-button">×</a>. Frappe's
+    // global document-level click handler intercepts any <a href="#...">
+    // click and tries to route to it as an internal page — hence "Page
+    // #close not found". This delegated handler on `wrapper` (an ancestor
+    // between the button and document) intercepts the click and calls
+    // stopPropagation() BEFORE it bubbles up to Frappe's router, while
+    // leaving Leaflet's own close-button click handler (bound directly on
+    // the button element, fires independently) completely untouched — so
+    // popups still close normally, they just no longer trigger navigation.
+    // Applies to every Leaflet popup on this page: rep marker popups and
+    // route checkpoint popups alike.
     $(wrapper).on('click', '.leaflet-popup-close-button', function(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -623,6 +702,8 @@ function render_attendance_table(data, d) {
         }
 
         let grand_visits            = 0;
+        let grand_customer_visits   = 0;
+        let grand_lead_visits       = 0;
         let grand_onsite            = 0;
         let grand_offsite           = 0;
         let grand_orders            = 0;
@@ -637,6 +718,8 @@ function render_attendance_table(data, d) {
 
         data.forEach(row => {
             grand_visits           += parseInt(row.total_visits || 0);
+            grand_customer_visits  += parseInt(row.customer_visits || 0);
+            grand_lead_visits      += parseInt(row.lead_visits || 0);
             grand_onsite           += parseInt(row.onsite_visits || 0);
             grand_offsite          += parseInt(row.offsite_visits || 0);
             grand_orders           += parseInt(row.total_orders || 0);
@@ -645,10 +728,14 @@ function render_attendance_table(data, d) {
             grand_confirmed_val    += parseFloat(row.total_confirmed_value || 0);
             grand_invoices         += parseInt(row.total_invoices || 0);
             grand_invoiced         += parseFloat(row.invoiced_amount || 0);
-            grand_returns           += parseInt(row.total_returns || 0);
-            grand_returned          += parseFloat(row.returned_amount || 0);
-            grand_distance          += parseFloat(row.distance_recorded_km || 0);
+            grand_returns          += parseInt(row.total_returns || 0);
+            grand_returned         += parseFloat(row.returned_amount || 0);
+            grand_distance         += parseFloat(row.distance_recorded_km || 0);
         });
+
+        // 🚨 Totals-row ratio comes from GRAND totals (total on-site ÷ total
+        // visits), never from averaging each rep's percentage.
+        const grand_ratio = grand_visits > 0 ? (grand_onsite * 100 / grand_visits) : 0;
 
         const fmt_currency = (val) => {
             return 'Sh ' + parseFloat(val || 0).toLocaleString('en-KE', {
@@ -657,9 +744,10 @@ function render_attendance_table(data, d) {
             });
         };
 
+        const fmt_ratio = (val) => `${parseFloat(val || 0).toFixed(1)}%`;
+
         const fmt_time_only = (time_str) => {
             if (!time_str) return '—';
-            // time_str comes in as HH:MM:SS from SQL TIME()
             const parts = String(time_str).split(':');
             if (parts.length < 2) return time_str;
             let hh = parseInt(parts[0], 10);
@@ -670,6 +758,9 @@ function render_attendance_table(data, d) {
             return `${hh}:${mm} ${ampm}`;
         };
 
+        const th = (label, align = 'text-center') =>
+            `<th class="p-3 text-uppercase text-muted ${align} fw-bold align-middle" style="font-size: 12px;">${label}</th>`;
+
         let html = `
             <div class="table-responsive border rounded" style="max-height: 500px; overflow-y: auto;">
                 <table class="table table-bordered table-hover m-0" style="font-size: 14px; background: #fff; white-space: nowrap;">
@@ -677,92 +768,89 @@ function render_attendance_table(data, d) {
                         <tr>
                             <th class="p-3 text-uppercase text-muted fw-bold align-middle" style="font-size: 12px; min-width:160px;">Sales Person</th>
                             <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Date</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Total Visits</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">On-Site Visits</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Off-Site Visits</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Total Orders</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Total Order Value</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Confirmed Orders</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Confirmed Value</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Invoices</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Invoiced Value</th>
-                            <th class="p-3 text-uppercase text-muted text-center fw-bold align-middle" style="font-size: 12px;">Returns</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Returned Value</th>
+                            ${th('Total Visits')}
+                            ${th('Customer Visits')}
+                            ${th('Lead Visits')}
+                            ${th('On-Site')}
+                            ${th('Off-Site')}
+                            ${th('On-Site Ratio')}
+                            ${th('Total Orders')}
+                            ${th('Total Order Value', 'text-end')}
+                            ${th('Confirmed Orders')}
+                            ${th('Confirmed Value', 'text-end')}
+                            ${th('Invoices')}
+                            ${th('Invoiced Value', 'text-end')}
+                            ${th('Returns')}
+                            ${th('Returned Value', 'text-end')}
                             <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">First Check-In</th>
                             <th class="p-3 text-uppercase text-muted align-middle" style="font-size: 12px;">Last Check-In</th>
-                            <th class="p-3 text-uppercase text-muted text-end fw-bold align-middle" style="font-size: 12px;">Distance Recorded</th>
+                            ${th('Distance Recorded', 'text-end')}
                         </tr>
                     </thead>
                     <tbody>
         `;
 
+        const td = (val, align = 'text-center', extra = '') =>
+            `<td class="p-3 ${align} align-middle text-dark ${extra}" style="font-size: 14px;">${val}</td>`;
+
         data.forEach(row => {
-            const name              = row.sales_person_name || row.email || 'Unknown';
-            const period_date       = row.period_start_date === row.period_end_date
-                                        ? frappe.datetime.str_to_user(row.period_start_date)
-                                        : `${frappe.datetime.str_to_user(row.period_start_date)} → ${frappe.datetime.str_to_user(row.period_end_date)}`;
-
-            const f_visit_time      = fmt_time_only(row.first_visit_time);
-            const l_visit_time      = fmt_time_only(row.last_visit_time);
-
-            const visits            = parseInt(row.total_visits || 0);
-            const onsite             = parseInt(row.onsite_visits || 0);
-            const offsite            = parseInt(row.offsite_visits || 0);
-            const orders             = parseInt(row.total_orders || 0);
-            const order_val          = parseFloat(row.total_order_value || 0);
-            const confirmed_orders   = parseInt(row.total_confirmed_orders || 0);
-            const confirmed_val      = parseFloat(row.total_confirmed_value || 0);
-            const invoices           = parseInt(row.total_invoices || 0);
-            const invoiced           = parseFloat(row.invoiced_amount || 0);
-            const returns            = parseInt(row.total_returns || 0);
-            const returned           = parseFloat(row.returned_amount || 0);
-            const distance_km        = parseFloat(row.distance_recorded_km || 0);
+            const name        = row.sales_person_name || row.email || 'Unknown';
+            const period_date = row.period_start_date === row.period_end_date
+                                    ? frappe.datetime.str_to_user(row.period_start_date)
+                                    : `${frappe.datetime.str_to_user(row.period_start_date)} → ${frappe.datetime.str_to_user(row.period_end_date)}`;
 
             html += `
                 <tr>
                     <td class="p-3 text-dark align-middle">${name}</td>
                     <td class="p-3 align-middle text-dark" style="font-size: 13px;">${period_date}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${visits}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${onsite}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${offsite}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${orders}</td>
-                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(order_val)}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${confirmed_orders}</td>
-                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(confirmed_val)}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${invoices}</td>
-                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(invoiced)}</td>
-                    <td class="p-3 text-center align-middle text-dark" style="font-size: 14px;">${returns}</td>
-                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${fmt_currency(returned)}</td>
-                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${f_visit_time}</td>
-                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${l_visit_time}</td>
-                    <td class="p-3 text-end align-middle text-dark fw-semibold" style="font-size: 14px;">${distance_km.toFixed(2)} km</td>
+                    ${td(parseInt(row.total_visits || 0))}
+                    ${td(parseInt(row.customer_visits || 0))}
+                    ${td(parseInt(row.lead_visits || 0))}
+                    ${td(parseInt(row.onsite_visits || 0))}
+                    ${td(parseInt(row.offsite_visits || 0))}
+                    ${td(fmt_ratio(row.onsite_ratio), 'text-center', 'fw-semibold')}
+                    ${td(parseInt(row.total_orders || 0))}
+                    ${td(fmt_currency(row.total_order_value), 'text-end', 'fw-semibold')}
+                    ${td(parseInt(row.total_confirmed_orders || 0))}
+                    ${td(fmt_currency(row.total_confirmed_value), 'text-end', 'fw-semibold')}
+                    ${td(parseInt(row.total_invoices || 0))}
+                    ${td(fmt_currency(row.invoiced_amount), 'text-end', 'fw-semibold')}
+                    ${td(parseInt(row.total_returns || 0))}
+                    ${td(fmt_currency(row.returned_amount), 'text-end', 'fw-semibold')}
+                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${fmt_time_only(row.first_visit_time)}</td>
+                    <td class="p-3 align-middle text-dark" style="font-size: 13px;">${fmt_time_only(row.last_visit_time)}</td>
+                    ${td(`${parseFloat(row.distance_recorded_km || 0).toFixed(2)} km`, 'text-end', 'fw-semibold')}
                 </tr>
             `;
         });
+
+        const tf = (val, align = 'text-center') =>
+            `<td class="p-3 ${align} text-dark fw-semibold align-middle" style="font-size: 15px;">${val}</td>`;
 
         html += `
                     </tbody>
                     <tfoot style="border-top: 3px solid #cbd5e1; background-color: #fef9c3;">
                         <tr>
-                            <td class="p-3 fw-semibold text-dark align-middle" style="font-size: 12px; text-transform: uppercase;">
-                                TOTALS
-                            </td>
+                            <td class="p-3 fw-semibold text-dark align-middle" style="font-size: 12px; text-transform: uppercase;">TOTALS</td>
                             <td class="p-3 align-middle"></td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_visits}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_onsite}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_offsite}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_orders}</td>
-                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_order_val)}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_confirmed_orders}</td>
-                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_confirmed_val)}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_invoices}</td>
-                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_invoiced)}</td>
-                            <td class="p-3 text-center text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_returns}</td>
-                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${fmt_currency(grand_returned)}</td>
+                            ${tf(grand_visits)}
+                            ${tf(grand_customer_visits)}
+                            ${tf(grand_lead_visits)}
+                            ${tf(grand_onsite)}
+                            ${tf(grand_offsite)}
+                            ${tf(fmt_ratio(grand_ratio))}
+                            ${tf(grand_orders)}
+                            ${tf(fmt_currency(grand_order_val), 'text-end')}
+                            ${tf(grand_confirmed_orders)}
+                            ${tf(fmt_currency(grand_confirmed_val), 'text-end')}
+                            ${tf(grand_invoices)}
+                            ${tf(fmt_currency(grand_invoiced), 'text-end')}
+                            ${tf(grand_returns)}
+                            ${tf(fmt_currency(grand_returned), 'text-end')}
                             <td colspan="2" class="p-3 text-muted fw-semibold align-middle" style="font-size: 12px; font-style: italic;">
                                 <i class="fa fa-info-circle me-1"></i> Aggregated period totals
                             </td>
-                            <td class="p-3 text-end text-dark fw-semibold align-middle" style="font-size: 15px;">${grand_distance.toFixed(2)} km</td>
+                            ${tf(`${grand_distance.toFixed(2)} km`, 'text-end')}
                         </tr>
                     </tfoot>
                 </table>
@@ -773,7 +861,7 @@ function render_attendance_table(data, d) {
     }
 
     function export_attendance_excel(data) {
-        let csv = 'Sales Person Name,Email,Date,Total Visits,On-Site Visits,Off-Site Visits,Total Orders,Total Order Value (Sh),Confirmed Orders,Confirmed Order Value (Sh),Total Invoices,Invoiced Amount (Sh),Total Returns,Returned Amount (Sh),First Check-In,Last Check-In,Distance Recorded (km)\n';
+        let csv = 'Sales Person Name,Email,Date,Total Visits,Customer Visits,Lead Visits,On-Site Visits,Off-Site Visits,On-Site Ratio (%),Total Orders,Total Order Value (Sh),Confirmed Orders,Confirmed Order Value (Sh),Total Invoices,Invoiced Amount (Sh),Total Returns,Returned Amount (Sh),First Check-In,Last Check-In,Distance Recorded (km)\n';
 
         const fmt_time_only_csv = (time_str) => {
             if (!time_str) return '';
@@ -787,30 +875,44 @@ function render_attendance_table(data, d) {
             return `${hh}:${mm} ${ampm}`;
         };
 
+        const money = (v) => parseFloat(v || 0).toFixed(2);
+        let grand_visits = 0, grand_onsite = 0;
+
         data.forEach(row => {
-            let name              = row.sales_person_name || 'Unknown';
-            let email             = row.email              || '';
-            let period_date       = row.period_start_date === row.period_end_date
-                                        ? (row.period_start_date || '')
-                                        : `${row.period_start_date || ''} to ${row.period_end_date || ''}`;
+            const name        = row.sales_person_name || 'Unknown';
+            const email       = row.email || '';
+            const period_date = row.period_start_date === row.period_end_date
+                                    ? (row.period_start_date || '')
+                                    : `${row.period_start_date || ''} to ${row.period_end_date || ''}`;
 
-            let visits            = row.total_visits            || 0;
-            let onsite            = row.onsite_visits           || 0;
-            let offsite           = row.offsite_visits          || 0;
-            let orders            = row.total_orders            || 0;
-            let order_val         = parseFloat(row.total_order_value || 0).toFixed(2);
-            let confirmed_orders  = row.total_confirmed_orders  || 0;
-            let confirmed_val     = parseFloat(row.total_confirmed_value || 0).toFixed(2);
-            let invoices          = row.total_invoices          || 0;
-            let invoiced          = parseFloat(row.invoiced_amount || 0).toFixed(2);
-            let returns           = row.total_returns           || 0;
-            let returned          = parseFloat(row.returned_amount || 0).toFixed(2);
-            let f_visit_time      = fmt_time_only_csv(row.first_visit_time);
-            let l_visit_time      = fmt_time_only_csv(row.last_visit_time);
-            let distance_km       = parseFloat(row.distance_recorded_km || 0).toFixed(2);
+            grand_visits += parseInt(row.total_visits || 0);
+            grand_onsite += parseInt(row.onsite_visits || 0);
 
-            csv += `"${name}","${email}","${period_date}",${visits},${onsite},${offsite},${orders},${order_val},${confirmed_orders},${confirmed_val},${invoices},${invoiced},${returns},${returned},"${f_visit_time}","${l_visit_time}",${distance_km}\n`;
+            csv += [
+                `"${name}"`, `"${email}"`, `"${period_date}"`,
+                row.total_visits || 0,
+                row.customer_visits || 0,
+                row.lead_visits || 0,
+                row.onsite_visits || 0,
+                row.offsite_visits || 0,
+                parseFloat(row.onsite_ratio || 0).toFixed(1),
+                row.total_orders || 0,
+                money(row.total_order_value),
+                row.total_confirmed_orders || 0,
+                money(row.total_confirmed_value),
+                row.total_invoices || 0,
+                money(row.invoiced_amount),
+                row.total_returns || 0,
+                money(row.returned_amount),
+                `"${fmt_time_only_csv(row.first_visit_time)}"`,
+                `"${fmt_time_only_csv(row.last_visit_time)}"`,
+                parseFloat(row.distance_recorded_km || 0).toFixed(2)
+            ].join(',') + '\n';
         });
+
+        // 🚨 Overall ratio from grand totals, never an average of per-rep %.
+        const overall_ratio = grand_visits > 0 ? (grand_onsite * 100 / grand_visits).toFixed(1) : '0.0';
+        csv += `"TOTAL ON-SITE RATIO","","",${grand_visits},,,${grand_onsite},,${overall_ratio}\n`;
 
         let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         let url  = URL.createObjectURL(blob);
@@ -844,7 +946,10 @@ function render_attendance_table(data, d) {
     }
 
     function toggleRouteView(email, route_date, repName) {
-
+        // 🚨 Hide live rep markers for 10s so the route overlay isn't visually
+        // competing with moving dots while it renders/settles. Live pings
+        // keep flowing into latestSalesState the entire time — nothing about
+        // ingestion changes, only the paint step in flushRenderQueue skips.
         suppressLiveMarkers = true;
         if (routeSuppressTimeout) clearTimeout(routeSuppressTimeout);
         routeSuppressTimeout = setTimeout(() => {
@@ -866,12 +971,18 @@ function render_attendance_table(data, d) {
         });
     }
 
+    // 🚨 Strips the fractional-seconds/microseconds portion off the raw
+    // Python str(datetime) value (e.g. "2026-07-28 05:46:08.507254" ->
+    // "2026-07-28 05:46:08"). Everything else — date, hours, minutes,
+    // seconds — is retained exactly as-is; only the trailing ".ffffff" is
+    // dropped. Safe no-op if the value has no fractional part or is empty.
     function strip_microseconds(ts) {
         if (!ts) return null;
         return String(ts).split('.')[0];
     }
 
     function render_route_overlay(data, repName, route_date) {
+        // Clear any previously rendered route before drawing a new one
         if (routeLayerGroup) {
             map.removeLayer(routeLayerGroup);
             routeLayerGroup = null;
@@ -890,6 +1001,12 @@ function render_attendance_table(data, d) {
 
         routeLayerGroup = L.layerGroup().addTo(map);
 
+        // 🚨 UPDATED: Prefer the real road-following geometry returned by
+        // ORS (via get_sales_person_route -> Crystal API). Only falls back
+        // to the old straight dashed connector + marching-ants animation
+        // when the backend itself had to fall back (route_geometry is null,
+        // e.g. routing engine briefly unreachable) — so the map never
+        // breaks, it just degrades gracefully to the old visual.
         const latlngs = checkpoints.map(cp => [cp.lat, cp.lng]);
         if (data.route_geometry) {
             L.geoJSON(data.route_geometry, {
@@ -904,6 +1021,7 @@ function render_attendance_table(data, d) {
                 lineJoin: 'round'
             }).addTo(routeLayerGroup);
 
+            // Simple "marching ants" animation via dashOffset
             let dashOffset = 0;
             routeAnimInterval = setInterval(() => {
                 dashOffset = (dashOffset - 1) % 18;
@@ -912,41 +1030,79 @@ function render_attendance_table(data, d) {
             }, 60);
         }
 
+        // 🚨 One pin per checkpoint, in visit order. Customer stops are red,
+        // lead stops purple (see the Route Stops legend).
+        const ROUTE_PIN_COLORS = {
+            Customer: { fill: '#EA4335', text: '#7f1d1d' },
+            Lead:     { fill: '#7C3AED', text: '#3b0764' }
+        };
+        const esc = (s) => frappe.utils.escape_html(String(s ?? ''));
+
         let totalOrderValue = 0;
+        let customerStops = 0;
+        let leadStops = 0;
+
         checkpoints.forEach((cp, idx) => {
-            totalOrderValue += (cp.order_value || 0);
+            const isLead = cp.visit_type === 'Lead';
+            const colors = ROUTE_PIN_COLORS[isLead ? 'Lead' : 'Customer'];
+            if (isLead) { leadStops++; } else { customerStops++; totalOrderValue += (cp.order_value || 0); }
 
             const pinHtml = `
                 <div style="position:relative;width:28px;height:40px;">
                     <svg width="28" height="40" viewBox="0 0 28 40" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26c0-7.7-6.3-14-14-14z" fill="#EA4335"/>
+                        <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26c0-7.7-6.3-14-14-14z" fill="${colors.fill}"/>
                         <circle cx="14" cy="14" r="6" fill="#ffffff"/>
                     </svg>
-                    <div style="position:absolute;top:6px;left:0;width:28px;text-align:center;font-size:10px;font-weight:800;color:#7f1d1d;">${idx + 1}</div>
+                    <div style="position:absolute;top:6px;left:0;width:28px;text-align:center;font-size:10px;font-weight:800;color:${colors.text};">${idx + 1}</div>
                 </div>`;
             const pinIcon = L.divIcon({ className: '', html: pinHtml, iconSize: [28, 40], iconAnchor: [14, 40] });
 
-            const orderValStr = cp.order_value > 0
-                ? `Sh ${cp.order_value.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : 'No orders';
-
             const checkInStr = strip_microseconds(cp.check_in_time) || '—';
             const checkOutStr = strip_microseconds(cp.check_out_time) || 'Still open';
+            const name = esc(cp.party_name || cp.customer_name);
+
+            let detailLine;
+            if (isLead) {
+                // Lead stops show the status set on THIS visit, not an order value.
+                if (cp.closed_by_conversion) {
+                    detailLine = `<b>Converted to customer by the office during this visit</b>`;
+                } else if (cp.lead_status_after) {
+                    const changed = cp.lead_status_before && cp.lead_status_before !== cp.lead_status_after;
+                    detailLine = `<b>Status set: ${esc(cp.lead_status_after)}</b>` +
+                        (changed ? `<span class="text-muted"> (was ${esc(cp.lead_status_before)})</span>` : '');
+                } else {
+                    detailLine = cp.check_out_time
+                        ? `<b>Status: ${esc(cp.lead_status_before || 'not recorded')}</b>`
+                        : `<b>Visit still open</b>`;
+                }
+            } else {
+                const orderValStr = cp.order_value > 0
+                    ? `Sh ${cp.order_value.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : 'No orders';
+                detailLine = `<b>Order Value: ${orderValStr}</b>`;
+            }
+
+            const leadBadge = isLead
+                ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:800;background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;vertical-align:middle;">LEAD</span>`
+                : '';
 
             L.marker([cp.lat, cp.lng], { icon: pinIcon })
                 .addTo(routeLayerGroup)
                 .bindPopup(`
                     <div class="p-1" style="font-size:12px; line-height:1.6;">
-                        <div style="margin-bottom:8px; font-size:13px;"><b>Stop ${idx + 1}: ${cp.customer_name}</b></div>
+                        <div style="margin-bottom:8px; font-size:13px;"><b>Stop ${idx + 1}: ${name}</b>${leadBadge}</div>
                         <div class="text-muted" style="margin-bottom:5px;">Check-In: ${checkInStr}</div>
                         <div class="text-muted" style="margin-bottom:8px;">Check-Out: ${checkOutStr}</div>
-                        <div><b>Order Value: ${orderValStr}</b></div>
+                        <div>${detailLine}</div>
                     </div>
                 `, { minWidth: 230 });
         });
 
         map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
 
+        // 🚨 Summary panel — total km, total order value, checkpoint count.
+        // Uses .route-close-btn (FontAwesome-based) instead of Bootstrap's
+        // .btn-close, which renders as a broken/missing icon in this theme.
         const $panel = $(`
             <div id="route-summary-panel" class="position-absolute p-3 bg-white shadow rounded border"
                  style="z-index:999; bottom:16px; left:16px; font-size:12px; min-width:220px; border-color:#e5e7eb !important;">
@@ -957,7 +1113,8 @@ function render_attendance_table(data, d) {
                     </button>
                 </div>
                 <div class="mb-1"><i class="fa fa-route text-primary me-1"></i> Distance Traveled: <b>${data.distance_source === 'ors' ? (data.total_km || 0).toFixed(2) + ' km' : '<span class="text-danger">Unavailable</span>'}</b></div>
-                <div class="mb-1"><i class="fa fa-map-marker-alt text-danger me-1"></i> Checkpoints: <b>${checkpoints.length}</b></div>
+                <div class="mb-1"><i class="fa fa-map-marker-alt text-danger me-1"></i> Checkpoints: <b>${checkpoints.length}</b>
+                    <span class="text-muted">(${customerStops} customer · ${leadStops} lead)</span></div>
                 <div><i class="fa fa-coins text-success me-1"></i> Total Order Value: <b>Sh ${totalOrderValue.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
             </div>
         `);
