@@ -9,7 +9,15 @@ from html import escape as _html_escape
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime, flt, getdate, cint
 
 def parse_combined_coords(combined, fallback_lat=None, fallback_lng=None):
-
+    """
+    Python mirror of App.tsx's parseCombinedCoords. custom_combined_coordinates
+    ("lat,lng", exact text) is the primary source; custom_latitude /
+    custom_longitude are the fallback. All three are Data (text) fields on
+    Customer and Lead. Rows converted from the old Float columns may hold
+    placeholders such as "0.000000000"; a 0,0 pair is treated as "no
+    coordinates", so those placeholders never count as a real pin.
+    Returns (lat, lng) as floats, or None.
+    """
     if combined:
         try:
             combined_str = str(combined).strip()
@@ -33,6 +41,57 @@ def parse_combined_coords(combined, fallback_lat=None, fallback_lng=None):
             pass
 
     return None
+
+
+# ============================================================================
+# 🚨 COORDINATES AS TEXT
+# custom_latitude, custom_longitude and custom_combined_coordinates are Data
+# fields on Customer and Lead. Every write goes through build_coordinate_fields
+# so the three fields always hold the SAME digits: latitude and longitude are
+# split from the exact "lat,lng" text instead of being round-tripped through a
+# float. Anything leaving the system as numbers (driver app, optimizer) is
+# converted at that boundary with parse_combined_coords.
+# ============================================================================
+NEXUS_COORD_FIELDS = ("custom_latitude", "custom_longitude", "custom_combined_coordinates")
+
+
+def _coord_text(value):
+
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return repr(float(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def build_coordinate_fields(latitude=None, longitude=None, combined=None):
+
+    lat_txt = lng_txt = ""
+    if combined not in (None, ""):
+        parts = [p.strip() for p in str(combined).split(",")]
+        if len(parts) >= 2:
+            lat_txt, lng_txt = parts[0], parts[1]
+
+    if not parse_combined_coords(f"{lat_txt},{lng_txt}"):
+        lat_txt, lng_txt = _coord_text(latitude), _coord_text(longitude)
+
+    point = parse_combined_coords(f"{lat_txt},{lng_txt}")
+    if not point:
+        return None, None
+
+    return {
+        "custom_latitude": lat_txt,
+        "custom_longitude": lng_txt,
+        "custom_combined_coordinates": f"{lat_txt},{lng_txt}",
+    }, point
+
+
+def _existing_columns_only(doctype, fields):
+
+    return {k: v for k, v in (fields or {}).items() if frappe.db.has_column(doctype, k)}
 
 NEXUS_ON_SITE_THRESHOLD_METERS = 100.0
 NEXUS_LOCATION_SOURCES = ("GPS Snap", "Maps Link")
@@ -110,22 +169,40 @@ def _get_open_visits_today(session_user):
     """, (session_user, today()), as_dict=True)
 
 NEXUS_LEAD_SYNC_FIELDS = (
-    "lead_name", "company_name", "status", "mobile_no", "phone", "whatsapp_no",
-    "email_id", "territory", "source", "lead_owner",
+    "lead_name", "company_name", "first_name", "last_name", "job_title",
+    "status", "type", "mobile_no", "phone", "whatsapp_no", "email_id",
+    "territory", "source", "lead_owner", "custom_location",
     "custom_google_maps_link", "custom_latitude", "custom_longitude", "custom_combined_coordinates",
 )
 
 
-def get_scoped_leads(target_email):
+def _sales_person_names_for_emails(emails):
 
-    owner_emails = {e.strip().lower() for e in get_authorized_sales_emails(target_email) if e}
-    if target_email:
-        owner_emails.add(target_email.strip().lower())
-    if not owner_emails:
-        return []
+    owners = tuple({(e or "").strip().lower() for e in (emails or []) if e})
+    if not owners:
+        return {}
+    fmt = ','.join(['%s'] * len(owners))
 
-    owners = tuple(owner_emails)
-    format_owners = ','.join(['%s'] * len(owners))
+    names = {}
+    for r in frappe.db.sql(f"""
+        SELECT LOWER(e.user_id) AS email, MIN(sp.sales_person_name) AS sp_name
+        FROM `tabSales Person` sp
+        JOIN `tabEmployee` e ON sp.employee = e.name
+        WHERE LOWER(e.user_id) IN ({fmt})
+        GROUP BY LOWER(e.user_id)
+    """, owners, as_dict=True):
+        names[r.email] = r.sp_name
+    for r in frappe.db.sql(f"""
+        SELECT LOWER(employee) AS email, MIN(sales_person_name) AS sp_name
+        FROM `tabSales Person`
+        WHERE LOWER(employee) IN ({fmt})
+        GROUP BY LOWER(employee)
+    """, owners, as_dict=True):
+        names.setdefault(r.email, r.sp_name)
+    return names
+
+
+def _build_lead_rows(where_sql, params):
 
     columns = ["l.name"] + [f"l.`{f}`" for f in NEXUS_LEAD_SYNC_FIELDS if frappe.db.has_column("Lead", f)]
     last_visit_select = (
@@ -140,31 +217,14 @@ def get_scoped_leads(target_email):
                u.full_name AS lead_owner_full_name
         FROM `tabLead` l
         LEFT JOIN `tabUser` u ON u.name = l.lead_owner
-        WHERE LOWER(l.lead_owner) IN ({format_owners})
-        AND IFNULL(l.status, '') != %s
+        WHERE {where_sql}
         ORDER BY l.modified DESC
-    """, owners + (NEXUS_LEAD_CONVERTED_STATUS,), as_dict=True)
+    """, tuple(params), as_dict=True)
 
     if not rows:
         return []
 
-    sp_name_map = {}
-    for r in frappe.db.sql(f"""
-        SELECT LOWER(e.user_id) AS email, MIN(sp.sales_person_name) AS sp_name
-        FROM `tabSales Person` sp
-        JOIN `tabEmployee` e ON sp.employee = e.name
-        WHERE LOWER(e.user_id) IN ({format_owners})
-        GROUP BY LOWER(e.user_id)
-    """, owners, as_dict=True):
-        sp_name_map[r.email] = r.sp_name
-    for r in frappe.db.sql(f"""
-        SELECT LOWER(employee) AS email, MIN(sales_person_name) AS sp_name
-        FROM `tabSales Person`
-        WHERE LOWER(employee) IN ({format_owners})
-        GROUP BY LOWER(employee)
-    """, owners, as_dict=True):
-        sp_name_map.setdefault(r.email, r.sp_name)
-
+    sp_name_map = _sales_person_names_for_emails([r.get("lead_owner") for r in rows])
     for row in rows:
         owner = (row.get("lead_owner") or "").strip().lower()
         row["lead_id"] = row["name"]
@@ -172,9 +232,450 @@ def get_scoped_leads(target_email):
             sp_name_map.get(owner) or row.get("lead_owner_full_name") or row.get("lead_owner")
         )
         row.pop("lead_owner_full_name", None)
-
     return rows
 
+
+def get_scoped_leads(target_email):
+
+    owner_emails = {e.strip().lower() for e in get_authorized_sales_emails(target_email) if e}
+    if target_email:
+        owner_emails.add(target_email.strip().lower())
+    if not owner_emails:
+        return []
+
+    owners = tuple(owner_emails)
+    fmt = ','.join(['%s'] * len(owners))
+    return _build_lead_rows(
+        f"LOWER(l.lead_owner) IN ({fmt}) AND IFNULL(l.status, '') != %s",
+        owners + (NEXUS_LEAD_CONVERTED_STATUS,)
+    )
+
+
+def _get_lead_row(lead_name):
+    rows = _build_lead_rows("l.name = %s", (lead_name,))
+    return rows[0] if rows else None
+
+
+NEXUS_LEAD_SYSTEM_STATUSES = ("Converted", "Opportunity", "Quotation", "Lost Quotation")
+NEXUS_LEAD_DEFAULT_STATUS = "Lead"
+
+NEXUS_LEAD_FORM_FIELDS = (
+    "company_name", "first_name", "last_name", "job_title",
+    "mobile_no", "whatsapp_no", "phone", "email_id",
+    "territory", "source", "type", "status", "custom_location",
+    "custom_google_maps_link", "custom_latitude", "custom_longitude", "custom_combined_coordinates",
+)
+
+NEXUS_LEAD_CREATE_RESULT_TTL_SEC = 10 * 60
+NEXUS_LEAD_CREATE_LOCK_TTL_SEC = 30
+
+
+def _select_options(doctype, fieldname):
+    field = frappe.get_meta(doctype).get_field(fieldname)
+    if not field or field.fieldtype != "Select":
+        return []
+    return [o.strip() for o in (field.options or "").split("\n") if o.strip()]
+
+
+def get_lead_creatable_statuses():
+    return [o for o in get_lead_status_options(include_converted=True) if o not in NEXUS_LEAD_SYSTEM_STATUSES]
+
+
+def get_lead_assignable_owners(user_email):
+
+    me = (user_email or "").strip().lower()
+    emails = {e.strip().lower() for e in get_authorized_sales_emails(user_email) if e}
+    if me:
+        emails.add(me)
+    if not emails:
+        return []
+
+    users = frappe.get_all(
+        "User",
+        filters={"name": ["in", list(emails)], "enabled": 1},
+        fields=["name", "full_name"],
+    )
+    sp_names = _sales_person_names_for_emails(emails)
+
+    owners = [{
+        "email": u.name,
+        "label": sp_names.get(u.name.lower()) or u.full_name or u.name,
+        "is_self": u.name.lower() == me,
+    } for u in users]
+    owners.sort(key=lambda o: (not o["is_self"], (o["label"] or "").lower()))
+    return owners
+
+
+def get_lead_form_options(user_email):
+    """Everything the app's Register New Lead form needs, read live."""
+    meta = frappe.get_meta("Lead")
+    creatable = get_lead_creatable_statuses()
+
+    sources = []
+    if meta.has_field("source"):
+        try:
+            sources = frappe.get_all("Lead Source", pluck="name", order_by="name asc")
+        except Exception:
+            sources = []
+
+    if NEXUS_LEAD_DEFAULT_STATUS in creatable:
+        default_status = NEXUS_LEAD_DEFAULT_STATUS
+    else:
+        default_status = creatable[0] if creatable else None
+
+    return {
+        "sources": sources,
+        "lead_types": _select_options("Lead", "type") if meta.has_field("type") else [],
+        "creatable_statuses": creatable,
+        "default_status": default_status,
+        "available_fields": [f for f in NEXUS_LEAD_FORM_FIELDS if meta.has_field(f)],
+        "assignable_owners": get_lead_assignable_owners(user_email),
+    }
+
+
+def normalize_kenyan_mobile(raw):
+
+    import re
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if len(digits) == 10 and digits.startswith("0"):
+        digits = "254" + digits[1:]
+    elif len(digits) == 9 and digits[0] in "17":
+        digits = "254" + digits
+    return digits if re.fullmatch(r"254[17]\d{8}", digits) else None
+
+
+def _phone_tail(value):
+    import re
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-9:] if len(digits) >= 9 else None
+
+
+def _phone_tail_sql(column):
+
+    expr = f"IFNULL({column}, '')"
+    for ch in (" ", "-", "+", "(", ")", "."):
+        expr = f"REPLACE({expr}, '{ch}', '')"
+    return f"RIGHT({expr}, 9)"
+
+
+def _find_duplicate_lead(tails, email):
+    """First not-yet-converted Lead sharing any phone number or the email."""
+    conditions, params = [], []
+    if tails:
+        fmt = ','.join(['%s'] * len(tails))
+        for col in ("mobile_no", "whatsapp_no", "phone"):
+            if frappe.db.has_column("Lead", col):
+                conditions.append(f"{_phone_tail_sql('l.`' + col + '`')} IN ({fmt})")
+                params.extend(tails)
+    if email and frappe.db.has_column("Lead", "email_id"):
+        conditions.append("LOWER(l.email_id) = %s")
+        params.append(email.lower())
+    if not conditions:
+        return None
+
+    rows = frappe.db.sql(f"""
+        SELECT l.name, l.lead_name, l.company_name, l.lead_owner
+        FROM `tabLead` l
+        WHERE IFNULL(l.status, '') != %s
+        AND ({' OR '.join(conditions)})
+        ORDER BY l.creation DESC
+        LIMIT 1
+    """, tuple([NEXUS_LEAD_CONVERTED_STATUS] + params), as_dict=True)
+    return rows[0] if rows else None
+
+
+def _find_matching_customer(tails):
+    """First enabled Customer sharing any of the phone numbers."""
+    if not tails:
+        return None
+    fmt = ','.join(['%s'] * len(tails))
+    conditions, params = [], []
+    for col in ("mobile_no", "custom_phone_number"):
+        if frappe.db.has_column("Customer", col):
+            conditions.append(f"{_phone_tail_sql('c.`' + col + '`')} IN ({fmt})")
+            params.extend(tails)
+    if not conditions:
+        return None
+
+    rows = frappe.db.sql(f"""
+        SELECT c.name, c.customer_name
+        FROM `tabCustomer` c
+        WHERE IFNULL(c.disabled, 0) = 0
+        AND ({' OR '.join(conditions)})
+        LIMIT 1
+    """, tuple(params), as_dict=True)
+    return rows[0] if rows else None
+
+
+def _resolve_lead_owner(requested_owner, session_user):
+
+    requested = (requested_owner or "").strip()
+    if not requested or requested.lower() == (session_user or "").strip().lower():
+        return session_user, None
+
+    allowed = {e.strip().lower() for e in get_authorized_sales_emails(session_user) if e}
+    if requested.lower() not in allowed:
+        return None, "You can only register leads for yourself or members of your team."
+
+    user_id = frappe.db.get_value("User", {"name": requested, "enabled": 1}, "name")
+    if not user_id:
+        return None, "That team member doesn't have an active login, so the lead can't be assigned to them."
+    return user_id, None
+
+
+def _readable_error(exc):
+    """Last ERPNext message (or the exception) as plain text, without HTML."""
+    import re
+    import html as _html
+
+    message = ""
+    try:
+        log = getattr(frappe.local, "message_log", None) or []
+        if log:
+            last = log[-1]
+            if isinstance(last, str):
+                try:
+                    last = json.loads(last)
+                except Exception:
+                    last = {"message": last}
+            message = last.get("message") if isinstance(last, dict) else str(last)
+    except Exception:
+        message = ""
+
+    message = message or str(exc) or "The lead could not be saved."
+    message = re.sub(r"<[^>]+>", "", str(message))
+    return _html.unescape(message).strip()
+
+
+def _lead_error(code, message, **extra):
+    result = {"status": "error", "code": code, "message": message}
+    result.update(extra)
+    return result
+
+
+def _add_lead_registration_comment(lead, session_user, owner, location_source, coord_fields, link):
+    lines = [f"🆕 Registered via <b>Nexus Sales App</b> by <b>{_html_escape(str(session_user))}</b>"]
+    if (owner or "").lower() != (session_user or "").lower():
+        lines.append(f"Assigned to: <b>{_html_escape(str(owner))}</b>")
+    if coord_fields:
+        lines.append(
+            f"Location: <b>{_html_escape(coord_fields['custom_combined_coordinates'])}</b>"
+            f"{f' ({location_source})' if location_source else ''}"
+        )
+    elif link:
+        lines.append("Location: Google Maps link saved; coordinates will be extracted in the background.")
+    else:
+        lines.append("Location: <i>not captured at registration</i>")
+
+    frappe.get_doc({
+        "doctype": "Comment",
+        "comment_type": "Info",
+        "reference_doctype": "Lead",
+        "reference_name": lead.name,
+        "content": "<br>".join(lines),
+        "comment_by": session_user,
+    }).insert(ignore_permissions=True)
+
+
+@frappe.whitelist(methods=["POST"])
+def create_mobile_lead(payload):
+    """
+    Registers a Lead from the app.
+
+    payload keys (all optional unless stated):
+      client_request_id   one ID per submission; retries reuse it
+      lead_owner          managers only: a team member's login email
+      company_name / first_name   at least one REQUIRED
+      last_name, job_title
+      mobile_no           REQUIRED, Kenyan mobile (any common format)
+      whatsapp_no         Kenyan mobile
+      phone               any format (landlines allowed)
+      email_id
+      territory, source, type, status
+      custom_location
+      google_maps_link, latitude, longitude, custom_combined_coordinates, location_source
+      allow_customer_match   1 = "Register Anyway" after a MATCHES_CUSTOMER warning
+
+    Success: {"status": "success", "lead": <row as in sync>, ...}
+    Error:   {"status": "error", "code": ..., "message": ..., ["field": ...]}
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return _lead_error("CREATE_FAILED", "The registration data could not be read.")
+    payload = frappe._dict(payload or {})
+    session_user = frappe.session.user
+
+    def clean(key):
+        value = payload.get(key)
+        return value.strip() if isinstance(value, str) else value
+
+    if not get_root_sales_person(session_user):
+        return _lead_error("NO_SALES_PROFILE", "Your account has no Sales Person profile, so leads can't be registered.")
+
+    request_id = str(payload.get("client_request_id") or "").strip()[:64]
+    result_key = f"nexus_lead_create_result:{session_user.lower()}:{request_id}" if request_id else None
+    if result_key:
+        cached = frappe.cache().get_value(result_key)
+        if cached:
+            replay = dict(cached)
+            replay["replayed"] = True
+            return replay
+
+    owner, owner_error = _resolve_lead_owner(clean("lead_owner"), session_user)
+    if owner_error:
+        return _lead_error("OWNER_NOT_ALLOWED", owner_error, field="lead_owner")
+
+    company_name = clean("company_name") or ""
+    first_name = clean("first_name") or ""
+    if not company_name and not first_name:
+        return _lead_error("NAME_REQUIRED", "Enter the shop/organization name or the contact's first name.", field="company_name")
+
+    mobile_no = normalize_kenyan_mobile(clean("mobile_no"))
+    if not mobile_no:
+        return _lead_error("INVALID_MOBILE", "Enter a valid Kenyan mobile number, e.g. 0712 345 678.", field="mobile_no")
+
+    whatsapp_raw = clean("whatsapp_no") or ""
+    whatsapp_no = normalize_kenyan_mobile(whatsapp_raw) if whatsapp_raw else None
+    if whatsapp_raw and not whatsapp_no:
+        return _lead_error("INVALID_MOBILE", "The WhatsApp number isn't a valid Kenyan mobile number.", field="whatsapp_no")
+
+    phone_raw = clean("phone") or ""
+    phone = (normalize_kenyan_mobile(phone_raw) or phone_raw) if phone_raw else None
+
+    email_id = (clean("email_id") or "").lower()
+    if email_id:
+        if not frappe.utils.validate_email_address(email_id, throw=False):
+            return _lead_error("INVALID_EMAIL", "Enter a valid email address or leave it empty.", field="email_id")
+        if email_id == (owner or "").lower():
+            return _lead_error("INVALID_EMAIL", "The lead's email can't be the owner's own login email.", field="email_id")
+
+    creatable = get_lead_creatable_statuses()
+    status = clean("status") or (NEXUS_LEAD_DEFAULT_STATUS if NEXUS_LEAD_DEFAULT_STATUS in creatable else None)
+    if status and status not in creatable:
+        return _lead_error("INVALID_STATUS", f"\"{status}\" can't be used as a starting status.", field="status")
+
+    territory = clean("territory")
+    if territory and not frappe.db.exists("Territory", territory):
+        return _lead_error("INVALID_FIELD", f"Territory \"{territory}\" doesn't exist.", field="territory")
+
+    source = clean("source")
+    if source and not frappe.db.exists("Lead Source", source):
+        return _lead_error("INVALID_FIELD", f"Source \"{source}\" doesn't exist.", field="source")
+
+    lead_type = clean("type")
+    if lead_type and lead_type not in _select_options("Lead", "type"):
+        return _lead_error("INVALID_FIELD", f"Lead Type \"{lead_type}\" isn't a valid option.", field="type")
+
+    link = clean("google_maps_link") or ""
+    coord_fields, _point = build_coordinate_fields(
+        payload.get("latitude"), payload.get("longitude"), payload.get("custom_combined_coordinates")
+    )
+    location_source = clean("location_source")
+    if location_source not in NEXUS_LOCATION_SOURCES:
+        if link == NEXUS_GPS_SNAP_LINK_LABEL:
+            location_source = "GPS Snap"
+        elif coord_fields:
+            location_source = "Maps Link"
+        else:
+            location_source = None
+
+    tails = sorted({t for t in (_phone_tail(mobile_no), _phone_tail(whatsapp_no), _phone_tail(phone)) if t})
+    lock_name = f"nexus_lead_create_lock:{_phone_tail(mobile_no)}"
+    cache = frappe.cache()
+    if not cache.set(cache.make_key(lock_name), 1, ex=NEXUS_LEAD_CREATE_LOCK_TTL_SEC, nx=True):
+        return _lead_error(
+            "REQUEST_IN_PROGRESS",
+            "A registration for this mobile number is already being processed. Please wait a moment and try again."
+        )
+
+    try:
+        duplicate = _find_duplicate_lead(tails, email_id)
+        if duplicate:
+            dup_owner = (duplicate.lead_owner or "").strip()
+            owner_label = (
+                _sales_person_names_for_emails([dup_owner]).get(dup_owner.lower())
+                or frappe.db.get_value("User", dup_owner, "full_name")
+                or dup_owner or "no one"
+            )
+            dup_name = duplicate.lead_name or duplicate.company_name or duplicate.name
+            return _lead_error(
+                "DUPLICATE_LEAD",
+                f"Already registered as \"{dup_name}\", owned by {owner_label}.",
+                duplicate={
+                    "lead": duplicate.name,
+                    "lead_name": dup_name,
+                    "owner_name": owner_label,
+                    "in_your_scope": _lead_access_error(dup_owner, session_user) is None,
+                },
+            )
+
+        if not cint(payload.get("allow_customer_match")):
+            customer = _find_matching_customer(tails)
+            if customer:
+                return _lead_error(
+                    "MATCHES_CUSTOMER",
+                    f"This number belongs to customer \"{customer.customer_name or customer.name}\".",
+                    customer={"customer": customer.name, "customer_name": customer.customer_name},
+                    can_override=True,
+                )
+
+        try:
+            lead = frappe.new_doc("Lead")
+            meta = lead.meta
+            values = {
+                "company_name": company_name,
+                "first_name": first_name,
+                "last_name": clean("last_name"),
+                "job_title": clean("job_title"),
+                "mobile_no": mobile_no,
+                "whatsapp_no": whatsapp_no,
+                "phone": phone,
+                "email_id": email_id,
+                "territory": territory,
+                "source": source,
+                "type": lead_type,
+                "status": status,
+                "custom_location": clean("custom_location"),
+                "lead_owner": owner,
+                "custom_google_maps_link": link,
+            }
+            values.update(coord_fields or {})
+            for fieldname, value in values.items():
+                if value not in (None, "") and meta.has_field(fieldname):
+                    lead.set(fieldname, value)
+
+            lead.insert(ignore_permissions=True)
+            _add_lead_registration_comment(lead, session_user, owner, location_source, coord_fields, link)
+            frappe.db.commit()
+        except Exception as e:
+            frappe.db.rollback()
+            message = _readable_error(e)
+            frappe.clear_messages()
+            frappe.log_error(
+                title="Mobile Lead Registration Failed",
+                message=f"user={session_user}, owner={owner}, mobile={mobile_no}: {e}"
+            )
+            return _lead_error("CREATE_FAILED", message)
+    finally:
+        cache.delete_value(lock_name)
+
+    row = _get_lead_row(lead.name)
+    display_name = (row or {}).get("lead_name") or company_name or first_name
+    assigned_to_self = (owner or "").lower() == (session_user or "").lower()
+
+    result = {
+        "status": "success",
+        "message": f"\"{display_name}\" registered." if assigned_to_self
+                   else f"\"{display_name}\" registered and assigned to {(row or {}).get('owning_sales_person_name') or owner}.",
+        "lead": row,
+        "lead_owner": owner,
+        "assigned_to_self": assigned_to_self,
+    }
+    if result_key:
+        frappe.cache().set_value(result_key, result, expires_in_sec=NEXUS_LEAD_CREATE_RESULT_TTL_SEC)
+    return result
 
 def _create_sales_visit(party_type, party, lat, lng, target_coords, extra_fields=None):
 
@@ -345,127 +846,290 @@ def enforce_minimum_app_version():
             title="Update Required"
         )
 
-def queue_customer_geocoding(doc, method=None):
+# ============================================================================
+# 🚨 BACKGROUND GEOCODING — Customer AND Lead
+# A Google Maps link saved on a Customer or Lead (desk, import or app) is
+# turned into coordinates in the background. One set of functions serves
+# every party type in NEXUS_VISIT_PARTY_FIELDS.
+#
+#   queue_party_geocoding       doc hook: queues one job per save, only when
+#                               the pin is missing or the link was replaced
+#   execute_external_geocode_call  the job: resolves the link, writes the
+#                               three text fields, comments, notifies the app
+#   process_bulk_geocoding_queue   cron (10 min): sweeps records the hooks
+#                               missed (imports, old data) on the long queue
+#
+# Links that fail are skipped for 24 h so a few bad links can never block
+# the rest of the queue.
+# ============================================================================
+NEXUS_GEOCODE_URL = "https://crystal-api.crystalapps.dev/extract-coordinates"
+NEXUS_GEOCODE_BATCH_SIZE = 20
+NEXUS_GEOCODE_FAILURE_TTL_SEC = 24 * 60 * 60
+NEXUS_GEOCODE_LOCK_KEY = "nexus_bulk_geocoding_lock"
+NEXUS_GEOCODE_LOCK_TTL_SEC = 30 * 60
+
+
+def _is_geocodable_link(link):
+
+    text = (link or "").strip()
+    if not text or text == NEXUS_GPS_SNAP_LINK_LABEL:
+        return False
+    lowered = text.lower()
+    return lowered.startswith(("http://", "https://")) or any(
+        marker in lowered for marker in ("goo.gl", "google.", "maps.app")
+    )
+
+
+def _geocode_failure_key(party_type, name, link):
+    import hashlib
+    digest = hashlib.md5((link or "").strip().encode("utf-8")).hexdigest()
+    return f"nexus_geocode_failed:{party_type}:{name}:{digest}"
+
+
+def _geocode_recently_failed(party_type, name, link):
+    return bool(frappe.cache().get_value(_geocode_failure_key(party_type, name, link)))
+
+
+def _mark_geocode_failed(party_type, name, link):
+    frappe.cache().set_value(
+        _geocode_failure_key(party_type, name, link), 1,
+        expires_in_sec=NEXUS_GEOCODE_FAILURE_TTL_SEC
+    )
+
+
+def _geocode_link(link):
+    response = requests.post(NEXUS_GEOCODE_URL, json={"url": (link or "").strip()}, timeout=15)
+    if response.status_code != 200:
+        return None, f"Geocoder HTTP {response.status_code}"
+    data = response.json() or {}
+    if data.get("status") != "success":
+        return None, data.get("message") or "No coordinates found in the link."
+    fields, _point = build_coordinate_fields(
+        data.get("lat"), data.get("lng"), data.get("combined_coordinates")
+    )
+    if not fields:
+        return None, "The geocoder returned invalid coordinates."
+    return fields, None
+
+
+def _apply_geocoded_coordinates(party_type, name, fields, link):
+
+    update = _existing_columns_only(party_type, fields)
+    if not update:
+        return False
+
+    frappe.db.set_value(party_type, name, update, update_modified=False)
+
+    frappe.get_doc({
+        "doctype": "Comment",
+        "comment_type": "Info",
+        "reference_doctype": party_type,
+        "reference_name": name,
+        "content": "<br>".join([
+            "📍 Coordinates extracted from the Google Maps link by the <b>Nexus geocoder</b>",
+            f"Latitude: <b>{_html_escape(fields['custom_latitude'])}</b> | "
+            f"Longitude: <b>{_html_escape(fields['custom_longitude'])}</b>",
+            f"Source link: {_html_escape((link or '').strip())}",
+        ]),
+    }).insert(ignore_permissions=True)
+    return True
+
+
+def _notify_party_location_changed(party_type, name):
+
+    affected = set()
+    extra = None
+
+    if party_type == "Customer":
+        team = frappe.db.sql("""
+            SELECT sales_person FROM `tabSales Team`
+            WHERE parent = %s AND parenttype = 'Customer'
+        """, (name,), as_dict=True)
+        for row in team:
+            if row.sales_person:
+                _add_sp_and_ancestors(row.sales_person, affected)
+    elif party_type == "Lead":
+        lead_row = frappe.db.get_value("Lead", name, ["lead_owner", "status"], as_dict=True) or {}
+        _add_user_and_managers(lead_row.get("lead_owner"), affected)
+        extra = {"lead": name, "lead_status": lead_row.get("status"), "lead_event": "updated"}
+
+    if affected:
+        execute_fastapi_webhook(list(affected), party_type, name, "FORCE_VAULT_SYNC", extra=extra)
+
+
+def queue_party_geocoding(doc, method=None):
 
     if getattr(frappe.flags, "in_import", False):
         return
-
-    link = doc.get("custom_google_maps_link")
-    if not link:
+    if doc.doctype not in NEXUS_VISIT_PARTY_FIELDS:
+        return
+    if doc.flags.get("nexus_geocode_queued"):
+        return
+    if doc.doctype == "Lead" and doc.get("status") == NEXUS_LEAD_CONVERTED_STATUS:
         return
 
-    is_new = doc.is_new()
+    link = (doc.get("custom_google_maps_link") or "").strip()
+    if not _is_geocodable_link(link):
+        return
+
+    has_coords = parse_combined_coords(
+        doc.get("custom_combined_coordinates"),
+        doc.get("custom_latitude"),
+        doc.get("custom_longitude"),
+    ) is not None
     link_changed = doc.has_value_changed("custom_google_maps_link")
-
-    try:
-        lat = float(doc.custom_latitude or 0.0)
-        lng = float(doc.custom_longitude or 0.0)
-        missing_coords = (lat == 0.0 and lng == 0.0)
-    except (TypeError, ValueError):
-        missing_coords = True
-
-    if not (is_new or link_changed or missing_coords):
-        return
-
-    frappe.enqueue(
-        "nexus_supply_chain.api.execute_external_geocode_call",
-        doc_name=doc.name,
-        link=link,
-        queue="short",
-        timeout=300,
-        enqueue_after_commit=True
+    coords_changed = any(
+        doc.has_value_changed(f) for f in NEXUS_COORD_FIELDS if doc.meta.has_field(f)
     )
 
-def execute_external_geocode_call(doc_name, link):
+    if has_coords and not (link_changed and not coords_changed):
+        return
+    if _geocode_recently_failed(doc.doctype, doc.name, link):
+        return
+
+    doc.flags.nexus_geocode_queued = True
+    frappe.enqueue(
+        "nexus_supply_chain.api.execute_external_geocode_call",
+        queue="short",
+        timeout=300,
+        enqueue_after_commit=True,
+        doc_name=doc.name,
+        link=link,
+        party_type=doc.doctype,
+    )
+
+
+def queue_customer_geocoding(doc, method=None):
+    """Kept so any hook or code still using the old name keeps working."""
+    return queue_party_geocoding(doc, method)
+
+
+def execute_external_geocode_call(doc_name, link, party_type="Customer"):
 
     try:
-        fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
+        if party_type not in NEXUS_VISIT_PARTY_FIELDS or not frappe.db.exists(party_type, doc_name):
+            return
 
-        response = requests.post(fastapi_url, json={"url": link}, timeout=15)
+        current_link = (frappe.db.get_value(party_type, doc_name, "custom_google_maps_link") or "").strip()
+        if current_link != (link or "").strip():
+            return
 
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                lat = float(data.get("lat"))
-                lng = float(data.get("lng"))
-                combined = data.get("combined_coordinates")
+        fields, error = _geocode_link(link)
+        if not fields:
+            _mark_geocode_failed(party_type, doc_name, link)
+            frappe.log_error(
+                title="Nexus Geocode Failed",
+                message=f"{party_type} {doc_name}: {error} | link={link}"
+            )
+            return
 
-                update_dict = {
-                    "custom_latitude": lat,
-                    "custom_longitude": lng
-                }
-                if combined:
-                    update_dict["custom_combined_coordinates"] = combined
-
-                frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
-                frappe.db.commit() # Essential in background jobs
-
-                frappe.publish_realtime('doc_update', message={'doctype': 'Customer', 'name': doc_name})
-
-                frappe.logger().info(f"[Nexus Geocode] {doc_name} synced successfully via background worker.")
-            else:
-                frappe.log_error(title="FastAPI Geocode Failed", message=data.get("message"))
-        else:
-            frappe.log_error(title="FastAPI Unreachable", message=f"Status: {response.status_code}")
+        if _apply_geocoded_coordinates(party_type, doc_name, fields, link):
+            frappe.db.commit()  # essential in background jobs
+            frappe.publish_realtime("doc_update", message={"doctype": party_type, "name": doc_name})
+            _notify_party_location_changed(party_type, doc_name)
+            frappe.logger().info(f"[Nexus Geocode] {party_type} {doc_name} geocoded.")
 
     except Exception as e:
-        frappe.log_error(message=str(e), title="Frappe Background Geocode Error")
+        frappe.db.rollback()
+        frappe.log_error(title="Nexus Background Geocode Error", message=f"{party_type} {doc_name}: {e}")
+
+
+def _collect_geocoding_targets(limit):
+
+    targets = []
+    for party_type in NEXUS_VISIT_PARTY_FIELDS:
+        if len(targets) >= limit:
+            break
+        required = ("custom_google_maps_link",) + NEXUS_COORD_FIELDS
+        if not all(frappe.db.has_column(party_type, f) for f in required):
+            continue
+
+        extra_where = ""
+        params = {"snap": NEXUS_GPS_SNAP_LINK_LABEL, "scan": max(limit * 5, 50)}
+        if party_type == "Lead":
+            extra_where = "AND IFNULL(status, '') != %(converted)s"
+            params["converted"] = NEXUS_LEAD_CONVERTED_STATUS
+        elif party_type == "Customer":
+            extra_where = "AND IFNULL(disabled, 0) = 0"
+
+        rows = frappe.db.sql(f"""
+            SELECT name, custom_google_maps_link,
+                   custom_combined_coordinates, custom_latitude, custom_longitude
+            FROM `tab{party_type}`
+            WHERE IFNULL(custom_google_maps_link, '') != ''
+            AND custom_google_maps_link != %(snap)s
+            AND IFNULL(custom_combined_coordinates, '') NOT LIKE '%%,%%'
+            AND (
+                IFNULL(custom_latitude, '') = '' OR IFNULL(custom_longitude, '') = ''
+                OR (CAST(custom_latitude AS DECIMAL(21,9)) = 0 AND CAST(custom_longitude AS DECIMAL(21,9)) = 0)
+            )
+            {extra_where}
+            ORDER BY modified DESC
+            LIMIT %(scan)s
+        """, params, as_dict=True)
+
+        for r in rows:
+            if len(targets) >= limit:
+                break
+            if parse_combined_coords(r.custom_combined_coordinates, r.custom_latitude, r.custom_longitude):
+                continue
+            link = (r.custom_google_maps_link or "").strip()
+            if not _is_geocodable_link(link) or _geocode_recently_failed(party_type, r.name, link):
+                continue
+            targets.append(frappe._dict(party_type=party_type, name=r.name, link=link))
+
+    return targets
+
 
 def process_bulk_geocoding_queue():
+
+    try:
+        if _collect_geocoding_targets(limit=1):
+            frappe.enqueue("nexus_supply_chain.api.run_bulk_geocoding", queue="long", timeout=1800)
+    except Exception as e:
+        frappe.log_error(title="Nexus Bulk Geocode Scheduler Failed", message=str(e))
+
+
+def run_bulk_geocoding():
 
     import time
     import random
 
-    targets = frappe.db.sql("""
-        SELECT name, custom_google_maps_link
-        FROM `tabCustomer`
-        WHERE custom_google_maps_link IS NOT NULL
-        AND custom_google_maps_link != ''
-        AND (custom_latitude = 0.0 OR custom_latitude IS NULL OR custom_latitude = '')
-        LIMIT 20
-    """, as_dict=True)
-
-    if not targets:
+    cache = frappe.cache()
+    lock_key = cache.make_key(NEXUS_GEOCODE_LOCK_KEY)
+    if not cache.set(lock_key, 1, ex=NEXUS_GEOCODE_LOCK_TTL_SEC, nx=True):
         return
 
-    frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher starting for {len(targets)} customers.")
+    updated = 0
+    try:
+        targets = _collect_geocoding_targets(limit=NEXUS_GEOCODE_BATCH_SIZE)
+        frappe.logger().info(f"[Nexus Geocode] Bulk sweep starting for {len(targets)} record(s).")
 
-    fastapi_url = "https://crystal-api.crystalapps.dev/extract-coordinates"
-    successful_updates = 0
-
-    for target in targets:
-        doc_name = target.name
-        link = target.custom_google_maps_link
-
-        try:
-            response = requests.post(fastapi_url, json={"url": link}, timeout=15)
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status") == "success":
-                    lat = float(data.get("lat"))
-                    lng = float(data.get("lng"))
-                    combined = data.get("combined_coordinates")
-
-                    update_dict = {
-                        "custom_latitude": lat,
-                        "custom_longitude": lng
-                    }
-                    if combined:
-                        update_dict["custom_combined_coordinates"] = combined
-
-                    frappe.db.set_value("Customer", doc_name, update_dict, update_modified=False)
+        for index, t in enumerate(targets):
+            try:
+                fields, error = _geocode_link(t.link)
+                if fields and _apply_geocoded_coordinates(t.party_type, t.name, fields, t.link):
                     frappe.db.commit()
-                    successful_updates += 1
+                    updated += 1
+                else:
+                    _mark_geocode_failed(t.party_type, t.name, t.link)
+                    frappe.log_error(
+                        title="Nexus Geocode Failed",
+                        message=f"{t.party_type} {t.name}: {error or 'nothing written'} | link={t.link}"
+                    )
+            except Exception as e:
+                frappe.db.rollback()
+                _mark_geocode_failed(t.party_type, t.name, t.link)
+                frappe.log_error(title="Nexus Bulk Geocode Error", message=f"{t.party_type} {t.name}: {e}")
 
-        except Exception as e:
-            frappe.log_error(message=str(e), title=f"Slow-Drip Geocode Error: {doc_name}")
+            if index < len(targets) - 1:
+                time.sleep(random.uniform(4.0, 7.0))
+    finally:
+        cache.delete_value(NEXUS_GEOCODE_LOCK_KEY)
 
-        time.sleep(random.uniform(4.0, 7.0))
-
-    if successful_updates > 0:
+    if updated:
         frappe.cache().set_value('nexus_needs_sync', True)
-        frappe.logger().info(f"[Nexus Geocode] Slow-Drip Batcher finished. Synced {successful_updates} customers.")
+        frappe.logger().info(f"[Nexus Geocode] Bulk sweep finished. Geocoded {updated} record(s).")
 
 @frappe.whitelist()
 def check_mobile_app_access():
@@ -728,28 +1392,38 @@ def get_my_active_manifests_and_context():
     )
 
     manifests = []
+    customer_coord_fields = [
+        f for f in ("custom_combined_coordinates", "custom_latitude", "custom_longitude")
+        if frappe.db.has_column("Customer", f)
+    ]
     for record in manifest_records:
         doc = frappe.get_doc("Vehicle Delivery Manifest", record.name)
         manifest_dict = doc.as_dict()
 
         for stop in manifest_dict.get("stops", []):
             if stop.get("customer"):
+                # 🚨 Customer coordinates are text now; the driver app still
+                # receives floats (or None), exactly as before. The customer's
+                # pin wins; the stop's own saved lat/lng is the fallback.
+                point = None
                 try:
-                    coords = frappe.db.get_value(
-                        "Customer",
-                        stop.get("customer"),
-                        ["custom_latitude", "custom_longitude"],
-                        as_dict=True
-                    )
-                    if coords:
-                        stop["custom_latitude"] = coords.get("custom_latitude") or stop.get("latitude")
-                        stop["custom_longitude"] = coords.get("custom_longitude") or stop.get("longitude")
-                    else:
-                        stop["custom_latitude"] = stop.get("latitude")
-                        stop["custom_longitude"] = stop.get("longitude")
+                    if customer_coord_fields:
+                        coords = frappe.db.get_value(
+                            "Customer", stop.get("customer"), customer_coord_fields, as_dict=True
+                        ) or {}
+                        point = parse_combined_coords(
+                            coords.get("custom_combined_coordinates"),
+                            coords.get("custom_latitude"),
+                            coords.get("custom_longitude"),
+                        )
                 except Exception:
-                    stop["custom_latitude"] = stop.get("latitude")
-                    stop["custom_longitude"] = stop.get("longitude")
+                    point = None
+
+                if not point:
+                    point = parse_combined_coords(None, stop.get("latitude"), stop.get("longitude"))
+
+                stop["custom_latitude"] = point[0] if point else None
+                stop["custom_longitude"] = point[1] if point else None
 
             stop["items"] = []
             if stop.get("sales_order"):
@@ -1390,6 +2064,12 @@ def get_sales_context():
         frappe.log_error(title="Nexus Lead Sync Failed", message=f"{target_email}: {e}")
         leads, lead_status_options = [], []
 
+    try:
+        lead_form_options = get_lead_form_options(target_email)
+    except Exception as e:
+        frappe.log_error(title="Nexus Lead Form Options Failed", message=f"{target_email}: {e}")
+        lead_form_options = {}
+
     items = frappe.db.sql("""
         SELECT i.name as name, i.item_code, i.item_name
         FROM `tabItem` i
@@ -1669,7 +2349,8 @@ def get_sales_context():
             "debt_snapshot": debt_snapshot,
             "dashboard_stats": dashboard_stats,
             "leads": leads,
-            "lead_status_options": lead_status_options
+            "lead_status_options": lead_status_options,
+            "lead_form_options": lead_form_options
         }
     }
 
@@ -2621,7 +3302,7 @@ def get_extended_sales_reports(report_type):
     data = []
 
     if report_type == "Outstanding":
-        start_of_year = datetime(today().year, 1, 1).strftime('%Y-%m-%d')
+        start_of_year = datetime(getdate(today()).year, 1, 1).strftime('%Y-%m-%d')
         data = frappe.db.sql(f"""
             SELECT name as invoice_id, customer as customer_id, customer_name, posting_date, grand_total, outstanding_amount, due_date
             FROM `tabSales Invoice`
@@ -3194,6 +3875,42 @@ def handle_lead_conversion(doc, method=None):
     except Exception as e:
         frappe.log_error(title="Nexus Lead Conversion Hook Failed", message=f"Customer {doc.name} / Lead {lead}: {e}")
 
+def trigger_lead_refresh_from_linked(doc, method=None):
+
+    try:
+        if doc.doctype == "Opportunity":
+            is_lead = doc.get("opportunity_from") == "Lead"
+        elif doc.doctype == "Quotation":
+            is_lead = doc.get("quotation_to") == "Lead"
+        else:
+            return
+
+        lead = doc.get("party_name")
+        if not is_lead or not lead:
+            return
+
+        row = frappe.db.get_value("Lead", lead, ["lead_owner", "status"], as_dict=True)
+        if not row:
+            return
+
+        affected = set()
+        _add_user_and_managers(row.lead_owner, affected)
+        if not affected:
+            return
+
+        frappe.enqueue(
+            "nexus_supply_chain.api.execute_fastapi_webhook",
+            queue="short",
+            affected_emails=list(affected),
+            doctype="Lead",
+            docname=lead,
+            command="FORCE_VAULT_SYNC",
+            extra={"lead": lead, "lead_status": row.status, "lead_event": "updated"},
+            enqueue_after_commit=True
+        )
+    except Exception as e:
+        frappe.log_error(title="Nexus Linked Lead Refresh Failed", message=f"{doc.doctype} {doc.name}: {e}")
+
 @frappe.whitelist()
 def create_mobile_customer(payload):
 
@@ -3228,15 +3945,14 @@ def create_mobile_customer(payload):
         if location_text:
             doc.custom_location = location_text
 
-        lat = payload.get("latitude") or payload.get("lat")
-        lng = payload.get("longitude") or payload.get("lng")
-
-        if lat and lng:
-            doc.custom_latitude = str(lat)
-            doc.custom_longitude = str(lng)
-
-        if payload.get("custom_combined_coordinates"):
-            doc.custom_combined_coordinates = payload.get("custom_combined_coordinates")
+        # 🚨 Coordinates as exact text — all three fields hold the same digits.
+        coord_fields, _point = build_coordinate_fields(
+            payload.get("latitude") or payload.get("lat"),
+            payload.get("longitude") or payload.get("lng"),
+            payload.get("custom_combined_coordinates"),
+        )
+        for fieldname, value in (coord_fields or {}).items():
+            doc.set(fieldname, value)
 
         if payload.get("google_maps_link"):
             doc.custom_google_maps_link = payload.get("google_maps_link")
@@ -3261,31 +3977,25 @@ def create_mobile_customer(payload):
         return {"status": "error", "message": f"Failed to create customer: {str(e)}"}
 
 def _update_party_coordinates(party_type, party, latitude, longitude, custom_combined_coordinates=None,
-    google_maps_link=None, visit_id=None, location_source=None):
+                              google_maps_link=None, visit_id=None, location_source=None):
 
     try:
         if party_type not in NEXUS_VISIT_PARTY_FIELDS or not party or not frappe.db.exists(party_type, party):
             return {"status": "error", "message": f"{party_type} not found."}
 
-        try:
-            lat_float = float(latitude)
-            lng_float = float(longitude)
-        except (TypeError, ValueError) as e:
+        coord_fields, point = build_coordinate_fields(latitude, longitude, custom_combined_coordinates)
+        if not coord_fields:
             frappe.log_error(
                 title="Coord Update: Invalid Values",
-                message=f"{party_type} {party} received non-numeric coords: lat={latitude}, lng={longitude} | {e}"
+                message=(f"{party_type} {party} received unusable coords: lat={latitude}, lng={longitude}, "
+                         f"combined={custom_combined_coordinates}")
             )
-            return {"status": "error", "message": f"Invalid coordinate values: {e}"}
+            return {"status": "error", "message": "Invalid or out-of-range coordinate values."}
 
-        if not (-90.0 <= lat_float <= 90.0) or not (-180.0 <= lng_float <= 180.0):
-            frappe.log_error(
-                title="Coord Update: Out of Bounds",
-                message=f"{party_type} {party}: lat={lat_float}, lng={lng_float} are outside geographic bounds."
-            )
-            return {"status": "error", "message": "Coordinates out of valid geographic range."}
+        lat_float, lng_float = point
+        link_text = (google_maps_link or "").strip()
 
-        geo_fields = [f for f in ("custom_combined_coordinates", "custom_latitude",
-                                  "custom_longitude", "custom_google_maps_link")
+        geo_fields = [f for f in NEXUS_COORD_FIELDS + ("custom_google_maps_link",)
                       if frappe.db.has_column(party_type, f)]
 
         previous = frappe.db.get_value(party_type, party, geo_fields, as_dict=True) if geo_fields else None
@@ -3296,15 +4006,9 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             previous.get("custom_longitude")
         )
 
-        update_dict = {}
-        if "custom_latitude" in geo_fields:
-            update_dict["custom_latitude"] = lat_float
-        if "custom_longitude" in geo_fields:
-            update_dict["custom_longitude"] = lng_float
-        if custom_combined_coordinates and "custom_combined_coordinates" in geo_fields:
-            update_dict["custom_combined_coordinates"] = custom_combined_coordinates
-        if google_maps_link and "custom_google_maps_link" in geo_fields:
-            update_dict["custom_google_maps_link"] = google_maps_link
+        update_dict = _existing_columns_only(party_type, coord_fields)
+        if link_text and "custom_google_maps_link" in geo_fields:
+            update_dict["custom_google_maps_link"] = link_text
 
         if not update_dict:
             return {"status": "error", "message": f"The {party_type} doctype has no GeoLocation fields to update."}
@@ -3327,7 +4031,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             visit_row, reason = _resolve_open_visit_for_correction(party_type, party, frappe.session.user, visit_id)
             if visit_row:
                 visit_result.update(
-                    _apply_visit_location_correction(visit_row, (lat_float, lng_float), normalized_source)
+                    _apply_visit_location_correction(visit_row, point, normalized_source)
                 )
             else:
                 visit_result["visit_message"] = reason
@@ -3342,14 +4046,13 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             f"📍 Location updated via <b>Nexus Sales App</b> by <b>{_html_escape(str(acting_user))}</b>",
             (f"Previous: <b>{previous_coords[0]}, {previous_coords[1]}</b>"
              if previous_coords else "Previous: <i>no coordinates recorded</i>"),
-            f"New — Latitude: <b>{lat_float}</b> | Longitude: <b>{lng_float}</b>",
+            (f"New — Latitude: <b>{_html_escape(coord_fields['custom_latitude'])}</b> | "
+             f"Longitude: <b>{_html_escape(coord_fields['custom_longitude'])}</b>"),
         ]
-        if custom_combined_coordinates:
-            comment_lines.append(f"Combined: <b>{_html_escape(str(custom_combined_coordinates))}</b>")
         if normalized_source:
             comment_lines.append(f"Method: <b>{normalized_source}</b>")
-        if google_maps_link:
-            comment_lines.append(f"Source link: {_html_escape(str(google_maps_link))}")
+        if link_text:
+            comment_lines.append(f"Source link: {_html_escape(link_text)}")
         if visit_result["visit_updated"]:
             prev_d = visit_result.get("previous_distance_m")
             prev_str = f"{flt(prev_d):,.0f} m" if prev_d is not None else "none"
@@ -3372,7 +4075,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
 
         frappe.logger().info(
             f"[Nexus Geocode] update_{party_type.lower()}_coordinates: {party} → "
-            f"lat={lat_float}, lng={lng_float} by {acting_user} | "
+            f"{coord_fields['custom_combined_coordinates']} by {acting_user} | "
             f"visit={visit_result.get('visit_id')} updated={visit_result.get('visit_updated')} "
             f"dist={visit_result.get('visit_distance_m')}"
         )

@@ -13,10 +13,11 @@ app_license = ""
 doc_events = {
     "Customer": {
         # 🚨 EVENTUAL CONSISTENCY MODEL: 0-Lag Background Geocoding.
-        # Fires only AFTER MariaDB has safely committed the record and released the row lock.
-        # This completely eliminates UI freezing on the "Save" button.
+        # queue_party_geocoding queues at most ONE job per save (after_insert
+        # and on_change both fire on insert; a per-save flag dedupes), and the
+        # job runs only after the commit, so Save never waits on Google.
         "after_insert": [
-            "nexus_supply_chain.api.queue_customer_geocoding",
+            "nexus_supply_chain.api.queue_party_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         # 🚨 LEAD CONVERSION: fires once when a Customer is created from a Lead
@@ -25,16 +26,30 @@ doc_events = {
             "nexus_supply_chain.api.handle_lead_conversion"
         ],
         "on_change": [
-            "nexus_supply_chain.api.queue_customer_geocoding",
+            "nexus_supply_chain.api.queue_party_geocoding",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ]
     },
 
-    # 🚨 LEAD SYNC: office-side lead changes reach the owner's and managers'
-    # apps. on_update also fires on insert, so no separate after_insert.
+    # 🚨 LEAD SYNC + GEOCODING: office-side lead changes reach the owner's and
+    # managers' apps (on_update also fires on insert). A pasted Google Maps
+    # link is turned into coordinates in the background, same as customers.
     "Lead": {
+        "after_insert": "nexus_supply_chain.api.queue_party_geocoding",
         "on_update": "nexus_supply_chain.api.trigger_lead_refresh",
+        "on_change": "nexus_supply_chain.api.queue_party_geocoding",
         "on_trash": "nexus_supply_chain.api.trigger_lead_refresh"
+    },
+
+        # 🚨 Lead status changes made by ERPNext itself (Opportunity / Quotation
+    # linked to a Lead) reach the app live, not only on the next sync.
+    "Opportunity": {
+        "on_change": "nexus_supply_chain.api.trigger_lead_refresh_from_linked",
+        "on_trash": "nexus_supply_chain.api.trigger_lead_refresh_from_linked"
+    },
+    "Quotation": {
+        "on_change": "nexus_supply_chain.api.trigger_lead_refresh_from_linked",
+        "on_trash": "nexus_supply_chain.api.trigger_lead_refresh_from_linked"
     },
 
    # 🚨 UNIFIED CATALOG TRIGGERS
