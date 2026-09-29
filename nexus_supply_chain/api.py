@@ -479,26 +479,7 @@ def _add_lead_registration_comment(lead, session_user, owner, location_source, c
 
 @frappe.whitelist(methods=["POST"])
 def create_mobile_lead(payload):
-    """
-    Registers a Lead from the app.
 
-    payload keys (all optional unless stated):
-      client_request_id   one ID per submission; retries reuse it
-      lead_owner          managers only: a team member's login email
-      company_name / first_name   at least one REQUIRED
-      last_name, job_title
-      mobile_no           REQUIRED, Kenyan mobile (any common format)
-      whatsapp_no         Kenyan mobile
-      phone               any format (landlines allowed)
-      email_id
-      territory, source, type, status
-      custom_location
-      google_maps_link, latitude, longitude, custom_combined_coordinates, location_source
-      allow_customer_match   1 = "Register Anyway" after a MATCHES_CUSTOMER warning
-
-    Success: {"status": "success", "lead": <row as in sync>, ...}
-    Error:   {"status": "error", "code": ..., "message": ..., ["field": ...]}
-    """
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
