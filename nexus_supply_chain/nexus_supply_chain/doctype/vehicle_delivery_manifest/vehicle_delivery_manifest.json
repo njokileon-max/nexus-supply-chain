@@ -31,6 +31,24 @@
   "return_collections",
   "fuel_section",
   "fuel_logs",
+  "distance_section",
+  "original_planned_distance_km",
+  "approximate_drive_time_min",
+  "stops_without_location",
+  "route_recomputed_at",
+  "yard_coordinates",
+  "route_recompute_pending",
+  "column_break_actual",
+  "actual_distance_km",
+  "distance_variance_km",
+  "actual_duration_min",
+  "track_quality",
+  "track_status",
+  "track_points",
+  "track_gap_minutes",
+  "track_finalized_at",
+  "track_attempts",
+  "actual_route_polyline",
   "route_section",
   "route_map_html",
   "route_geojson",
@@ -206,6 +224,161 @@
    "options": "Manifest Fuel Log"
   },
   {
+   "fieldname": "distance_section",
+   "fieldtype": "Section Break",
+   "label": "Planned vs Actual Distance",
+   "collapsible": 0
+  },
+  {
+   "fieldname": "original_planned_distance_km",
+   "fieldtype": "Float",
+   "label": "Original Planned Distance (Km)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "2",
+   "description": "The planned distance before the first recalculation (kept for audit)."
+  },
+  {
+   "fieldname": "approximate_drive_time_min",
+   "fieldtype": "Float",
+   "label": "Planned Drive Time (Min)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "1"
+  },
+  {
+   "fieldname": "stops_without_location",
+   "fieldtype": "Int",
+   "label": "Stops Without Location",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "description": "Stops left out of the planned distance because the customer has no pin."
+  },
+  {
+   "fieldname": "route_recomputed_at",
+   "fieldtype": "Datetime",
+   "label": "Planned Route Recalculated At",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "yard_coordinates",
+   "fieldtype": "Data",
+   "label": "Yard Coordinates",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "description": "Start and end of the planned route (lat,lng)."
+  },
+  {
+   "fieldname": "route_recompute_pending",
+   "fieldtype": "Check",
+   "label": "Route Recalculation Pending",
+   "default": "0",
+   "hidden": 1,
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_actual",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "actual_distance_km",
+   "fieldtype": "Float",
+   "label": "Actual Distance Driven (Km)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "2",
+   "description": "From the vehicle phone's GPS track, after the trip is completed.",
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "distance_variance_km",
+   "fieldtype": "Float",
+   "label": "Actual − Planned (Km)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "actual_duration_min",
+   "fieldtype": "Float",
+   "label": "Actual Trip Duration (Min)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "1"
+  },
+  {
+   "fieldname": "track_quality",
+   "fieldtype": "Select",
+   "label": "GPS Track Quality",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "options": "\nGood\nGaps\nPoor\nNo Data"
+  },
+  {
+   "fieldname": "track_status",
+   "fieldtype": "Select",
+   "label": "GPS Distance Status",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "options": "\nPending\nFinal\nNo Data\nFailed\nNot Tracked"
+  },
+  {
+   "fieldname": "track_points",
+   "fieldtype": "Int",
+   "label": "GPS Points Used",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "track_gap_minutes",
+   "fieldtype": "Float",
+   "label": "GPS Gaps (Min)",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "precision": "1"
+  },
+  {
+   "fieldname": "track_finalized_at",
+   "fieldtype": "Datetime",
+   "label": "GPS Distance Calculated At",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "track_attempts",
+   "fieldtype": "Int",
+   "label": "GPS Distance Attempts",
+   "hidden": 1,
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "actual_route_polyline",
+   "fieldtype": "Long Text",
+   "label": "Actual Route (Encoded Polyline)",
+   "hidden": 1,
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1
+  },
+  {
    "collapsible": 1,
    "fieldname": "route_section",
    "fieldtype": "Section Break",
@@ -238,7 +411,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-10-26 23:30:00.000000",
+ "modified": "2026-10-28 06:00:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Vehicle Delivery Manifest",

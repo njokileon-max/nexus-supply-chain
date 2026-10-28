@@ -116,6 +116,15 @@ LOCK_TTL_SEC = 30
 MAX_FUEL_AMOUNT = 1_000_000
 FUTURE_CLOCK_TOLERANCE = timedelta(minutes=5)
 
+# Planned vs actual distance (route_recompute). Read only when the columns
+# exist, so this file is safe to deploy before `bench migrate`.
+TRIP_DISTANCE_FIELDS = (
+	"original_planned_distance_km", "approximate_drive_time_min", "stops_without_location",
+	"route_recomputed_at", "actual_distance_km", "distance_variance_km", "actual_duration_min",
+	"track_quality", "track_status", "track_gap_minutes",
+)
+STOP_DISTANCE_FIELDS = ("odometer_km", "distance_from_previous_km")
+
 
 # ============================================================================
 # Errors and request plumbing
@@ -521,6 +530,8 @@ def refresh_customer_stop_pins(customer, pin_text, point):
 	A customer's pin changed: every PENDING stop for that customer on a
 	manifest that is still open (draft, Ready, Dispatched, Returning) gets
 	the new pin. Confirmed stops are history and are never touched.
+	Every trip whose stops moved is marked for a planned-distance
+	recalculation (route_recompute, queued after the commit).
 	Returns the set of affected manifest names. Does not commit or push.
 	"""
 	if not customer or not pin_text or not point:
@@ -543,7 +554,13 @@ def refresh_customer_stop_pins(customer, pin_text, point):
 			{"combined_coordinates": pin_text, "latitude": point[0], "longitude": point[1]},
 			update_modified=False,
 		)
-	return {r.parent for r in rows}
+
+	parents = {r.parent for r in rows}
+	if parents:
+		from nexus_supply_chain.route_recompute import request_recompute
+
+		request_recompute(parents, reason="customer_pin_changed")
+	return parents
 
 
 # ============================================================================
@@ -657,6 +674,13 @@ def set_trip_state(manifest_name, new_status, force=False, note=None):
 			WHERE reference_type = %s AND reference_name = %s AND status = 'Open'
 		""", (MANIFEST, manifest_name))
 
+	if new_status == "Completed":
+		# Distance actually driven: the 5-minute job asks FastAPI for the GPS
+		# result once the phone's last buffered points have arrived.
+		from nexus_supply_chain.route_recompute import queue_track_finalize
+
+		queue_track_finalize(manifest_name)
+
 	lines = [f"🚚 Trip status: <b>{old}</b> → <b>{new_status}</b> by <b>{frappe.utils.escape_html(frappe.session.user)}</b>"]
 	if closed_stops:
 		lines.append(f"{closed_stops} stop(s) still pending were marked Returned.")
@@ -716,9 +740,11 @@ def get_driver_payload(user=None):
 	vehicle = _vehicle_for_driver(user)
 	vehicle_name = vehicle.name if vehicle else ""
 
-	rows = frappe.db.sql("""
+	distance_cols = "".join(f", `{c}`" for c in _columns(MANIFEST, TRIP_DISTANCE_FIELDS))
+	rows = frappe.db.sql(f"""
 		SELECT name, vehicle, driver, trip_status, trip_started_at, trip_completed_at, route_geojson,
 		       cumulative_additional_fuel_cost, approximate_total_distance_km, truck_plan, load_plan, modified
+		       {distance_cols}
 		FROM `tabVehicle Delivery Manifest`
 		WHERE docstatus = 1
 		  AND (driver = %(user)s OR (%(vehicle)s != '' AND vehicle = %(vehicle)s))
@@ -753,13 +779,15 @@ def get_driver_payload(user=None):
 		return {"manifests": [], "context": context}
 
 	names = tuple(r.name for r in ordered)
-	stops = frappe.db.sql("""
+	stop_distance_cols = "".join(f", `{c}`" for c in _columns(STOP, STOP_DISTANCE_FIELDS))
+	stops = frappe.db.sql(f"""
 		SELECT name, parent, idx, sales_order, customer_id, customer, customer_phone, payment_terms,
 		       grand_total, weight_kg, delivery_status, arrival_time, completion_time, delivery_notes,
 		       combined_coordinates, latitude, longitude, location_updated_during_trip,
 		       dropoff_latitude, dropoff_longitude, dropoff_accuracy_m, dropoff_captured_at,
 		       dropoff_gps_status, target_coordinates, dropoff_distance_from_target_m,
 		       original_dropoff_distance_m, is_on_site_dropoff, confirmed_by
+		       {stop_distance_cols}
 		FROM `tabIn Transit-Delivery Stop`
 		WHERE parenttype = %(dt)s AND parent IN %(names)s
 		ORDER BY parent, idx
@@ -868,6 +896,10 @@ def get_driver_payload(user=None):
 				"is_on_site": cint(s.is_on_site_dropoff),
 			},
 			"confirmed_by": s.confirmed_by,
+			# GPS odometer (filled when the trip's distance is finalized)
+			"odometer_km": flt(s.odometer_km) if s.get("odometer_km") is not None else None,
+			"distance_from_previous_km": (flt(s.distance_from_previous_km)
+			                              if s.get("distance_from_previous_km") is not None else None),
 			"items": so_items.get(s.sales_order, []),
 			"returned_items": returns_by_stop.get(s.name, []),
 			"sales_person": sales_people.get(s.sales_order),
@@ -898,6 +930,20 @@ def get_driver_payload(user=None):
 			"trip_completed_at": _s(r.trip_completed_at),
 			"route_geojson": r.route_geojson,
 			"approximate_total_distance_km": flt(r.approximate_total_distance_km),
+			# Planned distance: recalculated when a stop's pin changes (route_recompute)
+			"planned_distance_km": flt(r.approximate_total_distance_km) or None,
+			"original_planned_distance_km": flt(r.get("original_planned_distance_km")) or None,
+			"planned_drive_time_min": flt(r.get("approximate_drive_time_min")) or None,
+			"stops_without_location": (cint(r.get("stops_without_location"))
+			                           if r.get("route_recomputed_at") else None),
+			"route_recomputed_at": _s(r.get("route_recomputed_at")),
+			# Actual distance: GPS track, final once the trip is Completed
+			"track_status": r.get("track_status") or None,
+			"track_quality": r.get("track_quality") or None,
+			"actual_distance_km": flt(r.get("actual_distance_km")) if r.get("track_status") == "Final" else None,
+			"distance_variance_km": flt(r.get("distance_variance_km")) if r.get("track_status") == "Final" else None,
+			"actual_duration_min": flt(r.get("actual_duration_min")) if r.get("track_status") == "Final" else None,
+			"track_gap_minutes": flt(r.get("track_gap_minutes")) if r.get("track_status") == "Final" else None,
 			"cumulative_additional_fuel_cost": flt(r.cumulative_additional_fuel_cost),
 			"stop_count": len(manifest_stops),
 			"pending_stop_count": sum(1 for s in manifest_stops if s["delivery_status"] == PENDING),

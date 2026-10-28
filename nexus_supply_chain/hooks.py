@@ -24,6 +24,9 @@ doc_events = {
         # (lead_name newly set) — closes open lead visits and notifies the app.
         "on_update": [
             "nexus_supply_chain.api.handle_lead_conversion"
+            # Desk pin edits move the open delivery stops and recalculate those
+            # trips' planned distance (app and geocoder writes call it directly).
+            "nexus_supply_chain.driver_api.on_customer_update"
         ],
         "on_change": [
             "nexus_supply_chain.api.queue_party_geocoding",
@@ -224,7 +227,14 @@ scheduler_events = {
             "nexus_supply_chain.production.signals.flush_pending"
         ],
 
-        # 2. Strategy D: The Slow-Drip Batcher (Runs every 10 minutes)
+        # 2. Trip distances (every 5 minutes): retries planned-route
+        # recalculations that couldn't reach the routing server, and records
+        # the distance actually driven for trips completed 10+ minutes ago.
+        "*/5 * * * *": [
+            "nexus_supply_chain.route_recompute.run_maintenance"
+        ],
+
+        # 3. Strategy D: The Slow-Drip Batcher (Runs every 10 minutes)
         # The Cleanup Crew: Quietly processes bulk-imported customers in the background.
         # It bypasses Frappe's synchronous UI hooks and avoids Google Map API bans.
         "*/10 * * * *": [

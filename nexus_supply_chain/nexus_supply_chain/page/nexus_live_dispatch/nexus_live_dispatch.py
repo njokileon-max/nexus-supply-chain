@@ -13,6 +13,13 @@ Server side of the Live Dispatch page.
                                  stops, in manifest order, from YOUR routing
                                  server (FastAPI /api/v2/fleet/route -> ORS).
                                  Replaces opening Google Maps in a new tab.
+  get_trip_track(manifest)       the path actually driven (GPS): live while
+                                 the trip is on the road, final once it is
+                                 completed (route_recompute.office_track)
+
+Batch 10: planned distance (recalculated when a stop's pin changes) and the
+distance actually driven are on the board, the trip map and the panel; the
+ETA route takes up to 150 stops (FastAPI splits long routes).
 
 Live positions are NOT here: the page receives them over FastAPI's dispatch
 socket (/api/v2/fleet/ws) with a ticket from driver_api.get_dispatch_ws_ticket.
@@ -26,13 +33,18 @@ from frappe import _
 from frappe.utils import cint, flt
 
 from nexus_supply_chain.fastapi_client import fastapi_url, internal_headers
+from nexus_supply_chain.route_recompute import office_track, yard_from_route
 
 MANIFEST = "Vehicle Delivery Manifest"
 STOP = "In Transit-Delivery Stop"
 VEHICLE = "Vehicle In Transit"
 ACTIVE_TRIP_STATES = ("Ready", "Dispatched", "Returning")
-MAX_ROUTE_WAYPOINTS = 24  # FastAPI /api/v2/fleet/route limit
-ROUTE_TIMEOUT_SEC = 25
+MAX_ROUTE_WAYPOINTS = 150  # FastAPI /api/v2/fleet/route limit for ERPNext (split into 25-point requests)
+DISTANCE_FIELDS = (
+	"original_planned_distance_km", "approximate_drive_time_min", "stops_without_location", "route_recomputed_at",
+	"actual_distance_km", "distance_variance_km", "track_quality", "track_status",
+)
+ROUTE_TIMEOUT_SEC = 60  # long routes are several ORS requests
 
 
 def _require_read():
@@ -57,6 +69,28 @@ def _point(stop):
 	if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0 and lng == 0):
 		return lat, lng
 	return None
+
+
+def _distance_columns(alias=""):
+	"""SQL select fragment for the distance fields that exist on this site."""
+	prefix = f"{alias}." if alias else ""
+	cols = [f for f in DISTANCE_FIELDS if frappe.db.has_column(MANIFEST, f)]
+	return "".join(f", {prefix}`{c}`" for c in cols)
+
+
+def _distance_payload(row):
+	final = row.get("track_status") == "Final"
+	return {
+		"planned_km": flt(row.get("approximate_total_distance_km")) or None,
+		"original_planned_km": flt(row.get("original_planned_distance_km")) or None,
+		"planned_drive_min": flt(row.get("approximate_drive_time_min")) or None,
+		"stops_without_location": cint(row.get("stops_without_location")) if row.get("route_recomputed_at") else None,
+		"route_recomputed_at": str(row.get("route_recomputed_at")) if row.get("route_recomputed_at") else None,
+		"actual_km": flt(row.get("actual_distance_km")) if final else None,
+		"variance_km": flt(row.get("distance_variance_km")) if final else None,
+		"track_quality": row.get("track_quality") or None,
+		"track_status": row.get("track_status") or None,
+	}
 
 
 def _float_or_none(value):
@@ -90,6 +124,7 @@ def get_dispatch_board():
 
 	manifests = frappe.db.sql(f"""
 		SELECT m.name, m.vehicle, m.driver, m.trip_status, m.trip_started_at,
+		       m.approximate_total_distance_km {_distance_columns("m")},
 		       (m.route_geojson IS NOT NULL AND m.route_geojson != '') AS has_route,
 		       COUNT(s.name) AS stops_total,
 		       SUM(CASE WHEN IFNULL(s.delivery_status, 'Pending') = 'Pending' THEN 1 ELSE 0 END) AS stops_pending,
@@ -108,6 +143,9 @@ def get_dispatch_board():
 			m[key] = cint(m.get(key))
 		m["has_route"] = bool(cint(m.get("has_route")))
 		m["trip_started_at"] = str(m.trip_started_at) if m.get("trip_started_at") else None
+		m.update(_distance_payload(m))
+		for key in DISTANCE_FIELDS + ("approximate_total_distance_km",):
+			m.pop(key, None)
 
 	return {"vehicles": vehicles, "manifests": manifests, "server_time": frappe.utils.now()}
 
@@ -118,7 +156,9 @@ def get_manifest_map(manifest):
 	_require_read()
 	m = frappe.db.get_value(
 		MANIFEST, manifest,
-		["name", "vehicle", "driver", "trip_status", "route_geojson", "docstatus"],
+		["name", "vehicle", "driver", "trip_status", "route_geojson", "docstatus", "trip_started_at",
+		 "trip_completed_at", "approximate_total_distance_km"]
+		+ [f for f in DISTANCE_FIELDS if frappe.db.has_column(MANIFEST, f)],
 		as_dict=True,
 	)
 	if not m or m.docstatus == 2:
@@ -159,53 +199,17 @@ def get_manifest_map(manifest):
 		"vehicle": m.vehicle,
 		"driver": m.driver,
 		"trip_status": m.trip_status,
+		"trip_started_at": str(m.trip_started_at) if m.trip_started_at else None,
+		"trip_completed_at": str(m.trip_completed_at) if m.trip_completed_at else None,
 		"route_geojson": m.route_geojson or None,
 		"stops": stops,
+		**_distance_payload(m),
 	}
 
 
 def _yard_from_route(route_geojson):
-	"""The planned route starts at the yard: its first coordinate, or None."""
-	if not route_geojson:
-		return None
-	try:
-		data = frappe.parse_json(route_geojson)
-	except Exception:
-		return None
-
-	def first_line(node, depth=0):
-		if not isinstance(node, dict) or depth > 6:
-			return None
-		t = node.get("type")
-		if t == "FeatureCollection":
-			for f in node.get("features") or []:
-				found = first_line(f, depth + 1)
-				if found:
-					return found
-		elif t == "Feature":
-			return first_line(node.get("geometry"), depth + 1)
-		elif t == "GeometryCollection":
-			for g in node.get("geometries") or []:
-				found = first_line(g, depth + 1)
-				if found:
-					return found
-		elif t == "LineString":
-			return node.get("coordinates")
-		elif t == "MultiLineString":
-			lines = node.get("coordinates") or []
-			return lines[0] if lines else None
-		return None
-
-	coords = first_line(data)
-	if not coords:
-		return None
-	try:
-		lng, lat = float(coords[0][0]), float(coords[0][1])
-	except (TypeError, ValueError, IndexError):
-		return None
-	if -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0 and lng == 0):
-		return lat, lng
-	return None
+	"""Kept for any caller of the old name; the shared version lives in route_recompute."""
+	return yard_from_route(route_geojson)
 
 
 @frappe.whitelist()
@@ -280,3 +284,16 @@ def get_eta_route(manifest, latitude, longitude, include_yard=1):
 		"truncated": truncated,
 		"cached": bool(body.get("cached")),
 	}
+
+
+@frappe.whitelist()
+def get_trip_track(manifest):
+	"""
+	The path actually driven: live (estimate) while the trip is on the road,
+	final once it is completed. {status, final, polyline, distance_km,
+	quality, gap_minutes, points_used, [live]} or {status:"error", code, message}.
+	"""
+	_require_read()
+	if not frappe.db.exists(MANIFEST, manifest):
+		frappe.throw(_("Trip {0} was not found.").format(manifest), frappe.DoesNotExistError)
+	return office_track(manifest)

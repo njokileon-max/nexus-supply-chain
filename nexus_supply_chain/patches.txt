@@ -12,3 +12,5 @@ nexus_supply_chain.patches.v1_2.production_setup
 nexus_supply_chain.patches.v1_3.production_stock_settings
 
 nexus_supply_chain.patches.v1_4.driver_app_v1_1_backfill
+
+nexus_supply_chain.patches.v1_5.trip_distance_tracking

@@ -4476,10 +4476,15 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
     """
     Sales app location correction (update_customer_coordinates /
     update_lead_coordinates). Behaviour and response are unchanged:
-      1. shared writer (_write_party_coordinates),
+      1. shared writer (_write_party_coordinates): the three text fields,
+         every open delivery stop for that customer, and a planned-distance
+         recalculation for those trips,
       2. SERVER-AUTHORITATIVE re-evaluation of the caller's open visit,
-      3. timeline comment, and now
-      4. a Nexus Location Correction Log row (role Sales).
+      3. timeline comment, written as the SIGNED-IN user (never a name the
+         app sends),
+      4. a Nexus Location Correction Log row (role Sales), and
+      5. after the commit, the reps who see this record (owner's team and
+         managers) are told, because db.set_value fires no Customer/Lead hooks.
     The party update always succeeds independently of the visit and log
     steps. Any unexpected failure rolls back the whole request.
     """
@@ -4493,7 +4498,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
         coord_fields = written["coord_fields"]
         lat_float, lng_float = written["point"]
         link_text = written["link_text"]
-        acting_user = frappe.form_dict.get("acting_user") or frappe.session.user
+        acting_user = frappe.session.user
         normalized_source = location_source if location_source in NEXUS_LOCATION_SOURCES else None
 
         # 🚨 VISIT RE-EVALUATION — isolated so a failure here can never undo
@@ -4508,7 +4513,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             "visit_message": None,
         }
         try:
-            visit_row, reason = _resolve_open_visit_for_correction(party_type, party, frappe.session.user, visit_id)
+            visit_row, reason = _resolve_open_visit_for_correction(party_type, party, acting_user, visit_id)
             if visit_row:
                 visit_result.update(
                     _apply_visit_location_correction(visit_row, written["point"], normalized_source)
@@ -4518,7 +4523,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
         except Exception as ve:
             frappe.log_error(
                 title="Visit Distance Recompute Failed",
-                message=f"{party_type} {party}, visit_id={visit_id}, user={frappe.session.user}: {ve}"
+                message=f"{party_type} {party}, visit_id={visit_id}, user={acting_user}: {ve}"
             )
             visit_result["visit_message"] = f"{party_type} location saved, but this visit's distance could not be recomputed."
 
@@ -4561,6 +4566,17 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             frappe.db.rollback(save_point="nexus_location_log")
             frappe.log_error(title="Location Correction Log Failed", message=f"{party_type} {party}: {le}")
 
+        # 🚨 Other reps / managers who see this record: told after the commit
+        # (same audience as the Customer/Lead refresh hooks; honours
+        # nexus_fastapi_push_enabled through execute_fastapi_webhook).
+        frappe.enqueue(
+            "nexus_supply_chain.api._notify_party_location_changed",
+            queue="short",
+            enqueue_after_commit=True,
+            party_type=party_type,
+            name=party,
+        )
+
         frappe.db.commit()
 
         frappe.logger().info(
@@ -4590,9 +4606,43 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
         return {"status": "error", "message": str(e)}
 
 
+def _customer_access_error(customer, session_user):
+    """
+    Server-side scope check for a customer location change.
+      * A sales rep / manager (has a Sales Person profile): only customers
+        assigned (Sales Team) to someone inside their own Sales Person
+        hierarchy — exactly the customers the Sales app shows them.
+      * Office staff (no Sales Person profile): allowed when they may edit
+        Customers in the desk.
+    Returns None when allowed, otherwise a human-readable reason.
+    """
+    auth_sps = get_authorized_sales_persons(session_user)
+    if auth_sps:
+        in_scope = frappe.db.sql("""
+            SELECT 1 FROM `tabSales Team`
+            WHERE parenttype = 'Customer' AND parent = %s AND sales_person IN %s
+            LIMIT 1
+        """, (customer, tuple(auth_sps)))
+        if in_scope:
+            return None
+        return "This customer is assigned to a sales rep outside your team, so you can't change its location."
+    if frappe.has_permission("Customer", "write", doc=customer, user=session_user):
+        return None
+    return "You don't have permission to change this customer's location."
+
+
 @frappe.whitelist()
 def update_customer_coordinates(customer, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None, visit_id=None, location_source=None):
-    """Customer location correction. Signature and response unchanged; see _update_party_coordinates."""
+    """
+    Customer location correction. Signature and success response unchanged;
+    see _update_party_coordinates. Refused (code CUSTOMER_NOT_ASSIGNED) for a
+    customer outside the caller's team, unless the caller may edit Customers.
+    """
+    if not customer or not frappe.db.exists("Customer", customer):
+        return {"status": "error", "code": "CUSTOMER_NOT_FOUND", "message": "This customer no longer exists."}
+    access_error = _customer_access_error(customer, frappe.session.user)
+    if access_error:
+        return {"status": "error", "code": "CUSTOMER_NOT_ASSIGNED", "message": access_error}
     return _update_party_coordinates(
         "Customer", customer, latitude, longitude,
         custom_combined_coordinates, google_maps_link, visit_id, location_source

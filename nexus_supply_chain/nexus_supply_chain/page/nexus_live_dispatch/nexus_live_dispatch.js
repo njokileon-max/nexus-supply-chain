@@ -20,6 +20,11 @@
 //  Per vehicle: Route (planned route + stops), ETA (road route from the
 //  truck through the remaining stops on your routing server, with arrival
 //  times), Open trip.
+//
+//  Batch 10: planned distance (recalculated when a stop's pin changes, "was
+//  X km" shown) and the path actually driven (green line, from the GPS
+//  track; refreshed every minute while the trip is on the road, final once
+//  it is completed).
 frappe.pages["nexus_live_dispatch"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -37,7 +42,14 @@ const NLD_METHODS = {
 	board: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_dispatch_board",
 	manifestMap: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_manifest_map",
 	eta: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_eta_route",
+	track: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_trip_track",
 };
+const NLD_TRACK_REFRESH_MS = 60000;
+
+function nld_km(km) {
+	const n = Number(km) || 0;
+	return `${n.toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 2 : 1 })} km`;
+}
 
 /**
  * Loads the shared Nexus scripts once each, stamped with the deployed asset
@@ -202,6 +214,7 @@ class NexusLiveDispatch {
 						<div class="nld-legend-sep"></div>
 						<div><span class="nld-line" style="border-top:3px dashed #94a3b8"></span>${__("Planned route")}</div>
 						<div><span class="nld-line" style="border-top:4px solid #2563eb"></span>${__("ETA route")}</div>
+						<div><span class="nld-line" style="border-top:4px solid #16a34a"></span>${__("Driven (GPS)")}</div>
 					</div>
 					<div class="nld-panel" style="display:none"></div>
 				</div>
@@ -482,7 +495,7 @@ class NexusLiveDispatch {
 			const done = trip.stops_total - trip.stops_pending;
 			const pct = trip.stops_total ? Math.round((done / trip.stops_total) * 100) : 0;
 			tripHtml = `
-				<div class="nld-meta"><i class="fa fa-file-text-o"></i> ${this.esc(trip.name)} · ${done}/${trip.stops_total} ${__("stops")}</div>
+				<div class="nld-meta"><i class="fa fa-file-text-o"></i> ${this.esc(trip.name)} · ${done}/${trip.stops_total} ${__("stops")}${trip.planned_km ? ` · ≈ ${nld_km(trip.planned_km)}` : ""}</div>
 				<div class="nld-progress"><div style="width:${pct}%"></div></div>`;
 			const onRoad = trip.trip_status === "Dispatched" || trip.trip_status === "Returning";
 			actions = `<div class="nld-actions">
@@ -689,10 +702,11 @@ class NexusLiveDispatch {
 	clearRouteLayers() {
 		if (!this.view) return;
 		this.view.markerIds().filter((id) => id.startsWith("stop:")).forEach((id) => this.view.removeMarker(id));
-		this.view.lineIds().filter((id) => id.startsWith("planned:") || id === "eta").forEach((id) => this.view.removeLine(id));
+		this.view.lineIds().filter((id) => id.startsWith("planned:") || id === "eta" || id === "actual").forEach((id) => this.view.removeLine(id));
 	}
 
 	closeRoute() {
+		clearInterval(this._trackTimer);
 		this.routeView = null;
 		this.clearRouteLayers();
 		this.$root.find(".nld-panel").hide().empty();
@@ -711,9 +725,11 @@ class NexusLiveDispatch {
 			return;
 		}
 		if (!data) return;
-		const keepEta = options.keepEta && this.routeView && this.routeView.manifest === trip.name ? this.routeView.eta : null;
+		const same = this.routeView && this.routeView.manifest === trip.name;
+		const keepEta = options.keepEta && same ? this.routeView.eta : null;
+		const keepTrack = same ? this.routeView.track : null;
 		this.clearRouteLayers();
-		this.routeView = { manifest: trip.name, vehicle, data, eta: keepEta };
+		this.routeView = { manifest: trip.name, vehicle, data, eta: keepEta, track: keepTrack };
 
 		const points = [];
 		NexusMaps.geojsonLines(data.route_geojson).forEach((line, i) => {
@@ -743,8 +759,69 @@ class NexusLiveDispatch {
 			else frappe.show_alert({ message: __("This trip has no planned route or stop locations yet."), indicator: "orange" });
 		}
 		if (keepEta) this.drawEta(keepEta);
+		if (keepTrack) this.drawTrack(keepTrack);
 		this.renderRoutePanel();
 		if (options.withEta) this.loadEta();
+
+		// The path actually driven: once now, then every minute while on the road.
+		clearInterval(this._trackTimer);
+		const onRoad = data.trip_status === "Dispatched" || data.trip_status === "Returning";
+		if (onRoad || data.trip_status === "Completed") this.loadTrack();
+		if (onRoad) this._trackTimer = setInterval(() => !document.hidden && this.loadTrack(), NLD_TRACK_REFRESH_MS);
+	}
+
+	async loadTrack() {
+		const rv = this.routeView;
+		if (!rv || !this.view || !rv.data.trip_started_at) return;
+		let res;
+		try {
+			const r = await frappe.call({ method: NLD_METHODS.track, args: { manifest: rv.manifest }, type: "GET" });
+			res = r.message || {};
+		} catch (e) {
+			res = { status: "error", message: __("The driven path couldn't be loaded.") };
+		}
+		if (this.routeView !== rv) return;
+		if (res.status !== "success") {
+			rv.trackError = res.message || __("The driven path couldn't be loaded.");
+			this.renderRoutePanel();
+			return;
+		}
+		rv.trackError = null;
+		rv.track = res;
+		this.drawTrack(res);
+		this.renderRoutePanel();
+	}
+
+	drawTrack(track) {
+		const line = track && track.polyline ? NexusMaps.decodePolyline(track.polyline, 5) : [];
+		if (line.length >= 2) {
+			this.view.setLine("actual", line, { color: "#16a34a", width: 4, opacity: 0.9, zIndex: 2 });
+		} else if (this.view.lineIds().includes("actual")) {
+			this.view.removeLine("actual");
+		}
+	}
+
+	distanceHtml(rv) {
+		const d = rv.data;
+		const rows = [];
+		if (d.planned_km) {
+			const was = d.original_planned_km && Math.abs(d.original_planned_km - d.planned_km) >= 0.05
+				? ` <span style="color:#94a3b8">(${__("was {0}", [nld_km(d.original_planned_km)])})</span>` : "";
+			const missing = d.stops_without_location ? ` <span style="color:#b45309">· ${__("{0} stop(s) without location not included", [d.stops_without_location])}</span>` : "";
+			rows.push(`<div>🗺️ ${__("Planned")}: <b>${nld_km(d.planned_km)}</b>${was}${missing}</div>`);
+		}
+		const t = rv.track;
+		if (d.actual_km != null) {
+			const variance = d.variance_km != null ? ` <span style="color:${d.variance_km > 0 ? "#b91c1c" : "#047857"}">(${d.variance_km > 0 ? "+" : ""}${nld_km(d.variance_km)})</span>` : "";
+			rows.push(`<div>🛣️ ${__("Driven (GPS)")}: <b>${nld_km(d.actual_km)}</b>${variance} · ${this.esc(__(d.track_quality || ""))}</div>`);
+		} else if (t && t.distance_km != null) {
+			const gaps = t.gap_minutes ? ` · ${__("{0} min without GPS", [Math.round(t.gap_minutes)])}` : "";
+			rows.push(`<div>🛣️ ${t.final ? __("Driven (GPS)") : __("Driven so far")}: <b>${nld_km(t.distance_km)}</b>${gaps}</div>`);
+		} else if (d.trip_status === "Completed" && d.track_status === "Pending") {
+			rows.push(`<div class="nld-note">${__("The distance driven is calculated about 10 minutes after the trip is completed.")}</div>`);
+		}
+		if (rv.trackError) rows.push(`<div class="nld-note">${this.esc(rv.trackError)}</div>`);
+		return rows.length ? `<div style="margin:8px 0 4px;line-height:1.7">${rows.join("")}</div>` : "";
 	}
 
 	showStopPopup(s) {
@@ -838,7 +915,7 @@ class NexusLiveDispatch {
 				${rows}
 				<div class="nld-note">${__("Arrival times are driving time from the truck's position; time spent at each stop is not included.")}</div>
 				${eta.skipped_without_pin && eta.skipped_without_pin.length ? `<div class="nld-note">${__("Not routed (no saved location)")}: ${this.esc(eta.skipped_without_pin.join(", "))}</div>` : ""}
-				${eta.truncated ? `<div class="nld-note">${__("Only the next 24 stops are routed.")}</div>` : ""}`;
+				${eta.truncated ? `<div class="nld-note">${__("Only the next 150 stops are routed.")}</div>` : ""}`;
 		}
 		const onRoad = d.trip_status === "Dispatched" || d.trip_status === "Returning";
 		$p.html(`
@@ -847,6 +924,7 @@ class NexusLiveDispatch {
 				<div class="nld-panel-sub">${this.esc(d.trip_status)} · ${d.stops.length - pending}/${d.stops.length} ${__("stops done")}${noPin ? ` · ${noPin} ${__("without location")}` : ""}</div></div>
 				<button class="nld-x" data-act="close-route" title="${__("Close")}"><i class="fa fa-times"></i></button>
 			</div>
+			${this.distanceHtml(rv)}
 			${etaHtml}
 			<div class="nld-actions">
 				${onRoad && pending ? `<button class="btn btn-xs btn-primary" data-act="refresh-eta"><i class="fa fa-clock-o"></i> ${rv.eta ? __("Refresh ETA") : __("ETA")}</button>` : ""}
