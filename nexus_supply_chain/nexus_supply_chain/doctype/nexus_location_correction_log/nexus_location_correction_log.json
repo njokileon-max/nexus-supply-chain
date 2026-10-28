@@ -1,0 +1,258 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "NLC-.YYYY.-.#######",
+ "creation": "2026-10-25 14:00:00.000000",
+ "description": "Append-only history of every change to a Customer or Lead pin made from the Sales or Driver app.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "party_section",
+  "party_type",
+  "party",
+  "party_name",
+  "column_break_party",
+  "changed_at",
+  "changed_by",
+  "changed_by_role",
+  "pin_section",
+  "old_coordinates",
+  "new_coordinates",
+  "moved_distance_m",
+  "column_break_pin",
+  "method",
+  "gps_accuracy_m",
+  "is_mock_location",
+  "google_maps_link",
+  "context_section",
+  "sales_visit",
+  "manifest",
+  "stop_row",
+  "sales_order",
+  "column_break_context",
+  "device_id",
+  "app_version",
+  "client_request_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "party_section",
+   "fieldtype": "Section Break",
+   "label": "Party"
+  },
+  {
+   "fieldname": "party_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Party Type",
+   "options": "Customer\nLead",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "party",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Party",
+   "options": "party_type",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "party_name",
+   "fieldtype": "Data",
+   "label": "Party Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_party",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "changed_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Changed At",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "changed_by",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Changed By",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "changed_by_role",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Changed By Role",
+   "options": "Sales\nDriver\nOffice",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "pin_section",
+   "fieldtype": "Section Break",
+   "label": "Pin"
+  },
+  {
+   "description": "Pin before the change (\"lat,lng\"). Empty when the party had no pin.",
+   "fieldname": "old_coordinates",
+   "fieldtype": "Data",
+   "label": "Old Coordinates",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_coordinates",
+   "fieldtype": "Data",
+   "label": "New Coordinates",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "description": "How far the pin moved. Empty when there was no old pin.",
+   "fieldname": "moved_distance_m",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Moved (m)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "method",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Method",
+   "options": "GPS Snap\nMaps Link",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "gps_accuracy_m",
+   "fieldtype": "Float",
+   "label": "GPS Accuracy (m)",
+   "precision": "1",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_mock_location",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Mock Location Detected",
+   "read_only": 1
+  },
+  {
+   "fieldname": "google_maps_link",
+   "fieldtype": "Small Text",
+   "label": "Google Maps Link",
+   "read_only": 1
+  },
+  {
+   "fieldname": "context_section",
+   "fieldtype": "Section Break",
+   "label": "Context"
+  },
+  {
+   "fieldname": "sales_visit",
+   "fieldtype": "Link",
+   "label": "Sales Visit",
+   "options": "Nexus Sales Visit",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "manifest",
+   "fieldtype": "Link",
+   "label": "Delivery Manifest",
+   "options": "Vehicle Delivery Manifest",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Name of the In Transit-Delivery Stop row.",
+   "fieldname": "stop_row",
+   "fieldtype": "Data",
+   "label": "Stop Row",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_context",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "label": "Device ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "app_version",
+   "fieldtype": "Data",
+   "label": "App Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "client_request_id",
+   "fieldtype": "Data",
+   "label": "Client Request ID",
+   "no_copy": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-25 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Location Correction Log",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager"
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "party_name,changed_by",
+ "sort_field": "changed_at",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "party_name"
+}

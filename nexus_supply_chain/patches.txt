@@ -4,4 +4,11 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+nexus_supply_chain.patches.v1_1.ensure_lead_geolocation_fields
 nexus_supply_chain.patches.v1_1.backfill_visit_type_and_on_site
+
+nexus_supply_chain.patches.v1_2.production_setup
+
+nexus_supply_chain.patches.v1_3.production_stock_settings
+
+nexus_supply_chain.patches.v1_4.driver_app_v1_1_backfill

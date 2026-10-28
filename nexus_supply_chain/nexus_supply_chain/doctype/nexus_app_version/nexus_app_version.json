@@ -5,20 +5,48 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "sales_minimum_version",
+  "column_break_versions",
+  "driver_minimum_version",
+  "legacy_section",
   "minimum_version"
  ],
  "fields": [
   {
+   "description": "Sales app builds older than this are asked to update. Format: 1.2.3",
+   "fieldname": "sales_minimum_version",
+   "fieldtype": "Data",
+   "label": "Sales App Minimum Version"
+  },
+  {
+   "fieldname": "column_break_versions",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Driver app builds older than this are asked to update. Set to 1.1.0 once the 1.1.0 APK is on every phone. Format: 1.2.3",
+   "fieldname": "driver_minimum_version",
+   "fieldtype": "Data",
+   "label": "Driver App Minimum Version"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "legacy_section",
+   "fieldtype": "Section Break",
+   "label": "Legacy"
+  },
+  {
+   "description": "Read by app builds released before the split. Kept in step with the Sales App Minimum Version automatically.",
    "fieldname": "minimum_version",
    "fieldtype": "Data",
-   "label": "Minimum Version"
+   "label": "Minimum Version (Legacy)",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-06-30 13:19:16.830428",
+ "modified": "2026-10-25 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus App Version",
@@ -39,5 +67,6 @@
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

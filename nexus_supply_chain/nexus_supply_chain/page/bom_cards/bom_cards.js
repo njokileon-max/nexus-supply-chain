@@ -6,8 +6,11 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
         single_column: true
     });
 
+    // Extract app name dynamically for the backend call (assuming standard app structure)
+    // If your app name isn't matching, replace 'current_app' manually below.
     const current_app = window.location.pathname.split('/')[1] || "nexus_supply_chain"; 
 
+    // --- Inject Styles ---
     const styles = `
     <style>
         .bom-card {
@@ -164,6 +167,8 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
     const $searchInput = $('#bom-search');
     let all_cards = [];
 
+    // --- Fetch Initial Payload ---
+    // --- Fetch Initial Payload ---
     frappe.call({
         method: `nexus_supply_chain.nexus_supply_chain.page.bom_cards.bom_cards.get_fg_cards`,
         callback: function(r) {
@@ -172,6 +177,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
                 all_cards = r.message;
                 render_cards(all_cards);
                 
+                // 🚨 FIX: Inter-Page Communication Deep Link Parser Protocol
                 parse_hash_parameters();
             } else {
                 $container.html(`<div class="alert alert-warning">No Finished Goods with active BOMs found.</div>`);
@@ -179,6 +185,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
         }
     });
 
+    // --- Parser Protocol Implementation ---
     function parse_hash_parameters() {
         let hash = window.location.hash;
         if (hash && hash.includes('item_code=')) {
@@ -186,13 +193,17 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
             let target_item = params.get('item_code');
             
             if (target_item) {
+                // Set value into search input box
                 $searchInput.val(target_item);
+                // Trigger the sorting filtration matrix mapping execution
                 $searchInput.trigger('keyup');
 
+                // Auto expand matching card matching the input data
                 setTimeout(() => {
                     let exact_card = $(`.bom-card[data-item-code="${target_item}"]`);
                     if (exact_card.length > 0) {
                         exact_card.find('.btn-expand-bom').trigger('click');
+                        // Scroll layout to position target item into user view viewport gracefully
                         $('html, body').animate({
                             scrollTop: exact_card.offset().top - 120
                         }, 500);
@@ -202,6 +213,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
         }
     }
 
+    // --- Render Base Cards ---
     function render_cards(items) {
     $container.empty();
     const currency = frappe.boot.sysdefaults.currency;
@@ -234,6 +246,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
         $container.append(card_html);
     });
 
+    // Button click — expand/collapse
     $(document).on('click', '.btn-expand-bom', function(e) {
         e.stopPropagation();
         const target_id = $(this).data('target');
@@ -251,6 +264,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
             }
         });
 
+        // Load data only once
         if ($body.children().length === 0) {
             $body.html(`
                 <div style="padding:12px 0; color:#64748b; font-size:13px;">
@@ -263,6 +277,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
     });
 }
 
+    // --- Fetch Deep Trace on Click ---
     function fetch_bom_explosion(item_code, $body_container) {
     frappe.call({
         method: `nexus_supply_chain.nexus_supply_chain.page.bom_cards.bom_cards.get_bom_explosion`,
@@ -300,12 +315,14 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
     });
 }
 
+    // --- Build Recursive Table ---
     function build_tree_table(tree, currency) {
     let rows = "";
     let grand_total = 0;
 
     function traverse(nodes, depth) {
         nodes.forEach(n => {
+            // Visual indentation
             const indent_html = depth > 0
                 ? `<span class="tree-indent">${'&nbsp;&nbsp;'.repeat(depth * 3)}↳</span>`
                 : '';
@@ -326,8 +343,10 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
                 badge = '<span class="lbl-zero-cost">✖ Update Required</span>';
             }
 
+            // Only accumulate top-level direct children for footer total
             if (depth === 0) grand_total += (n.extended_cost || 0);
 
+            // Separator row before sub-assembly block to visually group it
             const separator = (n.is_subassembly && depth === 0)
                 ? `<tr><td colspan="7" style="background:#dbeafe;padding:3px 10px;font-size:11px;color:#1e40af;font-weight:600;border-top:2px solid #93c5fd;">
                        ⚙ Sub-Assembly Breakdown — ${n.item_code} : ${n.item_name}
@@ -347,9 +366,11 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
                 </tr>
             `;
 
+            // Recurse into sub-assembly children
             if (n.children && n.children.length > 0) {
                 traverse(n.children, depth + 1);
 
+                // Closing sub-total row for each sub-assembly block
                 rows += `
                     <tr style="background:#eff6ff;">
                         <td colspan="5" class="text-right" style="font-size:11.5px;color:#1e40af;padding:5px 10px;font-style:italic;">
@@ -396,9 +417,12 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
     `;
 }
 
+    // --- Search / Filter Logic (Universal & Case Insensitive) ---
     $searchInput.on('keyup', function() {
     const raw = $(this).val().toLowerCase().trim();
 
+    // Normalize helper — collapses hyphens, underscores, extra spaces
+    // so "cover matt", "cover-matt", "cover  matt" all match the same cards
     function normalize(str) {
         return str
             .toLowerCase()
@@ -407,6 +431,8 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
             .trim();
     }
 
+    // Also split the search term into individual words for multi-word matching
+    // "cover matt" → every word must appear somewhere in name or code
     const normalizedTerm = normalize(raw);
     const words = normalizedTerm.split(' ').filter(w => w.length > 0);
 
@@ -415,6 +441,7 @@ frappe.pages['bom_cards'].on_page_load = function(wrapper) {
         const normName = normalize($(this).attr('data-item-name'));
         const haystack = normCode + ' ' + normName;
 
+        // Every word in the search must be found somewhere in haystack
         const match = words.length === 0 || words.every(w => haystack.includes(w));
 
         $(this).toggle(match);

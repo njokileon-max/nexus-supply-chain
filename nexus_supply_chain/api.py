@@ -7,6 +7,7 @@ import math
 from datetime import datetime
 from html import escape as _html_escape
 from frappe.utils import today, add_days, add_months, get_first_day, get_last_day, get_datetime, flt, getdate, cint
+from nexus_supply_chain.fastapi_client import fastapi_url, internal_headers, push_post, pushes_enabled
 
 def parse_combined_coords(combined, fallback_lat=None, fallback_lng=None):
     """
@@ -56,7 +57,8 @@ NEXUS_COORD_FIELDS = ("custom_latitude", "custom_longitude", "custom_combined_co
 
 
 def _coord_text(value):
-
+    """One coordinate as exact text: strings kept as given (trimmed), numbers
+    in Python's shortest round-trip form. Returns "" for anything unusable."""
     if value is None or isinstance(value, bool):
         return ""
     if isinstance(value, str):
@@ -68,7 +70,12 @@ def _coord_text(value):
 
 
 def build_coordinate_fields(latitude=None, longitude=None, combined=None):
-
+    """
+    Builds the three coordinate field values from whatever the caller has.
+    The combined "lat,lng" text wins when it is valid (it is the exact value
+    the app or geocoder produced); otherwise latitude/longitude are used.
+    Returns (fields_dict, (lat, lng)) or (None, None) if no valid pin results.
+    """
     lat_txt = lng_txt = ""
     if combined not in (None, ""):
         parts = [p.strip() for p in str(combined).split(",")]
@@ -90,19 +97,37 @@ def build_coordinate_fields(latitude=None, longitude=None, combined=None):
 
 
 def _existing_columns_only(doctype, fields):
-
+    """Drops any field the doctype doesn't have, so a site missing one of the
+    custom fields degrades gracefully instead of failing the write."""
     return {k: v for k, v in (fields or {}).items() if frappe.db.has_column(doctype, k)}
 
+# ============================================================================
+# 🚨 VISIT LOCATION CORRECTION ENGINE (server-authoritative)
+# Single source of truth for recomputing a visit's distance after the
+# customer's location is corrected mid-visit. Used by
+# update_customer_coordinates (the app's path), the hardened
+# register_sales_check_in_correction, and the one-off backfill. The distance
+# is ALWAYS recomputed here from the check-in point stored on the visit
+# (latitude/longitude written by register_sales_check_in) against the
+# customer's new coordinates. A client-supplied distance is never trusted.
+# ============================================================================
 NEXUS_ON_SITE_THRESHOLD_METERS = 100.0
 NEXUS_LOCATION_SOURCES = ("GPS Snap", "Maps Link")
 NEXUS_GPS_SNAP_LINK_LABEL = "Generated from Sales Native GPS"
 
+# 🚨 VISIT PARTY MODEL — which Nexus Sales Visit link field holds the visited
+# party for each visit_type. Every visit helper reads this map instead of
+# branching on customer/lead, so a future visit type is one entry here.
 NEXUS_VISIT_PARTY_FIELDS = {"Customer": "customer", "Lead": "lead"}
 NEXUS_LEAD_CONVERTED_STATUS = "Converted"
 
 
 def haversine_meters(lat1, lng1, lat2, lng2):
-
+    """
+    Great-circle distance in meters. Same earth radius and formula as
+    register_sales_check_in and App.tsx's getDistance, so every distance in
+    the system is computed identically.
+    """
     lat1, lng1, lat2, lng2 = float(lat1), float(lng1), float(lat2), float(lng2)
     dlat = math.radians(lat2 - lat1)
     dlng = math.radians(lng2 - lng1)
@@ -111,7 +136,11 @@ def haversine_meters(lat1, lng1, lat2, lng2):
     return 6371000.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def compute_is_on_site(target_coordinates, distance):
-
+    """
+    THE on-site rule. Used by the Nexus Sales Visit controller, the location
+    correction engine and the patch — never duplicated elsewhere.
+    On-site = the target had valid coordinates AND distance <= threshold.
+    """
     if not parse_combined_coords(target_coordinates):
         return 0
     if distance is None or distance == "":
@@ -120,7 +149,13 @@ def compute_is_on_site(target_coordinates, distance):
 
 
 def _get_party_target_coords(party_type, party):
-
+    """
+    The pin a visit's distance is measured against, identical for Customer
+    and Lead: custom_combined_coordinates first (exact string), then
+    custom_latitude/custom_longitude. Columns are checked first, so a doctype
+    missing one of the GeoLocation custom fields degrades to "no coordinates"
+    (visit recorded Off-Site) instead of crashing the check-in.
+    """
     if not party or party_type not in NEXUS_VISIT_PARTY_FIELDS:
         return None
     fields = [f for f in ("custom_combined_coordinates", "custom_latitude", "custom_longitude")
@@ -136,7 +171,12 @@ def _get_party_target_coords(party_type, party):
 
 
 def get_lead_status_options(include_converted=False):
-
+    """
+    Lead statuses read live from the Lead doctype definition, so options added
+    or renamed in Customize Form reach the app with no code change.
+    "Converted" is excluded by default: ERPNext sets it itself when the office
+    creates a Customer from the Lead, and the app must never set it.
+    """
     field = frappe.get_meta("Lead").get_field("status")
     options = [o.strip() for o in (field.options or "").split("\n") if o.strip()] if field else []
     if not include_converted:
@@ -145,7 +185,12 @@ def get_lead_status_options(include_converted=False):
 
 
 def _lead_access_error(lead_owner, session_user):
-
+    """
+    Server-side scope check for lead actions. Allowed when the Lead Owner is
+    the caller, or anyone inside the caller's Sales Person hierarchy (so a
+    manager can act on a subordinate's lead). Returns None when allowed,
+    otherwise a human-readable reason.
+    """
     owner = (lead_owner or "").strip().lower()
     me = (session_user or "").strip().lower()
     if not owner:
@@ -158,7 +203,11 @@ def _lead_access_error(lead_owner, session_user):
 
 
 def _get_open_visits_today(session_user):
-
+    """
+    The caller's still-open visits that were checked in TODAY. Visits left
+    open on earlier days (app killed, no check-out) are deliberately ignored
+    so a stale record can never lock a rep out of checking in.
+    """
     return frappe.db.sql("""
         SELECT name, visit_type, customer, lead, party_name, check_in_time
         FROM `tabNexus Sales Visit`
@@ -168,6 +217,12 @@ def _get_open_visits_today(session_user):
         ORDER BY creation DESC
     """, (session_user, today()), as_dict=True)
 
+
+
+# 🚨 LEAD SYNC — the Lead fields the app uses. Also the list of fields whose
+# change triggers an app refresh (trigger_lead_refresh), so the two can
+# never drift apart. Every read is column-checked, so a field missing on a
+# site is simply left out instead of breaking the sync.
 NEXUS_LEAD_SYNC_FIELDS = (
     "lead_name", "company_name", "first_name", "last_name", "job_title",
     "status", "type", "mobile_no", "phone", "whatsapp_no", "email_id",
@@ -177,7 +232,9 @@ NEXUS_LEAD_SYNC_FIELDS = (
 
 
 def _sales_person_names_for_emails(emails):
-
+    """Login email (lowercase) -> Sales Person name. Covers both the
+    Employee-linked pattern and the legacy "email stored directly in
+    Sales Person.employee" pattern used elsewhere in this file."""
     owners = tuple({(e or "").strip().lower() for e in (emails or []) if e})
     if not owners:
         return {}
@@ -203,7 +260,12 @@ def _sales_person_names_for_emails(emails):
 
 
 def _build_lead_rows(where_sql, params):
-
+    """
+    THE lead row shape the app consumes. Used by the sync (get_scoped_leads)
+    and by create_mobile_lead's response, so a freshly registered lead and
+    the same lead after the next sync are byte-for-byte identical.
+    where_sql uses %s placeholders against alias `l` (tabLead).
+    """
     columns = ["l.name"] + [f"l.`{f}`" for f in NEXUS_LEAD_SYNC_FIELDS if frappe.db.has_column("Lead", f)]
     last_visit_select = (
         "(SELECT MAX(v.check_in_time) FROM `tabNexus Sales Visit` v WHERE v.lead = l.name) AS last_visited_at"
@@ -236,7 +298,11 @@ def _build_lead_rows(where_sql, params):
 
 
 def get_scoped_leads(target_email):
-
+    """
+    Leads visible to target_email: Lead Owner is target_email or anyone in
+    their Sales Person hierarchy (same Shape A scope as customers), status
+    not Converted.
+    """
     owner_emails = {e.strip().lower() for e in get_authorized_sales_emails(target_email) if e}
     if target_email:
         owner_emails.add(target_email.strip().lower())
@@ -256,9 +322,28 @@ def _get_lead_row(lead_name):
     return rows[0] if rows else None
 
 
+# ============================================================================
+# 🚨 LEAD REGISTRATION (reps register leads; the office creates customers)
+#
+# create_mobile_lead is the ONLY write path. The server owns every decision
+# that matters: who the owner is, phone/email normalisation, duplicate
+# detection, which starting statuses are allowed. The Lead is inserted
+# through ERPNext v15's normal insert, so naming, lead_name building,
+# status rules and CRM Settings' auto contact creation all run as usual,
+# and the existing Lead hooks (trigger_lead_refresh, geocoding) fire.
+#
+# Dropdown options are read live from the Lead doctype and sent with the
+# normal sync (get_lead_form_options), so Customize Form changes reach the
+# app with no code change.
+# ============================================================================
+
+# Statuses ERPNext derives itself from linked documents — a brand-new lead
+# must never start in one of them.
 NEXUS_LEAD_SYSTEM_STATUSES = ("Converted", "Opportunity", "Quotation", "Lost Quotation")
 NEXUS_LEAD_DEFAULT_STATUS = "Lead"
 
+# Fields the registration form can fill. Sent to the app as available_fields
+# (only those that exist on this site), so the app hides anything missing.
 NEXUS_LEAD_FORM_FIELDS = (
     "company_name", "first_name", "last_name", "job_title",
     "mobile_no", "whatsapp_no", "phone", "email_id",
@@ -271,6 +356,7 @@ NEXUS_LEAD_CREATE_LOCK_TTL_SEC = 30
 
 
 def _select_options(doctype, fieldname):
+    """Options of a Select field, read live from the doctype (Customize Form aware)."""
     field = frappe.get_meta(doctype).get_field(fieldname)
     if not field or field.fieldtype != "Select":
         return []
@@ -278,11 +364,16 @@ def _select_options(doctype, fieldname):
 
 
 def get_lead_creatable_statuses():
+    """Every Lead status except the ones ERPNext sets itself."""
     return [o for o in get_lead_status_options(include_converted=True) if o not in NEXUS_LEAD_SYSTEM_STATUSES]
 
 
 def get_lead_assignable_owners(user_email):
-
+    """
+    Who user_email may register a lead for: themselves plus every active
+    login inside their Sales Person hierarchy. Self first, then by name.
+    A plain rep gets a one-item list (the app hides the picker then).
+    """
     me = (user_email or "").strip().lower()
     emails = {e.strip().lower() for e in get_authorized_sales_emails(user_email) if e}
     if me:
@@ -334,7 +425,11 @@ def get_lead_form_options(user_email):
 
 
 def normalize_kenyan_mobile(raw):
-
+    """
+    Kenyan mobile -> '2547XXXXXXXX' / '2541XXXXXXXX' (12 digits), or None.
+    Accepts 07.., 01.., +254.., 254.., 7../1.. (9 digits), with spaces,
+    dashes or brackets. Mirrors the app's sanitizeKenyanPhone.
+    """
     import re
     digits = re.sub(r"\D", "", str(raw or ""))
     if len(digits) == 10 and digits.startswith("0"):
@@ -345,13 +440,16 @@ def normalize_kenyan_mobile(raw):
 
 
 def _phone_tail(value):
+    """Last 9 digits: the part every format of the same Kenyan number shares."""
     import re
     digits = re.sub(r"\D", "", str(value or ""))
     return digits[-9:] if len(digits) >= 9 else None
 
 
 def _phone_tail_sql(column):
-
+    """SQL expression: the last 9 characters of a phone column with common
+    separators stripped, so stored '0712 345 678', '+254712345678' and
+    '254712345678' all compare equal to '712345678'."""
     expr = f"IFNULL({column}, '')"
     for ch in (" ", "-", "+", "(", ")", "."):
         expr = f"REPLACE({expr}, '{ch}', '')"
@@ -408,7 +506,8 @@ def _find_matching_customer(tails):
 
 
 def _resolve_lead_owner(requested_owner, session_user):
-
+    """(owner_user_id, None) or (None, reason). Blank or self -> the caller;
+    anyone else must be an active login inside the caller's hierarchy."""
     requested = (requested_owner or "").strip()
     if not requested or requested.lower() == (session_user or "").strip().lower():
         return session_user, None
@@ -479,7 +578,26 @@ def _add_lead_registration_comment(lead, session_user, owner, location_source, c
 
 @frappe.whitelist(methods=["POST"])
 def create_mobile_lead(payload):
+    """
+    Registers a Lead from the app.
 
+    payload keys (all optional unless stated):
+      client_request_id   one ID per submission; retries reuse it
+      lead_owner          managers only: a team member's login email
+      company_name / first_name   at least one REQUIRED
+      last_name, job_title
+      mobile_no           REQUIRED, Kenyan mobile (any common format)
+      whatsapp_no         Kenyan mobile
+      phone               any format (landlines allowed)
+      email_id
+      territory, source, type, status
+      custom_location
+      google_maps_link, latitude, longitude, custom_combined_coordinates, location_source
+      allow_customer_match   1 = "Register Anyway" after a MATCHES_CUSTOMER warning
+
+    Success: {"status": "success", "lead": <row as in sync>, ...}
+    Error:   {"status": "error", "code": ..., "message": ..., ["field": ...]}
+    """
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -492,9 +610,11 @@ def create_mobile_lead(payload):
         value = payload.get(key)
         return value.strip() if isinstance(value, str) else value
 
+    # 1. Sales Person profile
     if not get_root_sales_person(session_user):
         return _lead_error("NO_SALES_PROFILE", "Your account has no Sales Person profile, so leads can't be registered.")
 
+    # 2. Idempotency — a retry of a completed request gets the same answer
     request_id = str(payload.get("client_request_id") or "").strip()[:64]
     result_key = f"nexus_lead_create_result:{session_user.lower()}:{request_id}" if request_id else None
     if result_key:
@@ -504,10 +624,12 @@ def create_mobile_lead(payload):
             replay["replayed"] = True
             return replay
 
+    # 3. Owner
     owner, owner_error = _resolve_lead_owner(clean("lead_owner"), session_user)
     if owner_error:
         return _lead_error("OWNER_NOT_ALLOWED", owner_error, field="lead_owner")
 
+    # 4. Identity and contact details
     company_name = clean("company_name") or ""
     first_name = clean("first_name") or ""
     if not company_name and not first_name:
@@ -532,6 +654,7 @@ def create_mobile_lead(payload):
         if email_id == (owner or "").lower():
             return _lead_error("INVALID_EMAIL", "The lead's email can't be the owner's own login email.", field="email_id")
 
+    # 5. Classification — validated against live options / records
     creatable = get_lead_creatable_statuses()
     status = clean("status") or (NEXUS_LEAD_DEFAULT_STATUS if NEXUS_LEAD_DEFAULT_STATUS in creatable else None)
     if status and status not in creatable:
@@ -549,6 +672,7 @@ def create_mobile_lead(payload):
     if lead_type and lead_type not in _select_options("Lead", "type"):
         return _lead_error("INVALID_FIELD", f"Lead Type \"{lead_type}\" isn't a valid option.", field="type")
 
+    # 6. Location — exact text, same builder as every other coordinate write
     link = clean("google_maps_link") or ""
     coord_fields, _point = build_coordinate_fields(
         payload.get("latitude"), payload.get("longitude"), payload.get("custom_combined_coordinates")
@@ -562,6 +686,7 @@ def create_mobile_lead(payload):
         else:
             location_source = None
 
+    # 7. Duplicates + insert, serialised per mobile number
     tails = sorted({t for t in (_phone_tail(mobile_no), _phone_tail(whatsapp_no), _phone_tail(phone)) if t})
     lock_name = f"nexus_lead_create_lock:{_phone_tail(mobile_no)}"
     cache = frappe.cache()
@@ -658,8 +783,18 @@ def create_mobile_lead(payload):
         frappe.cache().set_value(result_key, result, expires_in_sec=NEXUS_LEAD_CREATE_RESULT_TTL_SEC)
     return result
 
-def _create_sales_visit(party_type, party, lat, lng, target_coords, extra_fields=None):
 
+def _create_sales_visit(party_type, party, lat, lng, target_coords, extra_fields=None):
+    """
+    THE check-in routine for every visit type. Records the check-in point,
+    the distance to the target pin, the pin itself (target_coordinates) and
+    the permanent original distance. is_on_site is then set by the Nexus
+    Sales Visit controller on insert, via compute_is_on_site. Nothing here
+    decides on-site status itself.
+
+    A missing target pin or an unusable check-in point both leave the
+    distance empty, which the controller records as Off-Site.
+    """
     distance = None
     checkin_point = parse_combined_coords(None, lat, lng)
     if target_coords and checkin_point:
@@ -677,7 +812,9 @@ def _create_sales_visit(party_type, party, lat, lng, target_coords, extra_fields
     doc.distance_from_target_meters = distance
     if target_coords:
         doc.target_coordinates = f"{target_coords[0]},{target_coords[1]}"
-
+    # 🚨 AUDIT: the check-in distance is also kept as the permanent
+    # "original" value. A later location correction recomputes
+    # distance_from_target_meters but never touches this field.
     if distance is not None and frappe.db.has_column("Nexus Sales Visit", "original_distance_from_target_meters"):
         doc.original_distance_from_target_meters = distance
     for fieldname, value in (extra_fields or {}).items():
@@ -688,7 +825,12 @@ def _create_sales_visit(party_type, party, lat, lng, target_coords, extra_fields
 
 
 def _get_visit_for_correction(visit_name):
-
+    """
+    Loads the fields needed to evaluate/apply a correction, row-locked
+    (for_update) so two concurrent corrections on the same visit serialize
+    instead of racing on the original-distance capture. Newer fields are
+    only selected if they exist, so this never breaks on a pre-migrate site.
+    """
     fields = ["name", "sales_person", "customer", "latitude", "longitude",
               "check_out_time", "distance_from_target_meters"]
     for optional in ("visit_type", "lead", "original_distance_from_target_meters", "location_corrected"):
@@ -698,7 +840,18 @@ def _get_visit_for_correction(visit_name):
 
 
 def _resolve_open_visit_for_correction(party_type, party, session_user, visit_id=None):
+    """
+    Finds the visit a location correction applies to, for a Customer or a
+    Lead. Returns (visit_row, None) on success or (None, reason) otherwise.
 
+    Resolution order:
+      1. visit_id, if supplied and it exists.
+      2. Otherwise the CALLER'S most recent still-open visit for this party
+         (covers the window where the app hasn't received visit_id yet).
+
+    Guards: the visit must belong to the calling session, be for this exact
+    party, and still be open. A closed visit's distance is a settled record.
+    """
     party_field = NEXUS_VISIT_PARTY_FIELDS.get(party_type)
     if not party_field:
         return None, "Unsupported visit type, so no visit distance was changed."
@@ -710,7 +863,8 @@ def _resolve_open_visit_for_correction(party_type, party, session_user, visit_id
     if visit_id and frappe.db.exists("Nexus Sales Visit", visit_id):
         visit = _get_visit_for_correction(visit_id)
     else:
-
+        # party_field comes from NEXUS_VISIT_PARTY_FIELDS (never user input),
+        # so interpolating the column name is safe.
         rows = frappe.db.sql(f"""
             SELECT name FROM `tabNexus Sales Visit`
             WHERE sales_person = %s AND `{party_field}` = %s
@@ -732,7 +886,17 @@ def _resolve_open_visit_for_correction(party_type, party, session_user, visit_id
 
 
 def _apply_visit_location_correction(visit, target_coords, location_source=None):
-
+    """
+    Recomputes the visit's distance from its stored check-in point to
+    target_coords and writes it together with the audit trail:
+      - target_coordinates / is_on_site (via compute_is_on_site)
+      - original_distance_from_target_meters: the pre-correction distance,
+        captured ONLY on the first correction so repeated corrections can
+        never erase the true check-in value.
+      - location_corrected / location_corrected_at / location_correction_source.
+    Works identically for Customer and Lead visits.
+    Does NOT commit; the caller owns the transaction.
+    """
     base = {
         "visit_updated": False,
         "visit_id": visit.name,
@@ -787,12 +951,20 @@ def _apply_visit_location_correction(visit, target_coords, location_source=None)
     return base
 
 class NexusVersionOutdatedError(frappe.ValidationError):
-
+    # Frappe maps exception classes to HTTP status via this attribute —
+    # same mechanism frappe.PermissionError (403) / DoesNotExistError (404)
+    # use internally. Setting it here means frappe.throw(exc=...) below
+    # actually returns a real 426, not a generic 417/500.
     http_status_code = 426
 
 
 def _version_tuple(v):
-
+    """
+    Converts a version string like '1.1.1' into (1, 1, 1) for comparison.
+    Non-numeric or malformed segments fall back to 0 rather than raising,
+    so a corrupted/odd version string never crashes the check — it just
+    compares as lower than any real version.
+    """
     if not v:
         return (0,)
     parts = []
@@ -804,15 +976,32 @@ def _version_tuple(v):
     return tuple(parts)
 
 
-def enforce_minimum_app_version():
+NEXUS_APP_LABELS = {"sales": "Nexus Sales", "driver": "Nexus Driver"}
 
+
+def enforce_minimum_app_version():
+    """
+    before_request hook. Acts only when X-App-Version is present (only the
+    Nexus apps send it), and also on login, since that call runs as Guest.
+
+    X-App-Name selects which minimum applies: "driver" or "sales". A request
+    without X-App-Name is treated as the Sales app, which is exactly what
+    every build released before the split expects, so old builds behave as
+    before. The minimums are read from the cached Nexus App Version doc.
+    """
     client_version = frappe.request.headers.get("X-App-Version")
     if not client_version:
         return
 
+    app_name = (frappe.request.headers.get("X-App-Name") or "sales").strip().lower()
+    if app_name not in NEXUS_APP_LABELS:
+        app_name = "sales"
+
     try:
-        settings = frappe.get_cached_doc("Nexus App Version")
-        min_version = getattr(settings, "minimum_version", None)
+        from nexus_supply_chain.nexus_supply_chain.doctype.nexus_app_version.nexus_app_version import (
+            get_minimum_version,
+        )
+        min_version = get_minimum_version(app_name)
     except Exception as e:
         frappe.log_error(title="Nexus Version Gate Lookup Failed", message=str(e))
         return
@@ -822,7 +1011,8 @@ def enforce_minimum_app_version():
 
     if _version_tuple(client_version) < _version_tuple(min_version):
         frappe.throw(
-            msg="This version of Nexus Sales is no longer supported. Please update to continue.",
+            msg=f"This version of {NEXUS_APP_LABELS[app_name]} is no longer supported. "
+                f"Please install version {min_version} or newer to continue.",
             exc=NexusVersionOutdatedError,
             title="Update Required"
         )
@@ -851,7 +1041,8 @@ NEXUS_GEOCODE_LOCK_TTL_SEC = 30 * 60
 
 
 def _is_geocodable_link(link):
-
+    """True for something that looks like a Google Maps link. The GPS-snap
+    label and free text are never sent to the geocoder."""
     text = (link or "").strip()
     if not text or text == NEXUS_GPS_SNAP_LINK_LABEL:
         return False
@@ -879,6 +1070,7 @@ def _mark_geocode_failed(party_type, name, link):
 
 
 def _geocode_link(link):
+    """Calls Crystal API. Returns (fields, None) on success or (None, reason)."""
     response = requests.post(NEXUS_GEOCODE_URL, json={"url": (link or "").strip()}, timeout=15)
     if response.status_code != 200:
         return None, f"Geocoder HTTP {response.status_code}"
@@ -894,12 +1086,22 @@ def _geocode_link(link):
 
 
 def _apply_geocoded_coordinates(party_type, name, fields, link):
-
+    """Writes the three text fields and a timeline comment. Direct
+    db.set_value (no doc hooks, no 'modified' change). For a Customer, every
+    open delivery stop moves to the new pin and the drivers are told after
+    the commit. Does NOT commit."""
     update = _existing_columns_only(party_type, fields)
     if not update:
         return False
 
     frappe.db.set_value(party_type, name, update, update_modified=False)
+
+    if party_type == "Customer":
+        from nexus_supply_chain.driver_api import push_manifest_refresh, refresh_customer_stop_pins
+        pin = fields["custom_combined_coordinates"]
+        affected = refresh_customer_stop_pins(name, pin, parse_combined_coords(pin))
+        if affected:
+            push_manifest_refresh(affected, reason="customer_pin_geocoded")
 
     frappe.get_doc({
         "doctype": "Comment",
@@ -917,7 +1119,8 @@ def _apply_geocoded_coordinates(party_type, name, fields, link):
 
 
 def _notify_party_location_changed(party_type, name):
-
+    """db.set_value fires no hooks, so the reps who see this record are told
+    directly (same audience as the normal Customer/Lead refresh hooks)."""
     affected = set()
     extra = None
 
@@ -939,7 +1142,15 @@ def _notify_party_location_changed(party_type, name):
 
 
 def queue_party_geocoding(doc, method=None):
-
+    """
+    Customer/Lead hook (after_insert + on_change). Queues ONE geocoding job
+    per save, and only when it's useful:
+      - the record has a real Maps link (not the GPS-snap label), and
+      - it has no valid pin yet, OR the link was replaced while the
+        coordinates were left untouched (the old pin no longer matches).
+    Coordinates saved in the same edit (app snap, customer creation, a user
+    typing them) are never overwritten. Imports are left to the bulk sweep.
+    """
     if getattr(frappe.flags, "in_import", False):
         return
     if doc.doctype not in NEXUS_VISIT_PARTY_FIELDS:
@@ -986,7 +1197,12 @@ def queue_customer_geocoding(doc, method=None):
 
 
 def execute_external_geocode_call(doc_name, link, party_type="Customer"):
-
+    """
+    Background job. party_type defaults to Customer so jobs queued before
+    this release (doc_name, link only) still run correctly.
+    Skips silently if the record's link changed after this job was queued —
+    the newer save queued its own job.
+    """
     try:
         if party_type not in NEXUS_VISIT_PARTY_FIELDS or not frappe.db.exists(party_type, doc_name):
             return
@@ -1016,7 +1232,13 @@ def execute_external_geocode_call(doc_name, link, party_type="Customer"):
 
 
 def _collect_geocoding_targets(limit):
-
+    """
+    Records with a Maps link but no valid pin, newest first, across every
+    party type. SQL narrows the candidates; parse_combined_coords makes the
+    final decision so the rule is identical to everywhere else. Converted
+    leads, disabled customers, snap labels and recently failed links are
+    skipped.
+    """
     targets = []
     for party_type in NEXUS_VISIT_PARTY_FIELDS:
         if len(targets) >= limit:
@@ -1063,7 +1285,11 @@ def _collect_geocoding_targets(limit):
 
 
 def process_bulk_geocoding_queue():
-
+    """
+    Cron (every 10 minutes). Only a cheap check runs here; the slow,
+    rate-limited work runs on the long queue so it can't hit the default
+    queue's time limit.
+    """
     try:
         if _collect_geocoding_targets(limit=1):
             frappe.enqueue("nexus_supply_chain.api.run_bulk_geocoding", queue="long", timeout=1800)
@@ -1072,7 +1298,11 @@ def process_bulk_geocoding_queue():
 
 
 def run_bulk_geocoding():
-
+    """
+    Long-queue worker. A Redis lock makes sure only one sweep runs at a time.
+    Each record is committed on its own, with a random 4-7 s pause between
+    calls. One global app refresh is flagged at the end.
+    """
     import time
     import random
 
@@ -1114,7 +1344,10 @@ def run_bulk_geocoding():
 
 @frappe.whitelist()
 def check_mobile_app_access():
-
+    """
+    Strictly checks the user's native ERPNext Role Profile against the allowed
+    roles in Nexus App Settings. No hardcoded admin bypasses.
+    """
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "denied", "message": "Please log in first."}
@@ -1146,7 +1379,10 @@ def check_mobile_app_access():
 
 @frappe.whitelist(allow_guest=True)
 def get_user_profile():
-
+    """
+    Called by the React Native app immediately after native login.
+    Returns the user's details, roles, CSRF token, and the SID to authorize proxy requests.
+    """
     if frappe.session.user == "Guest":
         frappe.local.response["http_status_code"] = 401
         return {"status": "failed", "message": "Unauthorized"}
@@ -1165,340 +1401,90 @@ def get_user_profile():
         }
     }
 
-@frappe.whitelist()
-def get_nexus_live_inventory():
-    reservations = frappe.db.sql("""
-        SELECT ri.item_code, ri.sales_order, SUM(ri.reserved_qty) as reserved_qty
-        FROM `tabNexus Inventory Reservation Item` ri
-        JOIN `tabNexus Inventory Reservation` r ON ri.parent = r.name
-        WHERE r.reservation_status IN ('Active', 'Waiting for Stock') AND r.docstatus = 1
-        GROUP BY ri.item_code, ri.sales_order
-    """, as_dict=True)
-
-    if not reservations:
-        return []
-
-    active_items = list(set([r['item_code'] for r in reservations if r.get('item_code')]))
-    active_sos = list(set([r['sales_order'] for r in reservations if r.get('sales_order')]))
-
-    if not active_items or not active_sos:
-        return []
-
-    format_items = ','.join(['%s'] * len(active_items))
-    format_sos = ','.join(['%s'] * len(active_sos))
-
-    sales_orders = frappe.db.sql(f"""
-        SELECT so.name as sales_order, soi.item_code, soi.qty
-        FROM `tabSales Order` so
-        JOIN `tabSales Order Item` soi ON so.name = soi.parent
-        WHERE so.status = 'To Deliver and Bill' AND so.docstatus = 1
-        AND so.name IN ({format_sos})
-        AND soi.item_code IN ({format_items})
-    """, tuple(active_sos + active_items), as_dict=True)
-
-    items = frappe.db.sql(f"""
-        SELECT name as item_code, item_name
-        FROM `tabItem`
-        WHERE name IN ({format_items})
-    """, tuple(active_items), as_dict=True)
-
-    stock = frappe.db.sql(f"""
-        SELECT item_code, SUM(actual_qty) as actual_qty
-        FROM `tabBin`
-        WHERE warehouse = 'Finished Goods - CAL' AND item_code IN ({format_items})
-        GROUP BY item_code
-    """, tuple(active_items), as_dict=True)
-
-    payload = {
-        "items": items,
-        "stock": stock,
-        "sales_orders": sales_orders,
-        "reservations": reservations
-    }
-
-    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/live-inventory"
-
-    try:
-        response = requests.post(fastapi_url, json=payload, timeout=15)
-        response.raise_for_status()
-        return response.json().get("data", [])
-    except Exception as e:
-        frappe.log_error(message=str(e), title="Nexus Live Inventory Sync Failed")
-        return []
-
-
-@frappe.whitelist()
-def get_nexus_production_data():
-    sales_orders = frappe.db.sql("""
-        SELECT so.name as sales_order, soi.item_code, soi.qty
-        FROM `tabSales Order` so
-        JOIN `tabSales Order Item` soi ON so.name = soi.parent
-        WHERE so.status = 'To Deliver and Bill' AND so.docstatus = 1
-    """, as_dict=True)
-
-    reservations = frappe.db.sql("""
-        SELECT ri.item_code, ri.sales_order, SUM(ri.reserved_qty) as reserved_qty
-        FROM `tabNexus Inventory Reservation Item` ri
-        JOIN `tabNexus Inventory Reservation` r ON ri.parent = r.name
-        WHERE r.reservation_status IN ('Active', 'Waiting for Stock') AND r.docstatus = 1
-        GROUP BY ri.item_code, ri.sales_order
-    """, as_dict=True)
-
-    mrl_breaches = frappe.db.sql("""
-        SELECT i.name as item_code
-        FROM `tabItem` i
-        LEFT JOIN `tabBin` b ON i.name = b.item_code AND b.warehouse = 'Finished Goods - CAL'
-        WHERE i.custom_linked_bip IS NOT NULL
-        AND i.custom_minimum_reorder_level > 0
-        AND IFNULL(b.actual_qty, 0) <= i.custom_minimum_reorder_level
-    """, as_dict=True)
-
-    active_items = list(set(
-        [so['item_code'] for so in sales_orders] +
-        [r['item_code'] for r in reservations] +
-        [m['item_code'] for m in mrl_breaches]
-    ))
-
-    if not active_items: return []
-
-    format_items = ','.join(['%s'] * len(active_items))
-    tuple_items = tuple(active_items)
-
-    fgs = frappe.db.sql(f"""
-        SELECT
-            i.name as item_code,
-            i.item_name,
-            i.custom_linked_bip,
-            i.custom_minimum_reorder_level as mrl,
-            i.custom_maximum_shelf_capacity as max_shelf,
-            i.weight_per_unit,
-            (SELECT bi.item_code
-             FROM `tabBOM Item` bi
-             JOIN `tabBOM` b ON bi.parent = b.name
-             JOIN `tabItem` pack_item ON bi.item_code = pack_item.name
-             WHERE b.item = i.name AND b.is_default = 1 AND b.docstatus = 1
-             AND pack_item.item_group = 'Packaging Materials' LIMIT 1) as pack_code
-        FROM `tabItem` i
-        WHERE i.name IN ({format_items}) AND i.custom_linked_bip IS NOT NULL
-    """, tuple_items, as_dict=True)
-
-    active_bips = list(set([fg['custom_linked_bip'] for fg in fgs if fg.get('custom_linked_bip')]))
-    if not active_bips: return []
-    format_bips = ','.join(['%s'] * len(active_bips))
-    tuple_bips = tuple(active_bips)
-
-    bips = frappe.db.sql(f"""
-        SELECT name as bip_code, item_name as bip_name, custom_minimum_production_level as min_batch
-        FROM `tabItem`
-        WHERE custom_is_bip = 1 AND name IN ({format_bips})
-    """, tuple_bips, as_dict=True)
-
-    stock = frappe.db.sql(f"""
-        SELECT item_code, SUM(actual_qty) as actual_qty
-        FROM `tabBin`
-        WHERE warehouse = 'Finished Goods - CAL' AND item_code IN ({format_items})
-        GROUP BY item_code
-    """, tuple_items, as_dict=True)
-
-    payload = {"bips": bips, "fgs": fgs, "stock": stock, "sales_orders": sales_orders, "reservations": reservations}
-    fastapi_url = "https://crystal-api.crystalapps.dev/api/v1/production-cards"
-
-    try:
-        response = requests.post(fastapi_url, json=payload, timeout=15)
-        response.raise_for_status()
-        return response.json().get("data", [])
-    except Exception as e:
-        frappe.log_error(message=str(e), title="Nexus Production Sync Failed")
-        return []
-
+# ============================================================================
+# 🚚 DRIVER ENDPOINTS (legacy names)
+# Driver app builds before 1.1.0, FastAPI's driver vault and fuel proxy call
+# these names. They are now thin wrappers over nexus_supply_chain.driver_api,
+# so old and new apps share the same authorisation, row locking,
+# validation, server-side distance and trip-state rules. Response shapes
+# are unchanged. New code calls driver_api directly.
+# ============================================================================
 @frappe.whitelist(allow_guest=False)
 def sync_manifest_from_app(manifest_name, trip_status=None, stops=None):
-    doc = frappe.get_doc("Vehicle Delivery Manifest", manifest_name)
+    """
+    LEGACY. trip_status: "Dispatched" (start), "Returning" or "Completed"
+    (arrival at the yard). stops: [{name, delivery_status, driver_notes,
+    primary_reason_for_return, returned_items: [{item_code, qty_returned}]}].
+    A retried stop with the same status is treated as already done.
+    """
+    from nexus_supply_chain import driver_api
 
-    if trip_status:
-        doc.trip_status = trip_status
+    results = []
 
     if stops:
-        if isinstance(stops, str):
-            stops = json.loads(stops)
+        parsed = stops
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except Exception:
+                return {"status": "error", "code": "BAD_PAYLOAD", "message": "The stop data could not be read."}
 
-        for app_stop in stops:
-            target_sales_order = None
-            for d in doc.stops:
-                if d.name == app_stop.get("name"):
-                    d.delivery_status = app_stop.get("delivery_status")
-                    d.driver_notes = app_stop.get("driver_notes")
-                    target_sales_order = d.sales_order
-                    break
+        for app_stop in parsed or []:
+            if not isinstance(app_stop, dict):
+                continue
+            result = driver_api._run(lambda s=app_stop: driver_api._confirm_stop(
+                manifest_name,
+                s.get("name"),
+                s.get("delivery_status"),
+                returned_items=s.get("returned_items"),
+                return_reason=s.get("primary_reason_for_return") or s.get("return_reason"),
+                notes=s.get("driver_notes") or s.get("delivery_notes") or s.get("notes"),
+                dropoff=s.get("dropoff"),
+                legacy=True,
+            ), title="Nexus Legacy Stop Sync Failed")
+            if result.get("status") != "success":
+                return result
+            results.append(result)
 
-            returned_items = app_stop.get("returned_items")
-            if returned_items and isinstance(returned_items, list) and target_sales_order:
-                for item in returned_items:
-                    doc.append("returned_items", {
-                        "sales_order": target_sales_order,
-                        "item_code": item.get("item_code"),
-                        "returned_qty": item.get("qty_returned"),
-                        "reason": app_stop.get("primary_reason_for_return")
-                    })
+    if trip_status:
+        action = {
+            "Dispatched": driver_api.start_trip,
+            "Returning": driver_api.start_return,
+            "Completed": driver_api.complete_trip,
+        }.get(trip_status)
+        if not action:
+            return {"status": "error", "code": "INVALID_STATUS",
+                    "message": f"\"{trip_status}\" can't be set from the app."}
+        result = action(manifest_name)
+        if result.get("status") != "success":
+            return result
+        results.append(result)
 
-    has_pending_stops = any(d.delivery_status == 'Pending' for d in doc.stops)
-
-    if not has_pending_stops and doc.trip_status == 'Dispatched':
-        doc.trip_status = 'Returning'
-        vehicle_transit_name = frappe.db.get_value("Vehicle In Transit", {"current_driver": doc.driver}, "name")
-        if vehicle_transit_name:
-            frappe.db.set_value("Vehicle In Transit", vehicle_transit_name, "current_status", "Returning")
-
-    if doc.trip_status == 'Completed':
-        vehicle_transit_name = frappe.db.get_value("Vehicle In Transit", {"current_driver": doc.driver}, "name")
-        if vehicle_transit_name:
-            frappe.db.set_value("Vehicle In Transit", vehicle_transit_name, "current_status", "Idle")
-
-    doc.flags.ignore_validate_update_after_submit = True
-    doc.save(ignore_permissions=True)
-
-    return {"status": "success", "message": "Manifest synced securely."}
-
-@frappe.whitelist()
-def get_my_active_manifests_and_context():
-    driver_email = frappe.session.user
-
-    manifest_records = frappe.get_all(
-        "Vehicle Delivery Manifest",
-        filters=[
-            ["driver", "=", driver_email],
-            ["trip_status", "in", ["Ready", "Dispatched", "Completed", "Returning"]]
-        ],
-        fields=["name", "vehicle", "trip_status", "route_geojson", "cumulative_additional_fuel_cost"]
-    )
-
-    manifests = []
-    customer_coord_fields = [
-        f for f in ("custom_combined_coordinates", "custom_latitude", "custom_longitude")
-        if frappe.db.has_column("Customer", f)
-    ]
-    for record in manifest_records:
-        doc = frappe.get_doc("Vehicle Delivery Manifest", record.name)
-        manifest_dict = doc.as_dict()
-
-        for stop in manifest_dict.get("stops", []):
-            if stop.get("customer"):
-                # 🚨 Customer coordinates are text now; the driver app still
-                # receives floats (or None), exactly as before. The customer's
-                # pin wins; the stop's own saved lat/lng is the fallback.
-                point = None
-                try:
-                    if customer_coord_fields:
-                        coords = frappe.db.get_value(
-                            "Customer", stop.get("customer"), customer_coord_fields, as_dict=True
-                        ) or {}
-                        point = parse_combined_coords(
-                            coords.get("custom_combined_coordinates"),
-                            coords.get("custom_latitude"),
-                            coords.get("custom_longitude"),
-                        )
-                except Exception:
-                    point = None
-
-                if not point:
-                    point = parse_combined_coords(None, stop.get("latitude"), stop.get("longitude"))
-
-                stop["custom_latitude"] = point[0] if point else None
-                stop["custom_longitude"] = point[1] if point else None
-
-            stop["items"] = []
-            if stop.get("sales_order"):
-                try:
-                    so_items = frappe.get_all(
-                        "Sales Order Item",
-                        filters={"parent": stop.get("sales_order")},
-                        fields=["item_code", "item_name", "qty as max_qty"]
-                    )
-                    stop["items"] = so_items
-                except Exception:
-                    pass
-
-        manifests.append(manifest_dict)
-
-    vehicle = frappe.db.get_value("Vehicle In Transit", {"current_driver": driver_email}, "name") or "Idle"
-
-    active_manifest = None
-    if manifests:
-        dispatched = [m.name for m in manifests if m.trip_status == "Dispatched"]
-        returning = [m.name for m in manifests if m.trip_status == "Returning"]
-        ready = [m.name for m in manifests if m.trip_status == "Ready"]
-        completed = [m.name for m in manifests if m.trip_status == "Completed"]
-
-        if dispatched:
-            active_manifest = dispatched[0]
-        elif returning:
-            active_manifest = returning[0]
-        elif ready:
-            active_manifest = ready[0]
-        elif completed:
-            active_manifest = completed[0]
+    if not results:
+        return {"status": "error", "code": "NOTHING_TO_DO", "message": "Nothing to update."}
 
     return {
         "status": "success",
-        "message": {
-            "manifests": manifests,
-            "context": {
-                "vehicle": vehicle,
-                "active_manifest_id": active_manifest or "No_Active_Manifest"
-            }
-        }
+        "message": results[-1].get("message") or "Manifest synced securely.",
+        "trip_status": results[-1].get("trip_status"),
     }
 
+
 @frappe.whitelist()
-def log_driver_additional_fuel(manifest_id, amount):
+def get_my_active_manifests_and_context():
+    """LEGACY name used by FastAPI's driver vault. Same payload as
+    driver_api.get_driver_manifests: active trips + Completed History days,
+    bulk queries, customer pin first, phone, items, drop-off proof."""
+    from nexus_supply_chain import driver_api
+    return driver_api.get_driver_manifests()
 
-    try:
-        if not frappe.db.exists("Vehicle Delivery Manifest", manifest_id):
-            return {"status": "error", "message": "Manifest not found."}
 
-        try:
-            fuel_amount_to_add = float(amount)
-            if fuel_amount_to_add <= 0:
-                return {"status": "error", "message": "Fuel amount must be greater than zero."}
-        except (ValueError, TypeError):
-            return {"status": "error", "message": "Invalid fuel amount format."}
-
-        current_fuel = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "cumulative_additional_fuel_cost") or 0.0
-        current_profit = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "profit_loss") or 0.0
-
-        load_plan_id = frappe.db.get_value("Vehicle Delivery Manifest", manifest_id, "load_plan")
-        total_order_value = frappe.db.get_value("Nexus Load Plan", load_plan_id, "total_amount") if load_plan_id else 0.0
-
-        new_cumulative_fuel = float(current_fuel) + fuel_amount_to_add
-
-        new_profit_loss = float(current_profit) - fuel_amount_to_add
-
-        new_net_margin = (new_profit_loss / float(total_order_value) * 100) if total_order_value and float(total_order_value) > 0 else 0.0
-
-        new_profitability_status = "Profitable" if new_profit_loss >= 0 else "Loss"
-
-        update_dict = {
-            "cumulative_additional_fuel_cost": new_cumulative_fuel,
-            "profit_loss": new_profit_loss,
-            "net_margin": new_net_margin,
-            "profitability_status": new_profitability_status
-        }
-
-        frappe.db.set_value("Vehicle Delivery Manifest", manifest_id, update_dict, update_modified=False)
-        frappe.db.commit()
-
-        frappe.publish_realtime('doc_update', message={'doctype': 'Vehicle Delivery Manifest', 'name': manifest_id})
-
-        return {
-            "status": "success",
-            "message": "Fuel expense logged successfully.",
-            "new_cumulative_total": new_cumulative_fuel
-        }
-
-    except Exception as e:
-        frappe.db.rollback()
-        frappe.log_error(title="Refuel Logging Error", message=str(e))
-        return {"status": "error", "message": f"Server Error: {str(e)}"}
+@frappe.whitelist()
+def log_driver_additional_fuel(manifest_id, amount, client_request_id=None):
+    """LEGACY name used by FastAPI's fuel proxy. Each call is now a Fuel Log
+    row; the total and net profit are recalculated from all rows."""
+    from nexus_supply_chain import driver_api
+    return driver_api.log_fuel_from_app(manifest_id, amount, client_request_id=client_request_id)
 
 @frappe.whitelist()
 def save_fcm_token(fcm_token):
@@ -1523,21 +1509,18 @@ def save_fcm_token(fcm_token):
 
 @frappe.whitelist()
 def get_driver_context():
-    driver_email = frappe.session.user
-    vehicle = frappe.db.get_value("Vehicle In Transit", {"current_driver": driver_email}, "name")
+    """The caller's vehicle and current trip (Dispatched/Returning first, then Ready)."""
+    from nexus_supply_chain import driver_api
 
-    if not vehicle:
+    rows = driver_api._with_trip_status(driver_api._fleet_rows(frappe.session.user))
+    if not rows:
         return {"status": "failed", "message": "No vehicle assigned to this driver."}
-
-    manifest = frappe.db.get_value("Vehicle Delivery Manifest", {
-        "vehicle": vehicle,
-        "trip_status": ["in", ["Ready", "Dispatched"]]
-    }, "name")
-
+    row = rows[0]
     return {
         "status": "success",
-        "vehicle": vehicle,
-        "manifest_id": manifest or "No_Active_Manifest"
+        "vehicle": row["vehicle"],
+        "manifest_id": row["active_manifest_id"],
+        "trip_status": row["trip_status"],
     }
 
 def get_root_sales_person(user_email):
@@ -1566,7 +1549,13 @@ def get_authorized_sales_persons(user_email):
 
 
 def get_authorized_sales_emails(user_email):
-
+    """
+    Maps the rep's Sales Person hierarchy (get_authorized_sales_persons —
+    nested-set descendants including self) down to actual login emails.
+    Nexus Sales Visit.sales_person stores the raw session email (see
+    register_sales_check_in), NOT the Sales Person doctype name, so every
+    visit-based query needs this email set rather than the SP-name set.
+    """
     auth_sps = get_authorized_sales_persons(user_email)
     if not auth_sps:
         return []
@@ -1589,7 +1578,13 @@ def get_authorized_sales_emails(user_email):
     return list(emails)
 
 def get_emails_for_sales_persons(sp_names):
-
+    """
+    Direct SP-name(s) -> login email(s) resolver, with NO nested-set
+    expansion — used only when narrowing to exactly one validated team
+    member (e.g. Team Sales Activity's per-rep drilldown), as opposed to
+    get_authorized_sales_emails which always expands to the full Shape A
+    hierarchy under a user.
+    """
     if not sp_names:
         return []
     format_sps = ','.join(['%s'] * len(sp_names))
@@ -1610,7 +1605,15 @@ def get_emails_for_sales_persons(sp_names):
     return list(emails)
 
 def get_direct_customer_ids(sales_person_name):
-
+    """
+    Shape B: customers directly assigned to this exact Sales Person node —
+    sales_person = owner_name, no lft/rgt range at all. Used only where a
+    personal-vs-team split needs to be displayed. "Subordinates only" is
+    deliberately never computed as its own query — it is always Shape A
+    (get_authorized_sales_persons, recursive/self-inclusive) minus Shape B
+    (this function, direct-only) at the UI layer, so neither shape ever
+    needs to know or special-case whether the owner is a leaf or a group.
+    """
     if not sales_person_name:
         return []
     rows = frappe.db.sql("""
@@ -1622,7 +1625,13 @@ def get_direct_customer_ids(sales_person_name):
 
 @frappe.whitelist()
 def get_manager_team_roster():
-
+    """
+    Resolves whether the calling session is a manager (is_group = 1 on
+    their own Sales Person node, via the existing get_root_sales_person)
+    and, if so, returns the roster of everyone under them (self excluded
+    from this list — self remains included in Shape A elsewhere for
+    aggregate scoping purposes).
+    """
     root_sp = get_root_sales_person(frappe.session.user)
     if not root_sp:
         return {"status": "error", "message": "No Sales Person profile linked to your account."}
@@ -1664,7 +1673,21 @@ def get_manager_team_roster():
 
 @frappe.whitelist()
 def get_team_target_breakdown():
+    """
+    One row per team member, each computed via Shape B (direct customer
+    assignment only, get_direct_customer_ids — no lft/rgt range) so a
+    manager's Team Targets tab shows exactly what each individual rep
+    personally sold/collected this month, in the same grouped shape
+    (target / gross_invoiced / returns / collected / outstanding / overdue)
+    the FinancialBlock component already renders everywhere else. Uses the
+    same shared get_customer_scoped_financial_totals helper as the
+    dashboard aggregate and personal-block computations — never a
+    duplicated math path.
 
+    Only returns data if the calling session is actually a manager
+    (is_group = 1 on their own node) — a plain rep has no team to break
+    down.
+    """
     root_sp = get_root_sales_person(frappe.session.user)
     if not root_sp:
         return {"status": "error", "message": "No Sales Person profile linked to your account."}
@@ -1719,7 +1742,23 @@ def get_team_target_breakdown():
     return {"status": "success", "data": breakdown}
 
 def resolve_authorized_target_email(session_user, requested_email):
+    """
+    Validates that a client-supplied "drill down as this email" header
+    (sales-rep-email) is something the calling session is actually
+    authorized to view, rather than trusting it blindly. Previously, any
+    authenticated rep could set this header to an arbitrary email and pull
+    that person's customers, orders, PDCs, activity, or item-wise analysis —
+    nothing checked the relationship between the session identity and the
+    requested identity.
 
+    A manager is authorized to request a specific subordinate's email
+    because their own nested-set range (lft/rgt) covers that subordinate's
+    Sales Person node — the same range check already used everywhere else
+    in this file (get_authorized_sales_persons, _add_sp_and_ancestors, etc).
+    Anyone requesting an email outside their own range is silently
+    redirected back to their own session identity instead, and the mismatch
+    is logged for visibility.
+    """
     if not requested_email:
         return session_user
 
@@ -1843,7 +1882,30 @@ def get_sales_dashboard_data():
     return {"status": "success", "source": "db", "data": payload}
 
 def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sales_person_ids=None):
+    """
+    Single source of truth for the financial numbers surfaced on the rep and
+    manager dashboards.
 
+    🚨 INVOICE-LEVEL ATTRIBUTION (gross_invoiced / returns / net_invoiced):
+    Gross invoiced revenue and returns are now attributed via the Sales
+    Invoice's OWN Sales Team child table — i.e. "who was actually tagged on
+    this specific document" — rather than "which customer does this belong
+    to, and who owns that customer today". This matches the standalone SQL
+    reconciliation report Finance already uses, and closes the discrepancy
+    where a customer reassigned between reps mid-year caused the app's
+    customer-based total to diverge from the document-based total.
+
+    Collections and Outstanding/Overdue remain customer-scoped (party-based
+    GL/Payment Entry data has no natural "document owner" the way a Sales
+    Invoice does), so those are unaffected and still key off customer_ids.
+
+    sales_person_ids: the Sales Person node(s) to attribute gross_invoiced/
+    returns to — e.g. the caller's full Shape A hierarchy for a team
+    aggregate, or a single rep name for a Shape B "direct only" view.
+    Required for the new invoice-level queries; if omitted, falls back to
+    the legacy customer-based query so any caller not yet updated still
+    works exactly as before.
+    """
     result = {
         "gross_invoiced": 0.0,
         "returns": 0.0,
@@ -1856,6 +1918,7 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
     if not customer_ids:
         return result
 
+    # 🚨 Bank/GL account tags used to detect bounced & rebanked cheques.
     BANK_AGAINST_ACCOUNTS = (
         '213503 - I&M Bank Ltd - CAL',
         '213501 - Equity Bank -Accra Road - CAL',
@@ -1871,6 +1934,12 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         "against_accounts": BANK_AGAINST_ACCOUNTS
     }
 
+    # 1 & 2. GROSS INVOICED & RETURNS — invoice-level attribution via the
+    # Sales Invoice's own Sales Team child table. Wrapped in a DISTINCT
+    # subquery before summing — an invoice with more than one matching
+    # Sales Team row (shared/house account with multiple reps) would
+    # otherwise get its grand_total summed once per matching row instead
+    # of once per invoice, exactly like the total_orders aggregate above.
     if sales_person_ids:
         format_sps = ','.join(['%s'] * len(sales_person_ids))
         sp_tuple = tuple(sales_person_ids)
@@ -1902,7 +1971,8 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         raw_returns = flt(returns_data[0]['value']) if returns_data and returns_data[0]['value'] else 0.0
         result["returns"] = abs(raw_returns)
     else:
-
+        # Legacy fallback — customer-based attribution, retained only for
+        # any caller that hasn't been updated to pass sales_person_ids yet.
         invoiced_data = frappe.db.sql("""
             SELECT SUM(grand_total) as value
             FROM `tabSales Invoice`
@@ -1922,6 +1992,8 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         raw_returns = flt(returns_data[0]['value']) if returns_data and returns_data[0]['value'] else 0.0
         result["returns"] = abs(raw_returns)
 
+    # 3. COLLECTIONS — UNCHANGED. Still customer-scoped: Payment Entries +
+    # Bounced Cheques (subtracted) + Rebanked Cheques (re-added).
     try:
         collections_data = frappe.db.sql("""
             WITH bounced_only AS (
@@ -1968,6 +2040,8 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
         """, gl_params, as_dict=True)
         result["collections"] = flt(simple_collections[0]['value']) if simple_collections and simple_collections[0]['value'] else 0.0
 
+    # 4. OUTSTANDING & OVERDUE — UNCHANGED. Still GL-based/customer-scoped,
+    # matching the "Outstanding Debts" report.
     gl_totals = frappe.db.sql("""
         SELECT gl.party as customer, SUM(gl.debit - gl.credit) as total_outstanding
         FROM `tabGL Entry` gl
@@ -1992,6 +2066,11 @@ def get_customer_scoped_financial_totals(customer_ids, start_date, end_date, sal
 
 @frappe.whitelist()
 def get_sales_context():
+    """
+    Fetches the App's core operational data in ONE call for FastAPI to hash.
+    Optimized via Nested Sets to pull all customers for the rep's authorized branch.
+    Now includes Order Recovery Engine, Debt Snapshot, 0-Lag Dashboard Stats, and Dropdown Metadata.
+    """
 
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
@@ -2003,6 +2082,9 @@ def get_sales_context():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
+    # 🚨 BATCH 8: resolve the caller's own Sales Person node (is_group,
+    # personal targets) — needed to derive isManager/personal-vs-team blocks
+    # further down. This is deliberately Shape A's root, not a new lookup.
     root_sp = get_root_sales_person(target_email)
     root_sp_doc = frappe.db.get_value(
         "Sales Person", root_sp,
@@ -2011,6 +2093,13 @@ def get_sales_context():
     ) if root_sp else None
     is_manager = bool(root_sp_doc.is_group) if root_sp_doc else False
 
+    # 🚨 BATCH 9: owning_sales_person / owning_sales_person_name — lets a
+    # manager's Customer List render a rep-name banner on each card. A
+    # customer could in principle match more than one row in the authorized
+    # Sales Team set (e.g. shared/house accounts with multiple reps) —
+    # MIN() picks one deterministically rather than duplicating the customer
+    # row or silently concatenating names, since GROUP BY c.name is already
+    # required here to dedupe the JOIN.
     customers = frappe.db.sql(f"""
         SELECT
             c.name as name,
@@ -2038,6 +2127,9 @@ def get_sales_context():
 
     customer_ids = [c['name'] for c in customers]
 
+    # 🚨 LEADS — same visibility scope as customers (target_email's
+    # hierarchy). Isolated: a lead-side failure is logged and returns an
+    # empty list, so customers/orders/dashboard still sync normally.
     try:
         leads = get_scoped_leads(target_email)
         lead_status_options = get_lead_status_options()
@@ -2045,6 +2137,9 @@ def get_sales_context():
         frappe.log_error(title="Nexus Lead Sync Failed", message=f"{target_email}: {e}")
         leads, lead_status_options = [], []
 
+    # 🚨 Register New Lead form options (sources, types, starting statuses,
+    # assignable owners). Isolated separately: a failure here only hides
+    # the form's pickers; the lead list itself still syncs.
     try:
         lead_form_options = get_lead_form_options(target_email)
     except Exception as e:
@@ -2060,6 +2155,16 @@ def get_sales_context():
         AND ig.rgt <= (SELECT rgt FROM `tabItem Group` WHERE name = 'Finished Goods')
     """, as_dict=True)
 
+    # 🚨 BATCH 4: Only pull prices from price lists that are both ENABLED
+    # and marked as SELLING. Previously this pulled every row in
+    # `tabItem Price` unconditionally — including disabled or buying-only
+    # price lists — so a retired/buying price list's stale rate could still
+    # surface in the app's item.prices map. This is the single future-proof
+    # fix: neither OrderWizardScreen's floor-price lookup nor ItemsScreen's
+    # "Global Price Lists" listing need any app-side filtering logic, since
+    # both simply read whatever price_list keys arrive in item.prices —
+    # toggling enabled/selling on a Price List in ERPNext now propagates
+    # automatically on the next sync with zero app-side changes.
     prices = frappe.db.sql("""
         SELECT ip.item_code, ip.price_list, ip.price_list_rate
         FROM `tabItem Price` ip
@@ -2109,6 +2214,16 @@ def get_sales_context():
     except Exception:
         tax_categories = []
 
+    # 🚨 SALES-PERSON-SCOPED (was owner-scoped) — consistent with Batch 3's
+    # total_orders count and the Activity/Analysis tabs. A team lead now sees
+    # every order attributed via the order's own Sales Team, not just orders
+    # they personally tapped "Confirm Order" on — matching exactly how
+    # trigger_cache_eviction_and_notify already attributes a Sales Order to
+    # reps for cache invalidation purposes.
+    #
+    # order_creation_datetime is the real ERP `creation` timestamp (not the
+    # device's local clock at submission time) — the Uploaded Orders screen
+    # prefers this over the locally-stamped `date` once the vault has synced.
     thirty_days_ago = add_days(today(), -30)
 
     has_rejection_field = frappe.db.has_column("Sales Order", "custom_finance_rejection_reason")
@@ -2179,7 +2294,10 @@ def get_sales_context():
 
     debt_snapshot = []
     if customer_ids:
-
+        # 🚨 owning_sales_person_name — reused from the customers list
+        # already fetched above (Batch 9's owning_sales_person_name), no
+        # extra SQL needed. Lets Outstandings/Overdues show the assigned
+        # rep per customer, same as the Customer List does for managers.
         customer_owner_map = {c['name']: c.get('owning_sales_person_name') for c in customers}
 
         format_custs = ','.join(['%s'] * len(customer_ids))
@@ -2220,6 +2338,14 @@ def get_sales_context():
     sales_target = targets.get("sales_target") or 0.0
     collection_target = targets.get("collection_target") or 0.0
 
+    # 🚨 BATCH 2: TOTAL ORDERS — MTD count + value, Draft + Submitted, scoped by
+    # the Sales Order's OWN Sales Team child table (not "customer belongs to
+    # rep"). This is deliberately consistent with how Uploaded Orders /
+    # dispatch attribute an order to a rep, and lets a rep see orders on
+    # shared/house accounts where they're one of several reps on the order
+    # itself. Wrapped in a DISTINCT subquery before aggregating — an order
+    # with more than one matching Sales Team row would otherwise get its
+    # grand_total summed once per matching row instead of once per order.
     order_agg = frappe.db.sql("""
         SELECT COUNT(*) as cnt, SUM(grand_total) as total_value
         FROM (
@@ -2234,8 +2360,14 @@ def get_sales_context():
     total_orders = order_agg[0]['cnt'] if order_agg and order_agg[0]['cnt'] else 0
     total_orders_value = flt(order_agg[0]['total_value']) if order_agg and order_agg[0]['total_value'] else 0.0
 
+    # 🚨 BATCH 2: All invoiced/returns/collections/outstanding/overdue math now
+    # lives in one shared helper — see get_customer_scoped_financial_totals.
     financial_totals = get_customer_scoped_financial_totals(customer_ids, start_of_month, end_of_month, sales_person_ids=auth_sps)
 
+    # 🚨 BATCH 8: Shape A (team, recursive/self-inclusive) is exactly what's
+    # already computed above via auth_sps/customer_ids — no new query needed
+    # for the team aggregate. Manager-only additions below: team roster and
+    # Shape B (personal, direct-only) for the personal-vs-team split.
     team_roster = []
     personal_sales_block = None
     personal_collections_block = None
@@ -2276,7 +2408,10 @@ def get_sales_context():
         show_personal_block = (personal_target > 0 or personal_collection_target > 0 or personal_achievement > 0)
 
     dashboard_stats = {
-
+        # Flat keys retained for backwards compatibility with any consumer
+        # still reading them directly. total_invoiced_orders now correctly
+        # EXCLUDES credit notes — that revenue leakage is exposed separately
+        # via total_returns / sales_block.returns instead of netting silently.
         "sales_target": float(sales_target),
         "collection_target": float(collection_target),
         "total_orders": int(total_orders),
@@ -2287,6 +2422,10 @@ def get_sales_context():
         "total_outstanding": float(financial_totals["outstanding"]),
         "total_overdue": float(financial_totals["overdue"]),
 
+        # Nested blocks — the shape the FinancialBlock component reads from.
+        # For a manager these represent the TEAM aggregate (Shape A); for a
+        # plain rep they're identical to their own numbers since Shape A
+        # collapses to self when there are no descendants.
         "sales_block": {
             "target": float(sales_target),
             "gross_invoiced": float(financial_totals["gross_invoiced"]),
@@ -2300,15 +2439,25 @@ def get_sales_context():
             "overdue": float(financial_totals["overdue"])
         },
 
+        # 🚨 BATCH 8: manager foundation — roster, Shape B personal blocks,
+        # and the display hint for whether the personal block has anything
+        # worth showing (hide a "0 of 0" bar for a pure coordinator).
         "is_manager": is_manager,
         "team_roster": team_roster,
         "show_personal_block": show_personal_block,
         "personal_sales_block": personal_sales_block,
         "personal_collections_block": personal_collections_block,
 
+        # 🚨 root_sales_person / root_sales_person_name: the caller's own
+        # Sales Person node, reused from the exact resolution already done
+        # above (root_sp/root_sp_doc) — no extra query. Lets the app offer
+        # a "Me" filter option alongside team members in per-rep pickers
+        # (e.g. Sales Order Analysis) without a separate round trip.
         "root_sales_person": root_sp,
         "root_sales_person_name": root_sp_doc.sales_person_name if root_sp_doc else None,
 
+        # 🚨 Total non-Converted leads in scope — derived from the SAME list
+        # the app's Leads tab shows, so the card and the list always agree.
         "total_active_leads": len(leads)
     }
 
@@ -2337,7 +2486,10 @@ def get_sales_context():
 
 @frappe.whitelist()
 def get_invoice_details_for_order(order_id):
-
+    """
+    On-Demand fetch for the Differential Viewer.
+    Pulls strictly the invoiced items associated with a specific Sales Order intent.
+    """
     items = frappe.db.sql("""
         SELECT si.item_code, si.item_name, si.qty, si.rate, si.amount
         FROM `tabSales Invoice Item` si
@@ -2349,7 +2501,22 @@ def get_invoice_details_for_order(order_id):
 
 @frappe.whitelist()
 def get_customer_financial_brief(customer_id):
+    """
+    Production-ready single-customer financial snapshot for the mobile
+    Check-In window. Replaces the old FastAPI-side approach that pulled the
+    customer's ENTIRE Sales Invoice list over the generic REST resource API
+    (`/api/resource/Sales Invoice`, hardcoded limit_page_length=5000) and
+    re-aggregated 4 numbers in Python on every single check-in — fragile
+    because it silently truncates at the page limit, depends on stringified
+    filter-JSON staying stable, and pays for a full row payload just to sum
+    4 numbers.
 
+    Outstanding here is computed from GL Entry (the same source of truth used
+    by the dashboard aggregate and the "Outstanding Debts" report), NOT from
+    Sales Invoice.outstanding_amount, which can lag behind Journal Entry
+    adjustments (bounced/rebanked cheques, write-offs, etc). This guarantees
+    the number shown here always agrees with the Outstandings/Overdues tabs.
+    """
     if not customer_id:
         return {"status": "error", "message": "customer_id is required."}
     if not frappe.db.exists("Customer", customer_id):
@@ -2374,6 +2541,7 @@ def get_customer_financial_brief(customer_id):
     }, as_dict=True)
     row = sales_row[0] if sales_row else {}
 
+    # GL-based outstanding — matches the dashboard aggregate & Outstanding Debts report
     gl_row = frappe.db.sql("""
         SELECT SUM(gl.debit - gl.credit) as total_outstanding
         FROM `tabGL Entry` gl
@@ -2403,7 +2571,17 @@ def get_customer_financial_brief(customer_id):
 
 @frappe.whitelist()
 def get_pdc_breakdown():
+    """
+    Returns per-customer Post-Dated Cheque / promised-payment breakdown,
+    scoped to the calling rep's authorized customer set, split into aging
+    buckets by how far in the future the promised payment date sits:
+    0-30, 31-60, 61-90, 91-120, and 121+ days out.
 
+    Source: Payment Entry with docstatus IN (0, 1) — both drafted promises
+    and submitted-but-future-dated entries — matching the exact definition
+    used by get_customer_pdc_amount() in the Outstanding Debts report, so
+    the PDC tab and that report never disagree.
+    """
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
     auth_sps = get_authorized_sales_persons(target_email)
@@ -2413,6 +2591,11 @@ def get_pdc_breakdown():
     format_sps = ','.join(['%s'] * len(auth_sps))
     tuple_sps = tuple(auth_sps)
 
+    # 🚨 owning_sales_person_name — same MIN()-over-GROUP-BY pattern used in
+    # get_sales_context's customers query (Batch 9), since a customer could
+    # in principle match more than one row in the authorized Sales Team set
+    # (shared/house accounts with multiple reps) and DISTINCT alone can't be
+    # trusted once a joined, non-key column is added to the select list.
     customer_rows = frappe.db.sql(f"""
         SELECT
             c.name as customer_id,
@@ -2498,7 +2681,21 @@ def get_pdc_breakdown():
 
 @frappe.whitelist()
 def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
+    """
+    Visit-level activity breakdown for the calling rep's hierarchy (self +
+    subordinates), sourced from Nexus Sales Visit.
 
+    On-Site is read from the stored is_on_site field — the same value the
+    attendance report counts — set at check-in by compute_is_on_site,
+    recomputed after every location correction and backfilled for history.
+    Customer and Lead visits are both included in every total, with
+    customer_visits / lead_visits breakdowns alongside.
+
+    Defaults to the current calendar month if no explicit range is given.
+
+    filter_sales_person narrows to exactly one validated team member (must
+    be inside the caller's own Shape A set, otherwise silently ignored).
+    """
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
 
@@ -2554,7 +2751,8 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
                 s["customer"] += 1
             if cint(v.is_on_site):
                 s["on_site"] += 1
-
+                # On-Site only because the location was corrected during the
+                # visit, and the GPS-snap subset (0 m by construction).
                 if cint(v.location_corrected):
                     s["corrected_on_site"] += 1
                     if v.location_correction_source == "GPS Snap":
@@ -2572,6 +2770,8 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
     completed_visits = len(completed_durations)
     open_visits = period["total"] - completed_visits
 
+    # TODAY'S ORDERS — unchanged: Sales Orders (Draft + Submitted) scoped by
+    # the order's own Sales Team, narrowed the same way as the visits.
     scoped_sps_for_orders = [filter_sales_person] if is_filtered else auth_sps
     today_orders_count = 0
     today_orders_value = 0.0
@@ -2639,7 +2839,30 @@ def get_activity_stats(from_date=None, to_date=None, filter_sales_person=None):
 
 @frappe.whitelist()
 def get_my_sales_order_analysis(from_date=None, to_date=None, filter_sales_person=None):
+    """
+    Item-wise sales register scoped to the calling rep's authorized customer
+    set (self + subordinates), sourced from submitted Sales Invoices — the
+    definitive revenue record, consistent with every other revenue figure
+    in this file (dashboard total_invoiced_orders, financial briefs, etc).
 
+    🚨 BATCH 3: Defaults to a rolling window of the 4 full calendar months
+    immediately BEFORE the current month, rather than the current
+    (still-in-progress) month. On any given login date, this is computed as:
+      range_end   = the day before the 1st of the current month
+      range_start = the 1st of the month 4 months before the current month
+    e.g. logging in on 26 Jul 2026 -> range_start = 1 Mar 2026,
+    range_end = 30 Jun 2026. Explicit from_date/to_date query params (if a
+    future caller ever passes them) always take precedence over this default.
+
+    🚨 BATCH 10: filter_sales_person lets a manager narrow the aggregate
+    view down to exactly one team member's Sales Person node. Validated
+    against the caller's own auth_sps (the same Shape A set used everywhere
+    else) — a manager can only filter to a name that's genuinely inside
+    their own hierarchy; anything else is silently ignored and the call
+    falls back to the full-team aggregate, exactly like an invalid/omitted
+    filter would. A plain rep passing this has no effect either way, since
+    their own auth_sps is just themselves.
+    """
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
     auth_sps = get_authorized_sales_persons(target_email)
@@ -2666,6 +2889,8 @@ def get_my_sales_order_analysis(from_date=None, to_date=None, filter_sales_perso
             "distinct_items": 0, "distinct_customers": 0
         }}}
 
+    # 🚨 BATCH 3: rolling prior-4-months default, replacing the old
+    # current-month default (get_first_day(today()) / get_last_day(today())).
     current_month_start = get_first_day(today())
     default_range_end = add_days(current_month_start, -1)
     default_range_start = get_first_day(add_months(current_month_start, -4))
@@ -2747,7 +2972,39 @@ def get_my_sales_order_analysis(from_date=None, to_date=None, filter_sales_perso
 
 @frappe.whitelist()
 def get_customer_analysis(filter_sales_person=None):
+    """
+    Top-20 customer revenue ranking for the calling rep's authorized set
+    (self + subordinates), sourced from submitted non-return Sales Invoices —
+    attributed via the invoice's OWN Sales Team child table (invoice-level
+    attribution, identical pattern to get_my_returns), NOT via "who currently
+    owns this customer" — so a customer reassigned mid-window still shows
+    correctly under whichever rep actually closed each specific invoice.
 
+    🚨 ROLLING WINDOW EXPLICITLY EXCLUDES THE CURRENT (IN-PROGRESS) MONTH.
+    This is deliberately the 3 full calendar months immediately BEFORE the
+    current one — not "last 3 months inclusive of today" — because this
+    view exists to tell a rep/manager who to prioritize promoting *based on
+    a closed, complete picture*, and the current month's still-accumulating
+    numbers would bias that ranking toward whoever's been invoiced most
+    recently rather than who's actually gone quiet. Computed as:
+      current_month_start = the 1st of the current calendar month
+      range_end            = the day BEFORE current_month_start
+      range_start           = the 1st of the month 3 months before current_month_start
+    e.g. logging in on 10 Apr 2026 -> range_start = 1 Jan 2026,
+    range_end = 31 Mar 2026 (January, February, March — April excluded
+    entirely). This is intentionally unaffected by which day of the current
+    month the rep/manager logs in on, and by nature of being computed here
+    (not per-caller), it applies identically to a plain rep viewing their
+    own numbers, a manager viewing the full team aggregate, and a manager
+    viewing a single filtered team member.
+
+    filter_sales_person: same validated-against-auth_sps pattern as Batch
+    10's order analysis filter — must be a name inside the caller's own
+    Shape A hierarchy (get_authorized_sales_persons), otherwise silently
+    ignored and the call falls back to the full-team aggregate. A plain
+    rep passing this has no effect either way, since their own auth_sps
+    is just themselves.
+    """
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
     auth_sps = get_authorized_sales_persons(target_email)
@@ -2761,6 +3018,8 @@ def get_customer_analysis(filter_sales_person=None):
     format_sps = ','.join(['%s'] * len(scoped_sps))
     tuple_sps = tuple(scoped_sps)
 
+    # 🚨 Rolling 3-full-months-BEFORE-current-month window — current month
+    # is never included, regardless of what day of the month this runs on.
     current_month_start = get_first_day(today())
     range_end = add_days(current_month_start, -1)
     range_start = get_first_day(add_months(current_month_start, -3))
@@ -2802,7 +3061,21 @@ def get_customer_analysis(filter_sales_person=None):
 
 @frappe.whitelist()
 def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
+    """
+    Returns register — submitted credit-note Sales Invoices (is_return = 1)
+    for the calling rep's authorized customer set (self + subordinates).
 
+    🚨 INVOICE-LEVEL ATTRIBUTION: attributed via the credit note's OWN Sales
+    Team child table, matching the same model now used in
+    get_customer_scoped_financial_totals for the Dashboard's Returns
+    subline — "who was tagged on this specific document", not "who
+    currently owns the customer". Keeps this tab reconciling exactly with
+    the Dashboard and with Finance's standalone SQL report.
+
+    🚨 filter_sales_person mirrors Batch 10's validation: must be a name
+    inside the caller's own Shape A hierarchy (get_authorized_sales_persons),
+    otherwise silently ignored and the call falls back to the full-team scope.
+    """
     requested_email = frappe.request.headers.get("sales-rep-email")
     target_email = resolve_authorized_target_email(frappe.session.user, requested_email)
     auth_sps = get_authorized_sales_persons(target_email)
@@ -2822,6 +3095,10 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
     has_reason_field = frappe.db.has_column("Sales Invoice", "custom_reason_for_return")
     reason_select = "si.custom_reason_for_return as reason_for_return," if has_reason_field else "NULL as reason_for_return,"
 
+    # 🚨 Credit notes whose OWN Sales Team includes one of the scoped reps —
+    # matched via IN(subquery) rather than a JOIN, so an invoice with
+    # multiple matching Sales Team rows (shared/house account) is never
+    # returned more than once here.
     returns = frappe.db.sql(f"""
         SELECT
             si.name as invoice_id,
@@ -2845,6 +3122,10 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
         inv_names = [r.invoice_id for r in returns]
         format_invs = ','.join(['%s'] * len(inv_names))
 
+        # 🚨 owning_sales_person_name — now resolved from the credit note's
+        # OWN Sales Team (matching the invoice-level attribution above),
+        # not the customer's. MIN() picks deterministically if an invoice
+        # somehow has more than one matching Sales Team row.
         owner_rows = frappe.db.sql(f"""
             SELECT st.parent as invoice_id, MIN(sp.sales_person_name) as owning_sales_person_name
             FROM `tabSales Team` st
@@ -2865,7 +3146,8 @@ def get_my_returns(from_date=None, to_date=None, filter_sales_person=None):
             item_map.setdefault(it.parent, []).append(it)
 
         for r in returns:
-
+            # Credit notes store negative qty/amount/grand_total in ERPNext —
+            # normalize to positive magnitudes for display purposes only.
             r['grand_total'] = abs(flt(r.grand_total))
             r['owning_sales_person_name'] = owner_map.get(r.invoice_id)
             raw_items = item_map.get(r.invoice_id, [])
@@ -2947,7 +3229,16 @@ def submit_sales_order_from_app(payload):
 
 @frappe.whitelist()
 def edit_draft_sales_order(order_id, payload):
-
+    """
+    🚨 BATCH 4: Edits an existing Sales Order — but ONLY while it is still in
+    Draft (docstatus == 0). Once confirmed (docstatus == 1, status has moved
+    to "To Deliver and Bill" or beyond), this hard-fails rather than silently
+    mutating a submitted document. Rebuilds the items child table from
+    scratch (clear + re-append) rather than diffing line-by-line, since the
+    app always sends the complete replacement cart, not a delta — identical
+    pattern to how submit_sales_order_from_app builds the items table on
+    creation.
+    """
     if isinstance(payload, str):
         payload = json.loads(payload)
 
@@ -2960,6 +3251,10 @@ def edit_draft_sales_order(order_id, payload):
     try:
         so = frappe.get_doc("Sales Order", order_id)
 
+        # 🚨 HARD GATE: only Draft (docstatus 0) orders can be edited. Once
+        # confirmed and moved to "To Deliver and Bill" (docstatus 1), the
+        # app must never be able to silently rewrite line items on a
+        # submitted document.
         if so.docstatus != 0:
             return {
                 "status": "error",
@@ -2970,6 +3265,9 @@ def edit_draft_sales_order(order_id, payload):
         if not items:
             return {"status": "error", "message": "Order must contain at least one item."}
 
+        # Full rebuild of the items child table — the app always sends the
+        # complete replacement cart, so clear + re-append is simpler and
+        # safer than attempting a line-by-line diff/merge.
         so.set("items", [])
         for item in items:
             line_note = item.get("notes")
@@ -3000,13 +3298,18 @@ def edit_draft_sales_order(order_id, payload):
 
 @frappe.whitelist()
 def register_sales_check_in(customer, lat, lng):
-
+    """
+    Customer check-in. Signature and response keys unchanged for existing
+    app builds; the visit itself is created by the shared _create_sales_visit
+    routine, so customer and lead visits are recorded identically.
+    `is_on_site` is an additive response key.
+    """
     target = _get_party_target_coords("Customer", customer)
     doc = _create_sales_visit("Customer", customer, lat, lng, target)
 
     try:
-        requests.post(
-            "https://crystal-api.crystalapps.dev/telemetry/sales-check-in",
+        push_post(
+            "/telemetry/sales-check-in",
             json={"sales_rep": frappe.session.user, "customer": customer},
             timeout=2
         )
@@ -3062,7 +3365,17 @@ def register_sales_check_out(customer):
 
 @frappe.whitelist()
 def register_lead_check_in(lead, lat, lng):
+    """
+    Lead check-in. Mirrors the customer check-in exactly (same shared
+    _create_sales_visit routine: check-in point, distance, target pin,
+    original distance, is_on_site), plus lead_status_before.
 
+    Refuses when: the lead doesn't exist, is Converted, is outside the
+    caller's scope, or the caller has another visit open TODAY.
+    Idempotent: if the caller is already checked into THIS lead today, the
+    existing visit is returned (already_open=True) instead of a duplicate.
+    Errors carry a machine-readable `code` for the app.
+    """
     session_user = frappe.session.user
 
     if not lead or not frappe.db.exists("Lead", lead):
@@ -3125,8 +3438,8 @@ def register_lead_check_in(lead, lat, lng):
     )
 
     try:
-        requests.post(
-            "https://crystal-api.crystalapps.dev/telemetry/sales-check-in",
+        push_post(
+            "/telemetry/sales-check-in",
             json={
                 "sales_rep": session_user,
                 "customer": lead,
@@ -3154,7 +3467,24 @@ def register_lead_check_in(lead, lat, lng):
 
 @frappe.whitelist()
 def register_lead_check_out(visit_id, status=None, notes=None):
+    """
+    The app's single "Save & Check Out" action for a lead visit.
 
+    ATOMIC: the Lead status change, the visit notes and the check-out are one
+    database transaction. Any failure rolls ALL of it back and returns the
+    reason (the app can then retry with status=None to check out without
+    changing the status, so a rep is never stuck on site).
+
+    - status: optional. "Converted" is always rejected (ERPNext sets it on
+      conversion). Validated against the Lead doctype's own options.
+    - The Lead is saved through ERPNext's normal save, so its validations
+      run. ERPNext may keep a different status (e.g. an Opportunity exists);
+      the status ACTUALLY stored is returned in lead_status.
+    - If the office converted the lead meanwhile, the visit still closes,
+      notes are kept, closed_by_conversion is ticked, lead_converted=True.
+    - Idempotent: calling it again on an already-closed visit returns
+      success with already_closed=True (safe network retries).
+    """
     session_user = frappe.session.user
 
     if not visit_id or not frappe.db.exists("Nexus Sales Visit", visit_id):
@@ -3283,6 +3613,7 @@ def get_extended_sales_reports(report_type):
     data = []
 
     if report_type == "Outstanding":
+        # today() returns a 'YYYY-MM-DD' string, so convert it to a date before reading .year
         start_of_year = datetime(getdate(today()).year, 1, 1).strftime('%Y-%m-%d')
         data = frappe.db.sql(f"""
             SELECT name as invoice_id, customer as customer_id, customer_name, posting_date, grand_total, outstanding_amount, due_date
@@ -3381,8 +3712,8 @@ def trigger_app_customer_refresh(doc, method=None):
 
     if affected_emails:
         try:
-            requests.post(
-                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
+            push_post(
+                "/telemetry/force-app-refresh", headers=internal_headers(),
                 json={"emails": list(affected_emails), "command": "FORCE_REFRESH_CUSTOMERS"},
                 timeout=3
             )
@@ -3410,8 +3741,8 @@ def trigger_app_catalog_refresh(doc, method=None):
 
     if affected_emails:
         try:
-            requests.post(
-                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
+            push_post(
+                "/telemetry/force-app-refresh", headers=internal_headers(),
                 json={"emails": list(affected_emails), "command": "FORCE_VAULT_SYNC"},
                 timeout=3
             )
@@ -3424,6 +3755,7 @@ def trigger_financial_refresh(doc, method=None):
     party = None
 
     if doc.doctype == "Payment Entry":
+        # party_type/party ARE real top-level fields on Payment Entry — safe to access directly here
         if doc.party_type != 'Customer' or not doc.party:
             return
         party = doc.party
@@ -3434,11 +3766,12 @@ def trigger_financial_refresh(doc, method=None):
                 increment_collection = -float(doc.paid_amount or 0.0)
 
     elif doc.doctype == "Journal Entry":
-
+        # Journal Entry has NO top-level party_type/party — only inside `accounts` child rows.
+        # docstatus is already guaranteed 1 or 2 here (this only runs via on_submit/on_cancel).
         sign = 1 if doc.docstatus == 1 else -1
         for jea in doc.get("accounts", []):
             if jea.party_type == "Customer" and jea.party:
-                party = jea.party
+                party = jea.party  # last matching row wins if a JE somehow splits across >1 customer
                 row_amount = float(jea.credit_in_account_currency or 0.0) - float(jea.debit_in_account_currency or 0.0)
                 increment_collection += sign * row_amount
         if not party:
@@ -3450,7 +3783,7 @@ def trigger_financial_refresh(doc, method=None):
         return
 
     invoice_ids = []
-    if hasattr(doc, 'references'):
+    if hasattr(doc, 'references'):  # only Payment Entry has this child table; safely False for Journal Entry
         for ref in doc.references:
             if ref.reference_doctype == 'Sales Invoice' and ref.reference_name:
                 invoice_ids.append(ref.reference_name)
@@ -3526,8 +3859,8 @@ def trigger_financial_refresh(doc, method=None):
 
     if affected_emails:
         try:
-            requests.post(
-                "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
+            push_post(
+                "/telemetry/force-app-refresh", headers=internal_headers(),
                 json={
                     "emails": list(affected_emails),
                     "command": "PAYMENT_RECEIVED",
@@ -3543,7 +3876,18 @@ def trigger_financial_refresh(doc, method=None):
 
 
 def trigger_order_status_update(doc, method=None):
-
+    """
+    Fires on every Sales Order save (on_update hook). Pushes a live
+    status/payment/rejection update to every rep who can see this order —
+    the order's own creator AND anyone whose Sales Person hierarchy covers
+    the reps on the order's own Sales Team (the same attribution
+    trigger_cache_eviction_and_notify already uses) — not just doc.owner.
+    Without this widening, a team lead watching a subordinate's order from
+    the newly sales-person-scoped Uploaded Orders list (Batch 4) would only
+    get the live push if they personally created the order, and would
+    otherwise have to wait for the next silent 30-minute vault sync to see
+    a Finance rejection appear.
+    """
     affected_emails = set()
     if doc.owner and "@" in doc.owner:
         affected_emails.add(doc.owner)
@@ -3576,13 +3920,16 @@ def trigger_order_status_update(doc, method=None):
         else:
             payment_status = "Unpaid"
 
+    # 🚨 Finance rejection reason — defensive has_column check (same pattern
+    # as get_sales_context) so this hook never breaks on a site that hasn't
+    # run the one-time create_custom_field step yet.
     rejection_reason = None
     if frappe.db.has_column("Sales Order", "custom_finance_rejection_reason"):
         rejection_reason = doc.get("custom_finance_rejection_reason")
 
     try:
-        requests.post(
-            "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
+        push_post(
+            "/telemetry/force-app-refresh", headers=internal_headers(),
             json={
                 "emails": list(affected_emails),
                 "command": "UPDATE_ORDER_STATUS",
@@ -3598,7 +3945,10 @@ def trigger_order_status_update(doc, method=None):
         frappe.log_error(title="App Order Status Trigger Failed", message=str(e))
 
 def trigger_sales_person_update(doc, method=None):
-
+    """
+    🚨 NEW HOOK: Triggered on Sales Person update.
+    Checks if targets changed, and forces a silent background vault sync for that specific rep.
+    """
     old_doc = doc.get_doc_before_save()
     if not old_doc:
         return
@@ -3619,8 +3969,8 @@ def trigger_sales_person_update(doc, method=None):
         return
 
     try:
-        requests.post(
-            "https://crystal-api.crystalapps.dev/telemetry/force-app-refresh",
+        push_post(
+            "/telemetry/force-app-refresh", headers=internal_headers(),
             json={
                 "emails": [user_email],
                 "command": "FORCE_VAULT_SYNC"
@@ -3639,6 +3989,22 @@ def _add_sp_and_ancestors(sales_person, affected_emails):
             user_email = frappe.db.get_value("Employee", a.employee, "user_id")
             if user_email: affected_emails.add(user_email)
             elif "@" in a.employee: affected_emails.add(a.employee)
+
+def _add_user_and_managers(user_email, affected_emails):
+    """
+    The user's own login plus every manager above them in the Sales Person
+    tree: the same audience rule as _add_sp_and_ancestors, starting from a
+    login email instead of a Sales Person. Used by the Lead hooks (owner
+    changes, conversion, Opportunity/Quotation status) and the geocoder.
+    A user without a Sales Person profile is still notified themselves.
+    """
+    email = (user_email or "").strip()
+    if not email or "@" not in email:
+        return
+    affected_emails.add(email)
+    sales_person = get_root_sales_person(email)
+    if sales_person:
+        _add_sp_and_ancestors(sales_person, affected_emails)
 
 def _get_all_sales_rep_emails():
     emails = set()
@@ -3667,6 +4033,25 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         if hasattr(doc, 'docstatus') and doc.docstatus == 0 and doc.doctype != "Customer":
             return
 
+        # 🚨 BATCH 0 FIX: "Sales Person" moved into bulk_doctypes.
+        # Sales Person is a NestedSet doctype (lft/rgt). Every save runs
+        # Frappe's NestedSet.on_update -> update_nsm, which can renumber
+        # lft/rgt for OTHER nodes in the same tree scope (siblings, not just
+        # the saved doc) — most visibly when toggling `is_group`. The old
+        # narrow branch below only evicted the cache for the single employee
+        # tied to the saved doc, so every other rep whose lft/rgt silently
+        # shifted kept a stale cached vault (up to the 5-min Redis TTL, or up
+        # to 30 min on the mobile app's silent resync). Treating this as a
+        # global debounce — same as the other bulk_doctypes — guarantees
+        # every authorized-customer-range calculation gets recomputed fresh
+        # on the next sync, regardless of whose range actually moved.
+        # 🚨 BATCH 4: "Price List" added — toggling enabled/selling on a
+        # Price List doctype (e.g. retiring an old list, or flipping a new
+        # one live) must invalidate every rep's cached vault immediately,
+        # exactly like an Item Price change already does. Without this, a
+        # newly-enabled or newly-disabled price list wouldn't be reflected
+        # in the app until the next unrelated cache-evicting event or the
+        # 30-minute silent sync loop caught up.
         bulk_doctypes = ["Item", "Item Price", "Price List", "Stock Entry", "Stock Reconciliation", "Purchase Receipt", "Delivery Note", "Customer Group", "Territory", "Currency", "Tax Category", "Sales Person"]
 
         if doc.doctype in bulk_doctypes:
@@ -3711,24 +4096,36 @@ def trigger_cache_eviction_and_notify(doc, method=None):
         frappe.log_error(title="Nexus Cache Eviction Flag Failed", message=f"Doctype: {doc.doctype}, Error: {str(e)}")
 
 def execute_fastapi_webhook(affected_emails, doctype, docname, command, extra=None):
+    """
+    Background job: resolves FCM tokens for the affected users and posts one
+    cache-invalidation/notification to FastAPI, signed with the internal
+    secret. `extra` carries optional context the app can act on instantly
+    (e.g. lead + lead_status, manifests + trip_statuses); the core keys always
+    win, so extra can never overwrite command/emails.
 
-    import requests
-    import frappe
+    Sends nothing on a site with "nexus_fastapi_push_enabled": 0 (a local or
+    staging copy pointed at the live FastAPI), so test data never reaches
+    real phones or changes live settings.
+    """
+    if not pushes_enabled():
+        frappe.logger().info(f"[Nexus] push skipped (pushes disabled on this site): {command} {doctype} {docname}")
+        return
 
     try:
+        affected_emails = sorted({str(e).strip().lower() for e in (affected_emails or []) if e})
+
         fcm_tokens = {}
         if affected_emails:
             format_emails = ','.join(['%s'] * len(affected_emails))
             tokens_data = frappe.db.sql(f"""
-                SELECT user, fcm_token
+                SELECT LOWER(user) AS user, fcm_token
                 FROM `tabNexus FCM Device`
-                WHERE user IN ({format_emails})
+                WHERE LOWER(user) IN ({format_emails})
             """, tuple(affected_emails), as_dict=True)
 
             for row in tokens_data:
-                if row.user not in fcm_tokens:
-                    fcm_tokens[row.user] = []
-                fcm_tokens[row.user].append(row.fcm_token)
+                if row.fcm_token:
+                    fcm_tokens.setdefault(row.user, []).append(row.fcm_token)
 
         body = dict(extra or {})
         body.update({
@@ -3739,27 +4136,30 @@ def execute_fastapi_webhook(affected_emails, doctype, docname, command, extra=No
             "command": command
         })
 
-        requests.post(
-            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
+        response = requests.post(
+            fastapi_url("/api/v1/cache/invalidate"),
             json=body,
+            headers=internal_headers(),
             timeout=5
         )
+        if response.status_code >= 400:
+            frappe.log_error(
+                title="Cache Eviction API Rejected",
+                message=f"{command} {doctype} {docname}: HTTP {response.status_code} {response.text[:500]}"
+            )
     except Exception as e:
         frappe.log_error(title="Cache Eviction API Failed", message=str(e))
 
 
-def _add_user_and_managers(user_email, affected_emails):
-    """Adds a user plus everyone above them in the Sales Person tree."""
-    if not user_email or user_email in ("Administrator", "Guest"):
-        return
-    affected_emails.add(user_email)
-    sp = get_root_sales_person(user_email)
-    if sp:
-        _add_sp_and_ancestors(sp, affected_emails)
-
-
 def trigger_lead_refresh(doc, method=None):
-
+    """
+    Lead on_update / on_trash hook. Notifies the lead owner and their
+    managers (plus the PREVIOUS owner when ownership moved, so the lead
+    leaves their list) — but only when a field the app actually uses
+    changed. Sent as FORCE_VAULT_SYNC, which current app builds already
+    handle; `lead` / `lead_status` / `lead_event` let newer builds update the
+    lead instantly. Queued after commit, so a failed save never notifies.
+    """
     try:
         if getattr(frappe.flags, "in_import", False):
             frappe.cache().set_value('nexus_needs_sync', True)
@@ -3799,7 +4199,18 @@ def trigger_lead_refresh(doc, method=None):
 
 
 def handle_lead_conversion(doc, method=None):
-
+    """
+    Customer on_update hook. Fires once, when a Customer is created from a
+    Lead (lead_name newly set). ERPNext marks the Lead 'Converted' with a
+    direct DB write that fires no Lead hooks, so conversion is detected
+    here instead. It:
+      1. closes every still-open visit on that lead (check-out time,
+         duration, closed_by_conversion=1, lead_status_after='Converted');
+      2. sends LEAD_CONVERTED to the lead owner, their managers and any rep
+         who was checked in, so the app closes the lead window.
+    Writes are part of the Customer's own transaction (rolled back with it);
+    the notification is queued after commit.
+    """
     lead = doc.get("lead_name")
     if not lead or not doc.has_value_changed("lead_name"):
         return
@@ -3857,7 +4268,15 @@ def handle_lead_conversion(doc, method=None):
         frappe.log_error(title="Nexus Lead Conversion Hook Failed", message=f"Customer {doc.name} / Lead {lead}: {e}")
 
 def trigger_lead_refresh_from_linked(doc, method=None):
-
+    """
+    Opportunity / Quotation hook (on_change, on_trash). ERPNext updates the
+    linked Lead's status with a direct DB write (Opportunity, Quotation,
+    Lost Quotation), which fires no Lead hooks, so the app would only see it
+    on its next scheduled sync. This pushes the Lead's CURRENT status to the
+    owner and managers the same way trigger_lead_refresh does. Doc-event
+    hooks run after the controller, so the status read here is already the
+    updated one; the push is queued after commit.
+    """
     try:
         if doc.doctype == "Opportunity":
             is_lead = doc.get("opportunity_from") == "Lead"
@@ -3918,6 +4337,11 @@ def create_mobile_customer(payload):
         doc.tax_category = payload.get("tax_category")
         doc.payment_terms = payload.get("payment_terms")
 
+        # 🚨 Mobile Number and Phone Number are now DISTINCT ERPNext fields
+        # (previously both were force-written from a single "phone_number"
+        # input, which discarded whichever number the rep entered second).
+        #   mobile_no      -> Customer.mobile_no       (native ERPNext field)
+        #   phone_number   -> Customer.custom_phone_number (day-to-day field)
         if mobile_no:
             doc.mobile_no = mobile_no
         if phone_number:
@@ -3957,48 +4381,123 @@ def create_mobile_customer(payload):
         frappe.db.rollback()
         return {"status": "error", "message": f"Failed to create customer: {str(e)}"}
 
+def _write_party_coordinates(party_type, party, latitude, longitude, custom_combined_coordinates=None,
+                             google_maps_link=None):
+    """
+    THE shared coordinate writer for Customer and Lead, used by the Sales app
+    (_update_party_coordinates) and the Driver app (driver_api). Writes the
+    three text fields (+ link) with db.set_value, so no doc.save() and no
+    recursive webhook loops. For a Customer, every open delivery stop moves
+    to the new pin and the drivers are told after the commit.
+
+    Does NOT commit, comment or log: each caller adds its own context.
+    Returns {"error": None, "coord_fields", "point", "previous_coords",
+    "previous_text", "link_text"} or {"error": "<reason>"}.
+    """
+    if party_type not in NEXUS_VISIT_PARTY_FIELDS or not party or not frappe.db.exists(party_type, party):
+        return {"error": f"{party_type} not found."}
+
+    coord_fields, point = build_coordinate_fields(latitude, longitude, custom_combined_coordinates)
+    if not coord_fields:
+        frappe.log_error(
+            title="Coord Update: Invalid Values",
+            message=(f"{party_type} {party} received unusable coords: lat={latitude}, lng={longitude}, "
+                     f"combined={custom_combined_coordinates}")
+        )
+        return {"error": "Invalid or out-of-range coordinate values."}
+
+    link_text = (google_maps_link or "").strip()
+    geo_fields = [f for f in NEXUS_COORD_FIELDS + ("custom_google_maps_link",)
+                  if frappe.db.has_column(party_type, f)]
+
+    # 🚨 Capture the PREVIOUS location before overwriting. db.set_value
+    # bypasses Version tracking, so the comment and the Location Correction
+    # Log are the only places the old pin survives.
+    previous = frappe.db.get_value(party_type, party, geo_fields, as_dict=True) if geo_fields else None
+    previous = previous or frappe._dict()
+    previous_fields, previous_coords = build_coordinate_fields(
+        previous.get("custom_latitude"),
+        previous.get("custom_longitude"),
+        previous.get("custom_combined_coordinates"),
+    )
+
+    update_dict = _existing_columns_only(party_type, coord_fields)
+    if link_text and "custom_google_maps_link" in geo_fields:
+        update_dict["custom_google_maps_link"] = link_text
+    if not update_dict:
+        return {"error": f"The {party_type} doctype has no GeoLocation fields to update."}
+
+    frappe.db.set_value(party_type, party, update_dict, update_modified=False)
+
+    if party_type == "Customer":
+        from nexus_supply_chain.driver_api import push_manifest_refresh, refresh_customer_stop_pins
+        affected = refresh_customer_stop_pins(party, coord_fields["custom_combined_coordinates"], point)
+        if affected:
+            push_manifest_refresh(affected, reason="customer_pin_changed")
+
+    return {
+        "error": None,
+        "coord_fields": coord_fields,
+        "point": point,
+        "previous_coords": previous_coords,
+        "previous_text": previous_fields["custom_combined_coordinates"] if previous_fields else None,
+        "link_text": link_text,
+    }
+
+
+def _add_party_location_comment(party_type, party, acting_user, app_label, previous_coords, coord_fields,
+                                location_source=None, link_text=None, extra_lines=None):
+    """Old pin -> new pin on the Customer/Lead timeline. Does NOT commit."""
+    comment_lines = [
+        f"📍 Location updated via <b>{_html_escape(app_label)}</b> by <b>{_html_escape(str(acting_user))}</b>",
+        (f"Previous: <b>{previous_coords[0]}, {previous_coords[1]}</b>"
+         if previous_coords else "Previous: <i>no coordinates recorded</i>"),
+        (f"New — Latitude: <b>{_html_escape(coord_fields['custom_latitude'])}</b> | "
+         f"Longitude: <b>{_html_escape(coord_fields['custom_longitude'])}</b>"),
+    ]
+    if location_source:
+        comment_lines.append(f"Method: <b>{_html_escape(location_source)}</b>")
+    if link_text:
+        comment_lines.append(f"Source link: {_html_escape(link_text)}")
+    comment_lines.extend(extra_lines or [])
+
+    frappe.get_doc({
+        "doctype": "Comment",
+        "comment_type": "Info",
+        "reference_doctype": party_type,
+        "reference_name": party,
+        "content": "<br>".join(comment_lines),
+        "comment_by": acting_user,
+    }).insert(ignore_permissions=True)
+
+
 def _update_party_coordinates(party_type, party, latitude, longitude, custom_combined_coordinates=None,
                               google_maps_link=None, visit_id=None, location_source=None):
-
+    """
+    Sales app location correction (update_customer_coordinates /
+    update_lead_coordinates). Behaviour and response are unchanged:
+      1. shared writer (_write_party_coordinates),
+      2. SERVER-AUTHORITATIVE re-evaluation of the caller's open visit,
+      3. timeline comment, and now
+      4. a Nexus Location Correction Log row (role Sales).
+    The party update always succeeds independently of the visit and log
+    steps. Any unexpected failure rolls back the whole request.
+    """
     try:
-        if party_type not in NEXUS_VISIT_PARTY_FIELDS or not party or not frappe.db.exists(party_type, party):
-            return {"status": "error", "message": f"{party_type} not found."}
-
-        coord_fields, point = build_coordinate_fields(latitude, longitude, custom_combined_coordinates)
-        if not coord_fields:
-            frappe.log_error(
-                title="Coord Update: Invalid Values",
-                message=(f"{party_type} {party} received unusable coords: lat={latitude}, lng={longitude}, "
-                         f"combined={custom_combined_coordinates}")
-            )
-            return {"status": "error", "message": "Invalid or out-of-range coordinate values."}
-
-        lat_float, lng_float = point
-        link_text = (google_maps_link or "").strip()
-
-        geo_fields = [f for f in NEXUS_COORD_FIELDS + ("custom_google_maps_link",)
-                      if frappe.db.has_column(party_type, f)]
-
-        previous = frappe.db.get_value(party_type, party, geo_fields, as_dict=True) if geo_fields else None
-        previous = previous or frappe._dict()
-        previous_coords = parse_combined_coords(
-            previous.get("custom_combined_coordinates"),
-            previous.get("custom_latitude"),
-            previous.get("custom_longitude")
+        written = _write_party_coordinates(
+            party_type, party, latitude, longitude, custom_combined_coordinates, google_maps_link
         )
+        if written.get("error"):
+            return {"status": "error", "message": written["error"]}
 
-        update_dict = _existing_columns_only(party_type, coord_fields)
-        if link_text and "custom_google_maps_link" in geo_fields:
-            update_dict["custom_google_maps_link"] = link_text
-
-        if not update_dict:
-            return {"status": "error", "message": f"The {party_type} doctype has no GeoLocation fields to update."}
-
-        frappe.db.set_value(party_type, party, update_dict, update_modified=False)
-
+        coord_fields = written["coord_fields"]
+        lat_float, lng_float = written["point"]
+        link_text = written["link_text"]
         acting_user = frappe.form_dict.get("acting_user") or frappe.session.user
         normalized_source = location_source if location_source in NEXUS_LOCATION_SOURCES else None
 
+        # 🚨 VISIT RE-EVALUATION — isolated so a failure here can never undo
+        # the party location save above.
         visit_result = {
             "visit_updated": False,
             "visit_id": None,
@@ -4012,7 +4511,7 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             visit_row, reason = _resolve_open_visit_for_correction(party_type, party, frappe.session.user, visit_id)
             if visit_row:
                 visit_result.update(
-                    _apply_visit_location_correction(visit_row, point, normalized_source)
+                    _apply_visit_location_correction(visit_row, written["point"], normalized_source)
                 )
             else:
                 visit_result["visit_message"] = reason
@@ -4023,34 +4522,44 @@ def _update_party_coordinates(party_type, party, latitude, longitude, custom_com
             )
             visit_result["visit_message"] = f"{party_type} location saved, but this visit's distance could not be recomputed."
 
-        comment_lines = [
-            f"📍 Location updated via <b>Nexus Sales App</b> by <b>{_html_escape(str(acting_user))}</b>",
-            (f"Previous: <b>{previous_coords[0]}, {previous_coords[1]}</b>"
-             if previous_coords else "Previous: <i>no coordinates recorded</i>"),
-            (f"New — Latitude: <b>{_html_escape(coord_fields['custom_latitude'])}</b> | "
-             f"Longitude: <b>{_html_escape(coord_fields['custom_longitude'])}</b>"),
-        ]
-        if normalized_source:
-            comment_lines.append(f"Method: <b>{normalized_source}</b>")
-        if link_text:
-            comment_lines.append(f"Source link: {_html_escape(link_text)}")
+        extra_lines = []
         if visit_result["visit_updated"]:
             prev_d = visit_result.get("previous_distance_m")
             prev_str = f"{flt(prev_d):,.0f} m" if prev_d is not None else "none"
-            comment_lines.append(
+            extra_lines.append(
                 f"Visit <b>{visit_result['visit_id']}</b> distance recomputed: {prev_str} → "
                 f"<b>{flt(visit_result['visit_distance_m']):,.0f} m</b> "
                 f"({'On-Site' if visit_result['is_on_site'] else 'Off-Site'})"
             )
 
-        frappe.get_doc({
-            "doctype": "Comment",
-            "comment_type": "Info",
-            "reference_doctype": party_type,
-            "reference_name": party,
-            "content": "<br>".join(comment_lines),
-            "comment_by": acting_user,
-        }).insert(ignore_permissions=True)
+        _add_party_location_comment(
+            party_type, party, acting_user, "Nexus Sales App",
+            written["previous_coords"], coord_fields, normalized_source, link_text, extra_lines
+        )
+
+        # 🚨 LOCATION HISTORY — one row per change. Isolated with a savepoint:
+        # an audit failure is logged but never blocks a rep's correction.
+        frappe.db.savepoint("nexus_location_log")
+        try:
+            from nexus_supply_chain.nexus_supply_chain.doctype.nexus_location_correction_log.nexus_location_correction_log import (
+                record_location_correction,
+            )
+            method = normalized_source or (
+                "Maps Link" if (link_text and link_text != NEXUS_GPS_SNAP_LINK_LABEL) else "GPS Snap"
+            )
+            record_location_correction(
+                party_type=party_type,
+                party=party,
+                new_coordinates=coord_fields["custom_combined_coordinates"],
+                old_coordinates=written["previous_text"],
+                method=method,
+                changed_by_role="Sales",
+                google_maps_link=link_text if method == "Maps Link" else None,
+                sales_visit=visit_result.get("visit_id"),
+            )
+        except Exception as le:
+            frappe.db.rollback(save_point="nexus_location_log")
+            frappe.log_error(title="Location Correction Log Failed", message=f"{party_type} {party}: {le}")
 
         frappe.db.commit()
 
@@ -4092,7 +4601,13 @@ def update_customer_coordinates(customer, latitude, longitude, custom_combined_c
 
 @frappe.whitelist()
 def update_lead_coordinates(lead, latitude, longitude, custom_combined_coordinates=None, google_maps_link=None, visit_id=None, location_source=None):
-
+    """
+    Lead location correction (GPS Snap or Maps Link). Writes the Lead's four
+    custom GeoLocation fields, adds an old pin -> new pin comment to the
+    Lead's timeline, and recomputes the open lead visit's distance with the
+    same audit trail as customers. Same scope rules as lead check-in;
+    converted leads are refused (their pin now belongs to the customer).
+    """
     if not lead or not frappe.db.exists("Lead", lead):
         return {"status": "error", "code": "LEAD_NOT_FOUND", "message": "This lead no longer exists."}
 
@@ -4113,7 +4628,17 @@ def update_lead_coordinates(lead, latitude, longitude, custom_combined_coordinat
 
 @frappe.whitelist()
 def register_sales_check_in_correction(visit_id, distance_m=None, location_source=None):
-
+    """
+    🚨 HARDENED. Previously any logged-in user could overwrite ANY visit's
+    distance with ANY number. Now:
+      - distance_m is accepted only so older app builds don't fail on the
+        call signature. It is IGNORED.
+      - The distance is recomputed on the server from the visit's stored
+        check-in point against the customer's CURRENT coordinates.
+      - The visit must belong to the calling session and still be open.
+    The app's normal path is update_customer_coordinates, which performs
+    this same correction itself. Both share _apply_visit_location_correction.
+    """
     try:
         if not visit_id or not frappe.db.exists("Nexus Sales Visit", visit_id):
             return {"status": "error", "message": "Active visit record not found."}
@@ -4146,10 +4671,33 @@ def register_sales_check_in_correction(visit_id, distance_m=None, location_sourc
 
 @frappe.whitelist()
 def backfill_snap_corrected_visits(dry_run=1, since=None):
+    """
+    🚨 ONE-OFF CLEANUP for visits recorded before the visit_id fix, when
+    corrections were silently dropped (e.g. f856j0rhk7 / CUS-04582).
 
+    Targets only the unambiguous case: the customer's CURRENT pin is a GPS
+    snap that sits within 1 m of the visit's own check-in point, yet the
+    visit still stores a distance > 100 m. That combination can only arise
+    from a snap made during that visit whose correction was lost.
+
+    Callable WITHOUT bench, from the ERPNext desk as a System Manager
+    (browser DevTools console):
+      Dry run:  frappe.call({method: 'nexus_supply_chain.api.backfill_snap_corrected_visits', args: {dry_run: 1}}).then(r => console.log(r.message))
+      Apply:    frappe.call({method: 'nexus_supply_chain.api.backfill_snap_corrected_visits', args: {dry_run: 0}}).then(r => console.log(r.message))
+    Optional arg: since: '2026-09-01' to limit by check-in date.
+    Still works from bench too:
+      bench --site <site> execute nexus_supply_chain.api.backfill_snap_corrected_visits --kwargs "{'dry_run': 1}"
+
+    Results are RETURNED (not printed) so they're visible in the browser.
+    location_corrected_at is stamped with the time the backfill runs; the
+    real correction moment is in the Customer's timeline comment.
+    """
     frappe.only_for("System Manager")
     dry_run = cint(dry_run)
 
+    # A real (writing) run must be an explicit POST, never a GET that a
+    # browser could prefetch or replay by accident. bench execute has no
+    # request object, so it's unaffected.
     request = getattr(frappe.local, "request", None)
     if not dry_run and request is not None and request.method != "POST":
         frappe.throw("A real (non-dry) backfill run must be sent as a POST request.")
@@ -4221,7 +4769,35 @@ def backfill_snap_corrected_visits(dry_run=1, since=None):
 
 @frappe.whitelist()
 def submit_visit_report(visit_id=None, customer_id=None, outcome=None, notes=None, next_follow_up_date=None, competitor_notes=None, collections_report=None):
+    """
+    Writes the rep's post-visit report onto the Nexus Sales Visit record
+    created at check-in (see register_sales_check_in). Uses direct
+    db.set_value — same "Strategy D" pattern as update_customer_coordinates —
+    to avoid a full doc.save() cycle and any recursive on_change webhook loop
+    on a doctype that already has heavy hooks wired to it elsewhere.
 
+    🚨 RESOLUTION ORDER (visit_id is now a fast-path, not a hard requirement):
+      1. If visit_id is supplied AND exists, use it directly.
+      2. Otherwise, if customer_id is supplied, resolve the CALLING REP'S
+         OWN most recent Nexus Sales Visit for that customer. This closes
+         the race window where the app's optimistic check-in flow (visit_id
+         is patched into state only after ERPNext's background response
+         returns) hasn't yet delivered a visit_id by the time the rep taps
+         Submit Report — previously this hard-failed with "doesn't have a
+         trackable check-in record yet" even though a real, valid check-in
+         had just been recorded seconds earlier.
+      3. If neither resolves to a real record, fail clearly.
+
+    🚨 SINGLE-SUBMISSION GUARD: once a visit already has visit_with_report=1,
+    further submissions against that same visit are rejected outright rather
+    than silently overwriting the rep's original report — a visit report is
+    a point-in-time record, not an editable draft.
+
+    Defensive has_column checks mean this never hard-fails on a site that
+    hasn't run the one-time create_custom_field step yet — it just silently
+    skips the fields that don't exist, so a stale mobile build talking to a
+    fresh backend (or vice versa) never crashes the request.
+    """
     target_visit_id = visit_id if (visit_id and frappe.db.exists("Nexus Sales Visit", visit_id)) else None
 
     if not target_visit_id:
@@ -4239,10 +4815,12 @@ def submit_visit_report(visit_id=None, customer_id=None, outcome=None, notes=Non
 
         target_visit_id = resolved[0].name
 
+    # Ownership check: a rep can only file a report against their own visit
     visit_owner = frappe.db.get_value("Nexus Sales Visit", target_visit_id, "sales_person")
     if visit_owner and visit_owner.lower() != frappe.session.user.lower():
         return {"status": "error", "message": "You can only submit a report for your own visit."}
 
+    # 🚨 SINGLE-SUBMISSION GUARD — never overwrite an existing report.
     if frappe.db.has_column("Nexus Sales Visit", "visit_with_report"):
         already_reported = frappe.db.get_value("Nexus Sales Visit", target_visit_id, "visit_with_report")
         if already_reported:
@@ -4270,9 +4848,11 @@ def submit_visit_report(visit_id=None, customer_id=None, outcome=None, notes=Non
     if not has_real_content:
         return {"status": "error", "message": "Please fill in at least one field before submitting."}
 
+    # 🚨 Auto-flag: visit_with_report is ALWAYS set when real content was submitted.
     if frappe.db.has_column("Nexus Sales Visit", "visit_with_report"):
         update_dict["visit_with_report"] = 1
 
+    # 🚨 Auto-flag: is_collections_report is ONLY set when the collections flow was used.
     if collections_report and frappe.db.has_column("Nexus Sales Visit", "is_collections_report"):
         update_dict["is_collections_report"] = 1
 
@@ -4288,7 +4868,10 @@ def submit_visit_report(visit_id=None, customer_id=None, outcome=None, notes=Non
         return {"status": "error", "message": str(e)}
 
 def trigger_post_import_cache_eviction(doc, method=None):
-
+    """
+    🚨 BULK IMPORT SWEEPER: Fires once after a Frappe v15 Data Import completes.
+    Simply sets the debounce flag to let the 1-minute orchestrator handle it safely.
+    """
     try:
         if doc.status not in ["Success", "Partial Success"]:
             return
@@ -4310,21 +4893,35 @@ def publish_catalog_update(doc, method):
     frappe.publish_realtime('nexus_catalog_sync', message={'status': 'updated'})
 
 def process_debounced_cache_eviction():
+    """
+    Scheduled Orchestrator: Runs every 1 minute.
+    If the debounce flag is set, sends ONE signed webhook to FastAPI carrying
+    the full active sales roster (resolved here, inside ERPNext, because
+    FastAPI's own roster lookup runs without a session).
 
+    The flag is only reset after FastAPI accepts the request, so a failed
+    call is retried on the next run instead of being silently dropped.
+    On a site with pushes disabled the flag is simply cleared.
+    """
     try:
         if not frappe.cache().get_value('nexus_needs_sync'):
+            return
+
+        if not pushes_enabled():
+            frappe.cache().set_value('nexus_needs_sync', False)
             return
 
         emails = _get_all_sales_rep_emails()
 
         response = requests.post(
-            "https://crystal-api.crystalapps.dev/api/v1/cache/invalidate",
+            fastapi_url("/api/v1/cache/invalidate"),
             json={
                 "command": "GLOBAL_DEBOUNCED_SYNC",
                 "doctype": "System",
                 "docname": "Scheduled Sync",
                 "emails": emails,
             },
+            headers=internal_headers(),
             timeout=10
         )
         response.raise_for_status()
@@ -4335,7 +4932,10 @@ def process_debounced_cache_eviction():
 
 @frappe.whitelist()
 def get_active_companies_for_dispatch():
-
+    """
+    Fetches all companies with valid GPS coordinates to serve as the final
+    yard/destination for returning drivers.
+    """
     try:
         companies = frappe.db.sql("""
             SELECT name, custom_latitude, custom_longitude

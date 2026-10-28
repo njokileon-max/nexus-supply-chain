@@ -1,0 +1,434 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-18 11:09:44.249522",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "warehouses_tab",
+  "warehouses_section",
+  "fg_warehouse",
+  "bulk_warehouses",
+  "colourant_warehouse",
+  "column_break_wh",
+  "rm_warehouses",
+  "cook_target_warehouse",
+  "fill_target_warehouse",
+  "planning_tab",
+  "orders_section",
+  "order_age_limit_days",
+  "draft_age_limit_days",
+  "column_break_orders",
+  "draft_workflow_states",
+  "work_orders_section",
+  "include_work_orders",
+  "wo_age_limit_days",
+  "column_break_wo",
+  "count_not_started",
+  "count_in_process",
+  "purchasing_section",
+  "include_purchase_orders",
+  "column_break_purchasing",
+  "material_price_basis",
+  "pending_section",
+  "pending_stale_days",
+  "rules_section",
+  "excess_fill_rule",
+  "tint_base_priority",
+  "column_break_rules",
+  "include_shelf_without_orders",
+  "packaging_item_group",
+  "mass_balance_tolerance",
+  "system_tab",
+  "refresh_section",
+  "refresh_interval_minutes",
+  "night_refresh_interval_minutes",
+  "column_break_refresh",
+  "night_start",
+  "night_end",
+  "cache_ttl_seconds",
+  "engine_section",
+  "engine_url",
+  "column_break_engine",
+  "engine_timeout_seconds",
+  "test_connection",
+  "preview_board",
+  "download_snapshot",
+  "bom_section",
+  "auto_replace_sub_bom_links",
+  "column_break_bom",
+  "replace_outdated_links",
+  "access_section",
+  "allowed_roles"
+ ],
+ "fields": [
+  {
+   "fieldname": "warehouses_tab",
+   "fieldtype": "Tab Break",
+   "label": "Warehouses"
+  },
+  {
+   "fieldname": "warehouses_section",
+   "fieldtype": "Section Break",
+   "label": "Stock locations",
+   "description": "Where the board reads stock. Bulk stock is counted in every warehouse listed under Bulk Warehouses."
+  },
+  {
+   "fieldname": "fg_warehouse",
+   "fieldtype": "Link",
+   "label": "Finished Goods Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "bulk_warehouses",
+   "fieldtype": "Table MultiSelect",
+   "label": "Bulk Warehouses",
+   "options": "Nexus Production Warehouse",
+   "reqd": 1,
+   "description": "Bulk (BIP) stock is available for filling wherever it sits in these warehouses."
+  },
+  {
+   "fieldname": "colourant_warehouse",
+   "fieldtype": "Link",
+   "label": "Colourant Warehouse",
+   "options": "Warehouse",
+   "description": "Where Is Colourant items are stocked."
+  },
+  {
+   "fieldname": "column_break_wh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rm_warehouses",
+   "fieldtype": "Table MultiSelect",
+   "label": "Raw Material Warehouses",
+   "options": "Nexus Production Warehouse",
+   "reqd": 1,
+   "description": "Free stock for raw materials and packaging is summed across these."
+  },
+  {
+   "fieldname": "cook_target_warehouse",
+   "fieldtype": "Link",
+   "label": "Cook Target Warehouse",
+   "options": "Warehouse",
+   "description": "Target for Work Orders created from a bulk card, unless the item has its own Default Warehouse."
+  },
+  {
+   "fieldname": "fill_target_warehouse",
+   "fieldtype": "Link",
+   "label": "Fill & Tint Target Warehouse",
+   "options": "Warehouse",
+   "description": "Target for fill and tint Work Orders created from the board."
+  },
+  {
+   "fieldname": "planning_tab",
+   "fieldtype": "Tab Break",
+   "label": "Planning"
+  },
+  {
+   "fieldname": "orders_section",
+   "fieldtype": "Section Break",
+   "label": "Orders"
+  },
+  {
+   "fieldname": "order_age_limit_days",
+   "fieldtype": "Int",
+   "label": "Count Confirmed Orders From Last (Days)",
+   "default": "7",
+   "description": "The board's default date window: orders confirmed in the last this-many days. Older undelivered orders are counted in the banner and can be added with the date choices on the page."
+  },
+  {
+   "fieldname": "draft_age_limit_days",
+   "fieldtype": "Int",
+   "label": "Show Drafts From Last (Days)",
+   "default": "14"
+  },
+  {
+   "fieldname": "column_break_orders",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "draft_workflow_states",
+   "fieldtype": "Table MultiSelect",
+   "label": "Draft Workflow States",
+   "options": "Nexus Production Draft State",
+   "description": "Sales Order workflow states shown in Drafts (forecast) mode."
+  },
+  {
+   "fieldname": "work_orders_section",
+   "fieldtype": "Section Break",
+   "label": "Work Orders",
+   "description": "What open Work Orders will make, and the materials they still need, are counted only when Include Work Orders is ticked."
+  },
+  {
+   "fieldname": "include_work_orders",
+   "fieldtype": "Check",
+   "label": "Include Work Orders",
+   "default": "1",
+   "description": "Ticked: open Work Orders count as stock on the way, and only the materials THEY still need are set aside. Unticked: Work Orders play no part in the plan and are not shown on the cards; free stock is the stock on the shelf."
+  },
+  {
+   "fieldname": "wo_age_limit_days",
+   "fieldtype": "Int",
+   "label": "Deduct Work Orders Planned In Last (Days)",
+   "default": "30",
+   "description": "Older open Work Orders are treated as abandoned: not deducted and nothing set aside for them; they are flagged on the Pending tab. Stopped Work Orders are never deducted.",
+   "depends_on": "eval:doc.include_work_orders"
+  },
+  {
+   "fieldname": "column_break_wo",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "count_not_started",
+   "fieldtype": "Check",
+   "label": "Deduct Not Started Work Orders",
+   "default": "1",
+   "depends_on": "eval:doc.include_work_orders"
+  },
+  {
+   "fieldname": "count_in_process",
+   "fieldtype": "Check",
+   "label": "Deduct In Process Work Orders",
+   "default": "1",
+   "depends_on": "eval:doc.include_work_orders"
+  },
+  {
+   "fieldname": "purchasing_section",
+   "fieldtype": "Section Break",
+   "label": "Purchasing"
+  },
+  {
+   "fieldname": "include_purchase_orders",
+   "fieldtype": "Check",
+   "label": "Include Purchase Orders",
+   "default": "0",
+   "description": "Ticked: quantities on open Purchase Orders count as incoming and are shown on the material cards. Unticked: shortfall = requirement minus free stock. Untick while received Purchase Orders are not being closed."
+  },
+  {
+   "fieldname": "column_break_purchasing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "material_price_basis",
+   "fieldtype": "Select",
+   "label": "Price for Shortfall Value",
+   "options": "Last Purchase Rate\nValuation Rate",
+   "default": "Last Purchase Rate",
+   "description": "Price used to value a material shortfall. Falls back to the other price when the chosen one is missing."
+  },
+  {
+   "fieldname": "pending_section",
+   "fieldtype": "Section Break",
+   "label": "Pending Work Orders & Purchase Orders tab"
+  },
+  {
+   "fieldname": "pending_stale_days",
+   "fieldtype": "Int",
+   "label": "Flag Documents With No Progress For (Days)",
+   "default": "14",
+   "description": "A Work Order with no progress, or a Purchase Order overdue or not received, for longer than this is flagged on the Pending tab."
+  },
+  {
+   "fieldname": "rules_section",
+   "fieldtype": "Section Break",
+   "label": "Rules"
+  },
+  {
+   "fieldname": "excess_fill_rule",
+   "fieldtype": "Select",
+   "label": "Excess Fill Rule",
+   "options": "Lowest stock cover first\nSmallest pack first\nLargest pack first",
+   "default": "Lowest stock cover first",
+   "description": "How top-up bulk from a minimum batch is shared across monitored pack sizes."
+  },
+  {
+   "fieldname": "tint_base_priority",
+   "fieldtype": "Select",
+   "label": "Tint Base Priority",
+   "options": "Urgent then oldest across all orders\nDirect base orders first",
+   "default": "Urgent then oldest across all orders",
+   "description": "Who gets packed-base stock first: tint orders or direct orders for the base."
+  },
+  {
+   "fieldname": "column_break_rules",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "include_shelf_without_orders",
+   "fieldtype": "Check",
+   "label": "Show Shelf Refills Without Orders",
+   "default": "1",
+   "description": "Monitored fast movers below their Minimum Reorder Level appear even when no order is open."
+  },
+  {
+   "fieldname": "packaging_item_group",
+   "fieldtype": "Link",
+   "label": "Packaging Item Group",
+   "options": "Item Group",
+   "default": "Packaging Materials",
+   "reqd": 1
+  },
+  {
+   "fieldname": "mass_balance_tolerance",
+   "fieldtype": "Percent",
+   "label": "BOM Mass Balance Tolerance",
+   "default": "2",
+   "description": "Bulk BOMs whose ingredients differ from output by more than this (after process loss) are listed in Needs Setup."
+  },
+  {
+   "fieldname": "system_tab",
+   "fieldtype": "Tab Break",
+   "label": "System"
+  },
+  {
+   "fieldname": "refresh_section",
+   "fieldtype": "Section Break",
+   "label": "Refresh"
+  },
+  {
+   "fieldname": "refresh_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Fallback Refresh (Minutes)",
+   "default": "5",
+   "description": "Live events refresh the board sooner. This is the safety net."
+  },
+  {
+   "fieldname": "night_refresh_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Night Shift Refresh (Minutes)",
+   "default": "15"
+  },
+  {
+   "fieldname": "column_break_refresh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "night_start",
+   "fieldtype": "Time",
+   "label": "Night Shift Starts",
+   "default": "19:00:00"
+  },
+  {
+   "fieldname": "night_end",
+   "fieldtype": "Time",
+   "label": "Night Shift Ends",
+   "default": "06:00:00"
+  },
+  {
+   "fieldname": "cache_ttl_seconds",
+   "fieldtype": "Int",
+   "label": "Board Cache (Seconds)",
+   "default": "60"
+  },
+  {
+   "fieldname": "engine_section",
+   "fieldtype": "Section Break",
+   "label": "Calculation Engine",
+   "description": "The shared secret is read from site_config.json (crystal_api_internal_secret), never stored here."
+  },
+  {
+   "fieldname": "engine_url",
+   "fieldtype": "Data",
+   "label": "Engine URL",
+   "default": "https://crystal-api.crystalapps.dev/api/v2/production-plan"
+  },
+  {
+   "fieldname": "column_break_engine",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "engine_timeout_seconds",
+   "fieldtype": "Int",
+   "label": "Engine Timeout (Seconds)",
+   "default": "60"
+  },
+  {
+   "fieldname": "test_connection",
+   "fieldtype": "Button",
+   "label": "Test Connection",
+   "description": "Checks the Engine URL and the shared secret."
+  },
+  {
+   "fieldname": "preview_board",
+   "fieldtype": "Button",
+   "label": "Preview Board",
+   "description": "Runs a fresh calculation on today's real data and shows a summary."
+  },
+  {
+   "fieldname": "download_snapshot",
+   "fieldtype": "Button",
+   "label": "Download Snapshot",
+   "description": "System Manager only: the exact data sent to the engine, as a file."
+  },
+  {
+   "fieldname": "bom_section",
+   "fieldtype": "Section Break",
+   "label": "BOM Housekeeping"
+  },
+  {
+   "fieldname": "auto_replace_sub_bom_links",
+   "fieldtype": "Check",
+   "label": "Auto-replace Sub-BOM Links",
+   "default": "1",
+   "description": "When a BOM becomes the default for its item, re-point every parent BOM still using an older version (via ERPNext's BOM Update Tool)."
+  },
+  {
+   "fieldname": "column_break_bom",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "replace_outdated_links",
+   "fieldtype": "Button",
+   "label": "Replace Outdated Sub-BOM Links"
+  },
+  {
+   "fieldname": "access_section",
+   "fieldtype": "Section Break",
+   "label": "Access"
+  },
+  {
+   "fieldname": "allowed_roles",
+   "fieldtype": "Table MultiSelect",
+   "label": "Allowed Roles",
+   "options": "Nexus Production Role",
+   "description": "Roles that can open the production board. System Manager always can."
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-24 13:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Nexus Supply Chain",
+ "name": "Nexus Production Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "Manufacturing Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "Manufacturing User",
+   "read": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

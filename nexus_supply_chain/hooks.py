@@ -41,7 +41,7 @@ doc_events = {
         "on_trash": "nexus_supply_chain.api.trigger_lead_refresh"
     },
 
-        # 🚨 Lead status changes made by ERPNext itself (Opportunity / Quotation
+    # 🚨 Lead status changes made by ERPNext itself (Opportunity / Quotation
     # linked to a Lead) reach the app live, not only on the next sync.
     "Opportunity": {
         "on_change": "nexus_supply_chain.api.trigger_lead_refresh_from_linked",
@@ -52,12 +52,15 @@ doc_events = {
         "on_trash": "nexus_supply_chain.api.trigger_lead_refresh_from_linked"
     },
 
-   # 🚨 UNIFIED CATALOG TRIGGERS
+    # 🚨 UNIFIED CATALOG TRIGGERS
     "Item": {
+        "validate": "nexus_supply_chain.production.validations.validate_item",
         "on_update": [
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
             "nexus_supply_chain.api.publish_catalog_update"
-        ]
+        ],
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change",   # NEXUS LIVE (production fields only)
+        "on_trash": "nexus_supply_chain.production.signals.on_doc_change"     # NEXUS LIVE
     },
     "Item Price": {
         "on_update": [
@@ -66,87 +69,113 @@ doc_events = {
         ]
     },
 
-    # "Nexus Inventory Reservation": {
-    #     "on_update": "nexus_supply_chain.reservation_hooks.process_reservation_update",
-    #     "before_submit": "nexus_supply_chain.reservation_hooks.prepare_reservation_submission",
-    #     "before_cancel": "nexus_supply_chain.reservation_hooks.validate_reservation_cancel",
-    #     "on_cancel": "nexus_supply_chain.reservation_hooks.process_reservation_cancel"
-    # },
-    
+    # 🚨 STOCK MOVEMENT TRIGGERS
     "Delivery Note": {
-        # "validate": "nexus_supply_chain.reservation_hooks.validate_delivery_note_submission",
+        "after_insert": "nexus_supply_chain.production.signals.on_doc_change",   # NEXUS LIVE (a draft DN takes its order out)
         "on_submit": [
-            # "nexus_supply_chain.reservation_hooks.process_delivery_note",
-            "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-            #"nexus_supply_chain.nexus_supply_chain.utils.delivery_note_hooks.set_cogs_snapshot"
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.production.signals.on_doc_change"              # NEXUS LIVE
         ],
         "on_cancel": [
-            # "nexus_supply_chain.reservation_hooks.process_delivery_note_cancel",
-            "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.production.signals.on_doc_change"              # NEXUS LIVE
+        ],
+        "on_trash": "nexus_supply_chain.production.signals.on_doc_change",      # NEXUS LIVE
+        "before_submit": [
+            "nexus_supply_chain.utils.delivery_note_hooks.set_cogs_snapshot"
         ]
     },
-    
+
     "Sales Order": {
-        # 🚨 LIVE LIFECYCLE TRACKING + CACHE EVICTION
+        "before_submit": "nexus_supply_chain.production.validations.stamp_confirmed_on",
         "on_update": [
             "nexus_supply_chain.api.trigger_order_status_update",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            # "nexus_supply_chain.reservation_hooks.process_sales_order_update",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-        ]
+        ],
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change",     # NEXUS LIVE (submit, close, hold, delivered)
+        "on_trash": "nexus_supply_chain.production.signals.on_doc_change"       # NEXUS LIVE (deleted drafts)
     },
-    
+
+    # 🚨 FINANCIAL TRIGGERS
+    # Clears Redis cache to update debt snapshots and dashboard MTD collections.
     "Payment Entry": {
-        "on_submit": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-        "on_cancel": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+        "on_submit": "nexus_supply_chain.api.trigger_financial_refresh",
+        "on_cancel": "nexus_supply_chain.api.trigger_financial_refresh",
+        "on_update_after_submit": "nexus_supply_chain.api.trigger_financial_refresh",
     },
-    
+    "Journal Entry": {
+        "on_submit": "nexus_supply_chain.api.trigger_financial_refresh",
+        "on_cancel": "nexus_supply_chain.api.trigger_financial_refresh",
+    },
+
     "Sales Invoice": {
-        "on_submit": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
-        "on_cancel": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
+        "after_insert": "nexus_supply_chain.production.signals.on_doc_change",   # NEXUS LIVE (a draft SI takes its order out)
+        "on_submit": [
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.production.signals.on_doc_change"              # NEXUS LIVE
+        ],
+        "on_cancel": [
+            "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
+            "nexus_supply_chain.production.signals.on_doc_change"              # NEXUS LIVE
+        ],
+        "on_trash": "nexus_supply_chain.production.signals.on_doc_change",      # NEXUS LIVE
+        "before_submit": "nexus_supply_chain.utils.sales_invoice_hooks.set_cogs_snapshot"
     },
-    
+
     "Stock Entry": {
         "on_submit": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-            # "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production" # <-- CAUSING TRACEBACK
         ],
         "on_cancel": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-            # "nexus_supply_chain.page.nexus_executive_command.nexus_executive_command.publish_realtime_production" # <-- CAUSING TRACEBACK
-        ]
+        ],
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"      # NEXUS LIVE
     },
-    
+
     "Stock Reconciliation": {
         "on_submit": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-        ]
+        ],
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"      # NEXUS LIVE
     },
-    
+
     "Purchase Receipt": {
         "on_submit": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
         ],
         "on_cancel": [
-            # "nexus_supply_chain.reservation_hooks.process_stock_movement_cancel",
             "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
-        ]
+        ],
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"      # NEXUS LIVE
     },
-    
+
+    # NEXUS LIVE: production documents (only submitted / cancelled ones send a signal)
+    "Work Order": {
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"
+    },
+    "Material Request": {
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"
+    },
+    "Purchase Order": {
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"
+    },
+    "Nexus Production Settings": {
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"
+    },
+
+    # 🚨 TARGET MANAGEMENT TRIGGER
     "Sales Person": {
         "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
     },
 
+    # 🚨 MASTER METADATA STRUCTURAL TRIGGERS
+    # Forces absolute global system invalidation cache sweeps if dropdown matrices change.
     "Customer Group": {
         "on_update": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
         "on_change": "nexus_supply_chain.api.trigger_cache_eviction_and_notify",
@@ -168,17 +197,36 @@ doc_events = {
         "on_trash": "nexus_supply_chain.api.trigger_cache_eviction_and_notify"
     },
 
+    # 🚨 BULK DATA IMPORT TRIGGERS (The Thundering Herd Shield)
+    # Fires exactly once after a Frappe v15 Data Import completely finishes.
     "Data Import": {
         "on_update": "nexus_supply_chain.api.trigger_post_import_cache_eviction"
+    },
+
+    # NEXUS PRODUCTION: keep parent BOMs on each component's current default BOM
+    "BOM": {
+        "on_submit": "nexus_supply_chain.production.bom_sync.on_bom_default_change",
+        "on_update_after_submit": "nexus_supply_chain.production.bom_sync.on_bom_default_change",
+        "on_change": "nexus_supply_chain.production.signals.on_doc_change"      # NEXUS LIVE
     }
 }
 
+
+# 🚨 SCHEDULED ORCHESTRATORS
 scheduler_events = {
     "cron": {
+        # 1. Strategy B: Redis Debounce Buffer (Runs every 1 minute)
+        # Checks the Redis cache flag and fires a single cache-eviction webhook to FastAPI
+        # if any records were updated in the last 60 seconds.
         "* * * * *": [
-            "nexus_supply_chain.api.process_debounced_cache_eviction"
+            "nexus_supply_chain.api.process_debounced_cache_eviction",
+            # NEXUS LIVE: sends production board changes held back by the 30 s limit
+            "nexus_supply_chain.production.signals.flush_pending"
         ],
 
+        # 2. Strategy D: The Slow-Drip Batcher (Runs every 10 minutes)
+        # The Cleanup Crew: Quietly processes bulk-imported customers in the background.
+        # It bypasses Frappe's synchronous UI hooks and avoids Google Map API bans.
         "*/10 * * * *": [
             "nexus_supply_chain.api.process_bulk_geocoding_queue"
         ]
@@ -188,6 +236,14 @@ scheduler_events = {
 before_request = [
     "nexus_supply_chain.api.enforce_minimum_app_version"
 ]
+
+after_migrate = [
+    "nexus_supply_chain.production.custom_fields.ensure_custom_fields"
+]
+
+boot_session = "nexus_supply_chain.boot.boot_session"
+
+
 
 # -----------------------------------------------------------
 # ENTERPRISE SECURITY HOOKS: Row-Level Access Control

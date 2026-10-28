@@ -5,7 +5,21 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "allowed_roles"
+  "allowed_roles",
+  "dropoff_section",
+  "dropoff_on_site_threshold_m",
+  "column_break_dropoff",
+  "completed_history_days",
+  "tracking_section",
+  "standby_threshold_seconds",
+  "column_break_tracking",
+  "offline_threshold_minutes",
+  "dispatch_map_section",
+  "default_dispatch_map",
+  "hosted_tile_url",
+  "column_break_map",
+  "google_maps_web_api_key",
+  "google_maps_map_id"
  ],
  "fields": [
   {
@@ -13,13 +27,103 @@
    "fieldtype": "Table",
    "label": "Allowed Mobile App Roles",
    "options": "User Role"
+  },
+  {
+   "fieldname": "dropoff_section",
+   "fieldtype": "Section Break",
+   "label": "Driver Drop-off"
+  },
+  {
+   "default": "200",
+   "description": "A drop-off counts as on-site when the driver's GPS point is within this many metres of the customer's stored location.",
+   "fieldname": "dropoff_on_site_threshold_m",
+   "fieldtype": "Float",
+   "label": "On-Site Threshold (m)",
+   "non_negative": 1,
+   "precision": "0",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_dropoff",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "7",
+   "description": "How many days of completed manifests the driver app keeps in its history list.",
+   "fieldname": "completed_history_days",
+   "fieldtype": "Int",
+   "label": "Completed History (Days)",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Live Tracking Status"
+  },
+  {
+   "default": "180",
+   "description": "A device with no ping for this long shows as On Stand-by on the dispatch maps.",
+   "fieldname": "standby_threshold_seconds",
+   "fieldtype": "Int",
+   "label": "On Stand-by After (Seconds)",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_tracking",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "360",
+   "description": "A device with no ping for this long shows as Offline. Its pin stays at the last ping until a new one arrives.",
+   "fieldname": "offline_threshold_minutes",
+   "fieldtype": "Int",
+   "label": "Offline After (Minutes)",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "dispatch_map_section",
+   "fieldtype": "Section Break",
+   "label": "Dispatch Maps"
+  },
+  {
+   "default": "Google",
+   "description": "Map shown on Live Dispatch and Sales Dispatch for users who haven't picked one yet.",
+   "fieldname": "default_dispatch_map",
+   "fieldtype": "Select",
+   "label": "Default Dispatch Map",
+   "options": "Google\nHosted"
+  },
+  {
+   "description": "MapLibre style URL of the self-hosted map, e.g. https://tiles.example.com/styles/basic/style.json",
+   "fieldname": "hosted_tile_url",
+   "fieldtype": "Data",
+   "label": "Hosted Map Style URL"
+  },
+  {
+   "fieldname": "column_break_map",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Browser key for the desk dispatch pages. Restrict it to your ERPNext domain and to the Maps JavaScript API in Google Cloud. Not the Android key.",
+   "fieldname": "google_maps_web_api_key",
+   "fieldtype": "Data",
+   "label": "Google Maps Web API Key"
+  },
+  {
+   "description": "Map ID for the web dispatch maps (needed for Advanced Markers). Never used in the driver app.",
+   "fieldname": "google_maps_map_id",
+   "fieldtype": "Data",
+   "label": "Google Maps Map ID (Web)"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-03-24 12:18:46.729253",
+ "modified": "2026-10-25 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus App Settings",
@@ -40,5 +144,6 @@
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

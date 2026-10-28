@@ -2,11 +2,14 @@
 import frappe
 
 class FastBOMExploder:
-
+    """
+    In-memory caching engine to perform rapid BOM explosions for UI display.
+    """
     def __init__(self):
         self.load_system_data()
 
     def load_system_data(self):
+        # 1. Load Standard Buying Prices
         prices = frappe.db.sql("""
             SELECT item_code, price_list_rate
             FROM `tabItem Price`
@@ -15,10 +18,12 @@ class FastBOMExploder:
         """, as_dict=True)
         self.price_map = {p.item_code: frappe.utils.flt(p.price_list_rate) for p in prices}
 
+        # 2. Load Item Valuations and Metadata
         vals = frappe.db.sql("SELECT name, valuation_rate, item_name, item_group FROM `tabItem`", as_dict=True)
         self.item_val_map = {v.name: frappe.utils.flt(v.valuation_rate) for v in vals}
         self.item_meta_map = {v.name: {"item_name": v.item_name, "item_group": v.item_group} for v in vals}
 
+        # 3. Load Active Default BOMs
         boms = frappe.db.sql("""
             SELECT name, item, quantity
             FROM `tabBOM`
@@ -29,9 +34,11 @@ class FastBOMExploder:
             for b in boms
         }
 
+        # 4. Load BOM Items
         self.bom_items_map = {}
         if boms:
             bom_names = tuple(b.name for b in boms)
+            # Safe tuple injection
             bom_items = frappe.db.sql(f"""
     SELECT parent, item_code, stock_qty, item_name, uom, stock_uom
     FROM `tabBOM Item`
@@ -49,12 +56,14 @@ class FastBOMExploder:
 
         bom_info = self.bom_map.get(item_code)
 
+        # Base Case: Raw Material / Leaf Node
         if not bom_info:
             cost = self.price_map.get(item_code)
             if not cost:
                 cost = self.item_val_map.get(item_code, 0.0)
             return frappe.utils.flt(cost), []
 
+        # Recursive Case: Sub-Assembly or FG
         visited.add(item_code)
         bom_name = bom_info["name"]
         bom_yield = bom_info["qty"]
@@ -110,6 +119,7 @@ def get_fg_cards():
     if not fg_bounds:
         return []
 
+    # Get active FG items
     fg_items = frappe.db.sql("""
         SELECT i.name as item_code, i.item_name
         FROM `tabItem` i
@@ -122,6 +132,7 @@ def get_fg_cards():
     results = []
     
     for it in fg_items:
+        # Only process FG items that actually have a configured BOM
         if it.item_code in engine.bom_map:
             total_cogs, _ = engine.explode(it.item_code)
             results.append({
@@ -130,6 +141,7 @@ def get_fg_cards():
                 "total_cogs": total_cogs
             })
             
+    # Sort alphabetically by Item Name
     return sorted(results, key=lambda k: k['item_name'])
 
 @frappe.whitelist()

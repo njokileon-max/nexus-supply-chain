@@ -6,10 +6,21 @@ from frappe.utils import flt
 
 from nexus_supply_chain.routing.optimizer_api import calculate_trip_fuel_cost
 
+# Standard Kenyan VAT rate. Matches the rate already hardcoded in
+# nexus_load_optimizer.py (SALES_TAX_RATE = 0.16) — kept as a local constant
+# here rather than importing it, since margin_analysis.py is meant to be a
+# standalone, reusable engine (Truck Assignment today, potentially other
+# callers later) and shouldn't carry a dependency on the Load Optimizer file.
 VAT_RATE = 0.16
 
-def _normalize_sales_orders(sales_orders):
 
+def _normalize_sales_orders(sales_orders):
+    """
+    Accepts either a JSON-encoded string (as arrives from frappe.call) or an
+    already-parsed list, and returns a clean list of Sales Order names.
+    Also tolerates a list of dicts (e.g. [{"sales_order": "SO-0001"}, ...])
+    in case a caller passes richer objects instead of bare names.
+    """
     if isinstance(sales_orders, str):
         sales_orders = frappe.parse_json(sales_orders) or []
 
@@ -25,6 +36,9 @@ def _normalize_sales_orders(sales_orders):
         if name:
             names.append(name)
 
+    # De-duplicate while preserving order (a truck's order list should never
+    # contain the same SO twice, but the awaiting-orders + "include current
+    # load" merge on the frontend could theoretically double it up).
     seen = set()
     unique_names = []
     for name in names:
@@ -35,7 +49,18 @@ def _normalize_sales_orders(sales_orders):
 
 
 def _explode_items_and_compute_amount_cogs(sales_order_names):
+    """
+    Bulk-fetches every Sales Order Item row for the given SOs in ONE query,
+    resolves each distinct item_code's Default BOM in ONE query, resolves
+    each distinct BOM's (total_cost, quantity) in ONE query — so this stays
+    O(3 queries) regardless of how many orders or line items are involved,
+    not O(n) per item like a naive per-row frappe.db.get_value loop would be.
 
+    Returns (total_amount, total_cogs, zero_cost_items) where zero_cost_items
+    is a list of item_codes that had no Default BOM (or a BOM with no cost/
+    quantity data), so their COGS contribution was 0 — surfaced to the panel
+    as an accuracy warning, same pattern as the Load Optimizer's margin engine.
+    """
     if not sales_order_names:
         return 0.0, 0.0, []
 
@@ -101,7 +126,30 @@ def _explode_items_and_compute_amount_cogs(sales_order_names):
 
 @frappe.whitelist()
 def get_margin_analysis(sales_orders, distance_km=None, vehicle_type=None, truck_number=None):
+    """
+    Preview-only margin calculator for the Truck Assignment page's "Analyse
+    Margins" action. Writes nothing to the database — this is purely for the
+    person's own review before deciding to dispatch. The authoritative,
+    persisted version of this same computation runs again server-side inside
+    dispatch_truck() (crystal_custom), which calls this function directly via
+    a same-process cross-app import rather than duplicating this logic.
 
+    Args:
+        sales_orders: JSON string or list of Sales Order names (or dicts
+            containing a "sales_order"/"name" key) — the orders currently
+            assigned to the truck, or the awaiting-orders selection.
+        distance_km: float, the ORS-routed roundtrip distance already
+            computed client-side (Truck Assignment) or server-side
+            (dispatch_truck). None/omitted if no valid-coordinate stops
+            exist yet — fuel and the narrowed figure are simply skipped,
+            never estimated from a fabricated distance.
+        vehicle_type: Vehicle Type name, if already known (e.g. truck's
+            capacity_kg field). Takes priority over truck_number.
+        truck_number: fallback resolution path, same as
+            calculate_trip_fuel_cost's own truck_number resolution.
+
+    Returns a dict — see the return statement for the full shape.
+    """
     so_names = _normalize_sales_orders(sales_orders)
 
     if not so_names:
@@ -115,6 +163,10 @@ def get_margin_analysis(sales_orders, distance_km=None, vehicle_type=None, truck
     gross_profit = revenue_excl_vat - total_cogs
     gross_margin_percentage = (gross_profit / revenue_excl_vat * 100) if revenue_excl_vat > 0 else 0.0
 
+    # ── Fuel estimate — only attempted if a real distance was actually
+    # computed (i.e. at least one order had valid coordinates). A missing
+    # distance is treated as "unavailable," never silently coerced to 0,
+    # since 0 km would understate fuel cost and overstate the margin.
     fuel_cost = 0.0
     fuel_litres = 0.0
     distance_available = distance_km is not None
@@ -140,13 +192,21 @@ def get_margin_analysis(sales_orders, distance_km=None, vehicle_type=None, truck
                 fuel_litres = flt(fuel_result.get("total_litres_required"))
                 fuel_available = True
         except Exception as e:
-
+            # calculate_trip_fuel_cost uses frappe.throw for hard config
+            # errors (e.g. consumption_km_per_ltr not set) — caught here so
+            # a misconfigured Vehicle Type degrades the panel gracefully
+            # ("fuel unavailable") instead of crashing the whole analysis.
             fuel_error_message = str(e)
             frappe.log_error(
                 f"Margin analysis fuel estimate failed: {e}",
                 "Nexus Margin Analysis — Fuel Estimate"
             )
 
+    # ── Narrowed Gross Margin — gross profit further reduced by fuel cost
+    # only when fuel was actually resolved. If fuel isn't available (no
+    # vehicle assigned yet, or distance unavailable), the narrowed figure
+    # simply equals the gross figure and the caller is expected to show
+    # "assign a truck to estimate fuel" rather than a falsely-narrowed number.
     if fuel_available:
         narrowed_gross_profit = gross_profit - fuel_cost
     else:
@@ -189,7 +249,21 @@ def get_margin_analysis(sales_orders, distance_km=None, vehicle_type=None, truck
 
 @frappe.whitelist()
 def get_item_wise_margin_breakdown(sales_orders):
+    """
+    Line-item margin breakdown for the "Item-Wise Analysis" popup on the
+    Truck Assignment page's Margin Analysis panel. Reuses the same
+    sales-order-name normalization as get_margin_analysis but returns a
+    per-line-item table instead of an aggregate summary.
 
+    For each Sales Order Item row:
+        - rate: as entered on the Sales Order (incl. VAT)
+        - rate_excl_vat: rate / (1 + VAT_RATE)
+        - default_bom: the FG item's Default BOM name, or None if unset
+        - total_cogs: the Default BOM's raw total_cost (0 if no Default BOM,
+          flagged via default_bom being None so the frontend can render it in red)
+        - gross_margin: rate_excl_vat - total_cogs
+        - gross_margin_percentage: gross_margin / rate_excl_vat * 100
+    """
     so_names = _normalize_sales_orders(sales_orders)
     if not so_names:
         frappe.throw(_("No Sales Orders provided for item-wise margin analysis."))

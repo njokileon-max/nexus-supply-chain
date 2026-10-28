@@ -4,7 +4,7 @@
 
 import frappe
 from frappe.utils import flt
-from nexus_supply_chain.nexus_supply_chain.utils.bom_exploder import FastBOMExploder
+from nexus_supply_chain.utils.bom_exploder import FastBOMExploder
 
 
 def set_cogs_snapshot(doc, method):

@@ -8,9 +8,14 @@
  "field_order": [
   "section_break_gwmx",
   "load_plan",
+  "truck_plan",
   "driver",
   "vehicle",
+  "column_break_trip",
   "trip_status",
+  "trip_started_at",
+  "trip_completed_at",
+  "profit_section",
   "profit_loss",
   "gross_margin",
   "net_margin",
@@ -20,8 +25,13 @@
   "actual_fuel_fuelled",
   "cumulative_additional_fuel_cost",
   "profitability_status",
+  "stops_section",
   "stops",
   "returned_items",
+  "return_collections",
+  "fuel_section",
+  "fuel_logs",
+  "route_section",
   "route_map_html",
   "route_geojson",
   "amended_from"
@@ -38,59 +48,71 @@
    "options": "Nexus Load Plan"
   },
   {
+   "fieldname": "truck_plan",
+   "fieldtype": "Link",
+   "label": "Truck Plan",
+   "options": "Crystal Truck Plan",
+   "search_index": 1
+  },
+  {
    "fetch_from": "vehicle.current_driver",
    "fieldname": "driver",
    "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Driver",
    "options": "User",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "allow_on_submit": 1,
    "fieldname": "vehicle",
    "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Vehicle",
-   "options": "Vehicle In Transit"
+   "options": "Vehicle In Transit",
+   "search_index": 1
   },
   {
+   "fieldname": "column_break_trip",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "Manifested",
+   "description": "Manifested → Ready → Dispatched → Returning → Completed (or Cancelled). Changed only by the server.",
    "fieldname": "trip_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Trip Status",
-   "options": "Manifested\nDispatched\nCompleted\nReturning\nCancelled"
-  },
-  {
-   "fieldname": "stops",
-   "fieldtype": "Table",
-   "label": "Stops",
-   "options": "In Transit-Delivery Stop"
-  },
-  {
-   "fieldname": "amended_from",
-   "fieldtype": "Link",
-   "label": "Amended From",
-   "no_copy": 1,
-   "options": "Vehicle Delivery Manifest",
-   "print_hide": 1,
+   "options": "Manifested\nReady\nDispatched\nReturning\nCompleted\nCancelled",
    "read_only": 1,
    "search_index": 1
   },
   {
-   "fieldname": "route_map_html",
-   "fieldtype": "HTML",
-   "label": "Route Map"
-  },
-  {
-   "fieldname": "route_geojson",
-   "fieldtype": "Long Text",
-   "label": "Route Geojson",
+   "allow_on_submit": 1,
+   "fieldname": "trip_started_at",
+   "fieldtype": "Datetime",
+   "label": "Trip Started At",
+   "no_copy": 1,
    "read_only": 1
   },
   {
    "allow_on_submit": 1,
-   "fieldname": "returned_items",
-   "fieldtype": "Table",
-   "label": "Returned Items",
-   "options": "Manifest Returned Item"
+   "fieldname": "trip_completed_at",
+   "fieldtype": "Datetime",
+   "label": "Trip Completed At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "profit_section",
+   "fieldtype": "Section Break",
+   "label": "Profitability"
   },
   {
    "fieldname": "profit_loss",
@@ -128,23 +150,95 @@
    "label": "Actual Fuel Fueled (In Company Floor)"
   },
   {
+   "allow_on_submit": 1,
+   "description": "Total of the Fuel Logs below, recalculated by the server.",
    "fieldname": "cumulative_additional_fuel_cost",
    "fieldtype": "Currency",
-   "label": "Cumulative Additional Fuel Cost"
+   "label": "Cumulative Additional Fuel Cost",
+   "read_only": 1
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "profitability_status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Profitability Status",
    "options": "Profitable\nLoss"
+  },
+  {
+   "fieldname": "stops_section",
+   "fieldtype": "Section Break",
+   "label": "Stops"
+  },
+  {
+   "fieldname": "stops",
+   "fieldtype": "Table",
+   "label": "Stops",
+   "options": "In Transit-Delivery Stop"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "returned_items",
+   "fieldtype": "Table",
+   "label": "Returned Items",
+   "options": "Manifest Returned Item"
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Goods from earlier invoices collected by the driver (invoice number only). Processed by the back office.",
+   "fieldname": "return_collections",
+   "fieldtype": "Table",
+   "label": "Collected Returns (Earlier Invoices)",
+   "options": "Manifest Return Collection"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "fuel_section",
+   "fieldtype": "Section Break",
+   "label": "Fuel"
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Fuel bought on the road, logged from the driver app.",
+   "fieldname": "fuel_logs",
+   "fieldtype": "Table",
+   "label": "Fuel Logs",
+   "options": "Manifest Fuel Log"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "route_section",
+   "fieldtype": "Section Break",
+   "label": "Route"
+  },
+  {
+   "fieldname": "route_map_html",
+   "fieldtype": "HTML",
+   "label": "Route Map"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "route_geojson",
+   "fieldtype": "Long Text",
+   "label": "Route Geojson",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Vehicle Delivery Manifest",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-06-19 11:50:27.671408",
+ "modified": "2026-10-26 23:30:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Vehicle Delivery Manifest",
@@ -169,5 +263,6 @@
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

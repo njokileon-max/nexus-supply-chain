@@ -1,848 +1,856 @@
-// apps/nexus_supply_chain/nexus_supply_chain/page/nexus_live_dispatch/nexus_live_dispatch.js
-
-frappe.pages['nexus_live_dispatch'].on_page_load = function(wrapper) {
-    let page = frappe.ui.make_app_page({
-        parent: wrapper,
-        title: 'Nexus Fleet Command Center',
-        single_column: true 
-    });
-
-    $(wrapper).find('.layout-main-section').html(`
-        <div class="container-fluid p-0" style="max-width: 1800px; margin: 20px auto; height: 85vh; background: #fff;">
-            <div class="row g-0 h-100 border rounded shadow-sm overflow-hidden" style="border-color: #d1d5db !important;">
-                
-                <div class="col-md-3 border-end d-flex flex-column bg-white" style="max-height: 100%;">
-                    <div class="p-3 border-bottom bg-light">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h6 class="m-0 fw-bold text-success"><i class="fa fa-truck me-2"></i> ACTIVE FLEET</h6>
-                            <span class="badge bg-success-subtle text-success border border-success" id="conn-stat" style="font-size: 10px;">Connecting...</span>
-                        </div>
-                        <div class="input-group input-group-sm">
-                            <span class="input-group-text bg-white border-end-0"><i class="fa fa-search text-muted"></i></span>
-                            <input type="text" class="form-control border-start-0" id="fleet-search-active" placeholder="Filter active vehicle...">
-                        </div>
-                    </div>
-                    <div class="flex-grow-1 overflow-auto p-3" id="active-fleet-container" style="background-color: #f8fafc;">
-                        <div class="text-center p-5 text-muted"><i class="fa fa-spinner fa-spin fa-2x"></i><br><br>Loading Active Fleet...</div>
-                    </div>
-                </div>
-                
-                <div class="col-md-6 position-relative bg-light border-end">
-                    <div id="fleet-map" style="height: 100%; width: 100%; z-index: 1;"></div>
-                    
-                    <div class="position-absolute top-0 end-0 m-3 p-3 bg-white shadow rounded border" style="z-index: 999; font-size: 11px; min-width: 160px; border-color: #e5e7eb !important;">
-                        <div class="fw-bold mb-2 text-dark small text-uppercase">Map Legend</div>
-                        <div class="d-flex align-items-center mb-2">
-                            <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#3b82f6;border:2px solid #fff;box-shadow:0 0 4px rgba(59,130,246,0.4);"></span> 
-                            Loading / Ready
-                        </div>
-                        <div class="d-flex align-items-center mb-2">
-                            <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2px solid #fff;box-shadow:0 0 4px rgba(16,185,129,0.4);"></span> 
-                            En Route
-                        </div>
-                        <div class="d-flex align-items-center mb-2">
-                            <span class="me-2" style="width:12px;height:12px;border-radius:50%;background:#f59e0b;border:2px solid #fff;box-shadow:0 0 4px rgba(245,158,11,0.4);"></span> 
-                            Returning
-                        </div>
-                        <div class="d-flex align-items-center mb-1">
-                            <span class="me-2" style="width:12px;height:2px;background:#9ca3af;border-top:2px dashed #9ca3af;"></span> 
-                            Planned Route (Grey)
-                        </div>
-                        <div class="d-flex align-items-center mb-1">
-                            <span class="me-2" style="width:12px;height:2px;background:#2563eb;"></span> 
-                            Active Remaining (Blue)
-                        </div>
-                        <div class="mt-2 pt-2 border-top text-muted small italic">
-                            <i class="fa fa-shield-alt me-1"></i> Hosted Secure Map Engine
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-3 d-flex flex-column bg-white" style="max-height: 100%;">
-                    <div class="p-3 border-bottom bg-light">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h6 class="m-0 fw-bold text-secondary"><i class="fa fa-parking me-2"></i> STANDBY FLEET</h6>
-                        </div>
-                        <div class="input-group input-group-sm">
-                            <span class="input-group-text bg-white border-end-0"><i class="fa fa-search text-muted"></i></span>
-                            <input type="text" class="form-control border-start-0" id="fleet-search-standby" placeholder="Filter standby vehicle...">
-                        </div>
-                    </div>
-                    <div class="flex-grow-1 overflow-auto p-3" id="standby-fleet-container" style="background-color: #f8fafc;">
-                         <div class="text-center p-5 text-muted"><i class="fa fa-spinner fa-spin fa-2x"></i><br><br>Loading Standby Fleet...</div>
-                    </div>
-                </div>
-
-            </div>
-        </div>
-    `);
-
-    $('head').append(`
-        <style>
-            .vehicle-card { 
-                padding: 20px; 
-                border-radius: 10px; 
-                box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
-                font-size: 14px; 
-                border-left-width: 6px;
-                border-left-style: solid;
-                transition: transform 0.2s ease, box-shadow 0.2s ease;
-                margin-bottom: 16px;
-                cursor: pointer;
-            }
-            .vehicle-card:hover {
-                transform: translateY(-3px);
-                box-shadow: 0 15px 25px -5px rgba(0,0,0,0.15);
-            }
-            .vehicle-card.active-selection { 
-                box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.8); 
-            }
-            
-            .status-group-header { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; margin: 20px 0 12px 5px; display: flex; align-items: center; color: #64748b; }
-            .status-group-header::after { content: ""; flex: 1; height: 1px; background: #e2e8f0; margin-left: 12px; }
-
-            .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-            .plate-number { font-size: 18px; font-weight: 900; letter-spacing: 0.5px; }
-            .speed-indicator { font-family: 'Monaco', 'Consolas', monospace; font-weight: 700; font-size: 16px; }
-            
-            .status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.2); }
-            
-            .card-meta { font-size: 13px; margin-bottom: 8px; opacity: 0.95; display: flex; align-items: center; }
-            .card-meta-icon { margin-right: 8px; opacity: 0.7; width: 16px; text-align: center; }
-
-            .card-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); padding: 10px 15px; border-radius: 6px; font-size: 13px; cursor: pointer; text-align: center; width: 100%; font-weight: 700; transition: background 0.2s; }
-            .card-btn:hover { background: rgba(255,255,255,0.25); }
-
-            .ping-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; position: relative; }
-            .ping-online { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.5); animation: pulse-ring 2s infinite; }
-            .ping-offline { background: #9ca3af; opacity: 0.5; }
-            @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.7; } 100% { transform: scale(0.9); opacity: 1; } }
-
-            /* 🚨 Deep Enterprise Colors */
-            .theme-transit { background-color: #064e3b; border-left-color: #10b981; color: #ecfdf5; }
-            .theme-transit .status-badge { background-color: #047857; color: #ffffff; }
-            
-            .theme-loading { background-color: #1e3a8a; border-left-color: #3b82f6; color: #eff6ff; }
-            .theme-loading .status-badge { background-color: #1d4ed8; color: #ffffff; }
-            
-            .theme-returning { background-color: #78350f; border-left-color: #f59e0b; color: #fffbeb; }
-            .theme-returning .status-badge { background-color: #b45309; color: #ffffff; }
-            
-            .theme-idle { background-color: #334155; border-left-color: #94a3b8; color: #f8fafc; }
-            .theme-idle .status-badge { background-color: #475569; color: #ffffff; }
-            
-            .theme-maintenance { background-color: #881337; border-left-color: #f43f5e; color: #fff1f2; }
-            .theme-maintenance .status-badge { background-color: #be123c; color: #ffffff; }
-
-            /* 🚨 STOP PIN MARKERS (compact, color-coded, click-to-expand) */
-            .stop-pin-wrap {
-                position: relative;
-                width: 28px;
-                height: 28px;
-                transform: translate(-50%, -100%);
-                cursor: pointer;
-            }
-            .stop-pin-body {
-                width: 28px;
-                height: 28px;
-                border-radius: 50% 50% 50% 0;
-                transform: rotate(-45deg);
-                box-shadow: 0 3px 6px rgba(0,0,0,0.35);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border: 2px solid rgba(255,255,255,0.9);
-                transition: transform 0.15s ease;
-            }
-            .stop-pin-wrap:hover .stop-pin-body {
-                transform: rotate(-45deg) scale(1.12);
-            }
-            .stop-pin-body i {
-                transform: rotate(45deg);
-                color: #fff;
-                font-size: 12px;
-            }
-
-            /* 🚨 STOP DETAIL POPUP CARD */
-            .leaflet-popup.stop-detail-popup .leaflet-popup-content-wrapper {
-                border-radius: 10px;
-                padding: 0;
-                box-shadow: 0 12px 24px rgba(0,0,0,0.25);
-                overflow: hidden;
-            }
-            .leaflet-popup.stop-detail-popup .leaflet-popup-content {
-                margin: 0;
-                width: 240px !important;
-            }
-            .leaflet-popup.stop-detail-popup .leaflet-popup-tip {
-                box-shadow: 0 4px 6px rgba(0,0,0,0.15);
-            }
-            .stop-detail-card { padding: 14px 16px 16px 16px; position: relative; }
-            .stop-detail-close {
-                position: absolute;
-                top: 8px;
-                right: 8px;
-                width: 22px;
-                height: 22px;
-                border-radius: 50%;
-                background: rgba(0,0,0,0.08);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
-                font-size: 12px;
-                color: #475569;
-                border: none;
-                padding: 0;
-                line-height: 1;
-            }
-            .stop-detail-close:hover { background: rgba(0,0,0,0.16); }
-            .stop-detail-title { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; padding-right: 22px; margin-bottom: 6px; }
-            .stop-detail-status { display: inline-block; padding: 3px 9px; border-radius: 5px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
-            .stop-detail-row { font-size: 12.5px; color: #334155; margin-bottom: 4px; }
-            .stop-detail-row b { color: #0f172a; }
-        </style>
-    `);
-
-    let map = null;
-    let vehicle_markers = {};
-    let vehicle_marker_last_seen = {}; // 🚨 TTL tracking: tracking_id -> timestamp of last update
-
-    let static_route_layers = {}; 
-    let active_route_layers = {}; 
-    let unvisited_waypoints = {}; 
-    
-    let last_math_calc = {}; 
-    let ws = null;
-    let map_reset_timer = null;
-    let stale_ping_purge_timer = null; // 🚨 Interval handle for periodic stale-marker sweep
-    window.current_stop_markers = null;
-
-    const PING_STALE_MS = 60 * 1000;        // a vehicle marker not updated in 60s is considered stale
-    const PING_SWEEP_INTERVAL_MS = 15 * 1000; // how often we sweep for stale markers
-    
-    const FASTAPI_WS_URL = "wss://crystal-api.crystalapps.dev/telemetry/ws";
-    const TILE_SERVER_URL = "https://maps.crystalapps.dev/styles/basic-preview/style.json";
-
-    frappe.require([
-        "/assets/nexus_supply_chain/leaflet/leaflet.css", 
-        "/assets/nexus_supply_chain/leaflet/leaflet.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js",
-        "https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css",
-        "https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js",
-        "https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.20/leaflet-maplibre-gl.js"
-    ], function() {
-        
-        map = L.map('fleet-map', { zoomControl: false }).setView([-1.2921, 36.8219], 12);
-        L.control.zoom({ position: 'topright' }).addTo(map);
-        
-        L.maplibreGL({
-            style: TILE_SERVER_URL,
-            attribution: '© Sovereign Nexus Maps'
-        }).addTo(map);
-        
-        setTimeout(() => {
-            map.invalidateSize();
-            console.log("🗺️ [Nexus Dispatch] Map rendered and size invalidated.");
-        }, 500);
-        
-        refresh_dispatch_data();
-        connectTelemetryWebSocket();
-        startStalePingSweeper();
-    });
-
-    $(wrapper).on('remove', function() {
-        if (stale_ping_purge_timer) clearInterval(stale_ping_purge_timer);
-        if (map_reset_timer) clearTimeout(map_reset_timer);
-        if (ws) {
-            ws.onclose = null; // prevent auto-reconnect after intentional teardown
-            ws.close();
-        }
-    });
-
-    function refresh_dispatch_data() {
-        frappe.call({
-            method: "frappe.client.get_list",
-            args: {
-                doctype: "Vehicle In Transit",
-                fields: ["name", "vehicle_plate", "current_driver", "current_status"],
-                limit: 1000
-            },
-            callback: function(r) {
-                if (r.message) {
-                    fetch_active_manifests_and_render(r.message);
-                }
-            }
-        });
-    }
-
-    function fetch_active_manifests_and_render(vehicles) {
-        frappe.call({
-            method: "frappe.client.get_list",
-            args: {
-                doctype: "Vehicle Delivery Manifest",
-                filters: [["trip_status", "in", ["Ready", "Dispatched", "Completed"]]],
-                fields: ["name", "driver", "vehicle", "trip_status", "route_geojson"],
-                limit: 1000
-            },
-            callback: function(r) {
-                let manifests = r.message || [];
-                process_fleet_data(vehicles, manifests);
-            }
-        });
-    }
-
-    function process_fleet_data(vehicles, manifests) {
-        let activeContainer = $('#active-fleet-container').empty();
-        let standbyContainer = $('#standby-fleet-container').empty();
-
-        let manifestMap = {};
-        manifests.forEach(m => manifestMap[m.vehicle] = m);
-
-        let groups = {
-            'LOADING': [], 'EN ROUTE': [], 'RETURNING': [],
-            'IDLE': [], 'MAINTENANCE': []
-        };
-
-        vehicles.forEach(v => {
-            let status = v.current_status ? v.current_status.toUpperCase() : 'IDLE';
-            let m = manifestMap[v.name];
-            
-            if (m) {
-                if (m.trip_status === 'Ready') {
-                    status = 'LOADING';
-                } else if (m.trip_status === 'Dispatched') {
-                    status = 'EN ROUTE';
-                } else if (m.trip_status === 'Completed') {
-                    status = 'IDLE';
-                    m = null; 
-                }
-            }
-            
-            if (status === 'IDLE' || status === 'MAINTENANCE') {
-                m = null; 
-            }
-            
-            if (status === 'LOADING') {
-                groups['LOADING'].push(v);
-            } else if (groups[status]) {
-                groups[status].push(v);
-            } else {
-                groups['IDLE'].push(v);
-            }
-
-            if (m && m.route_geojson && !static_route_layers[v.name]) {
-                try {
-                    let parsedGeoJSON = JSON.parse(m.route_geojson);
-                    let staticLayer = L.geoJSON(parsedGeoJSON, {
-                        style: { color: '#9ca3af', weight: 4, opacity: 0.5, dashArray: '5, 5' }
-                    });
-                    static_route_layers[v.name] = staticLayer;
-
-                    if (parsedGeoJSON.features && parsedGeoJSON.features.length > 0) {
-                        let lineFeature = parsedGeoJSON.features.find(f => f.geometry.type === 'LineString');
-                        if (lineFeature) {
-                            unvisited_waypoints[v.name] = [...lineFeature.geometry.coordinates];
-                        }
-                    }
-
-                    let activeLayer = L.geoJSON(null, {
-                        style: { color: '#2563eb', weight: 5, opacity: 0.9 }
-                    });
-                    active_route_layers[v.name] = activeLayer;
-                } catch(e) {
-                    console.warn(`Failed to parse GeoJSON for vehicle ${v.name}`);
-                }
-            }
-        });
-
-        render_group(activeContainer, 'Loading / Ready', groups['LOADING'], manifestMap, 'theme-loading');
-        render_group(activeContainer, 'En Route', groups['EN ROUTE'], manifestMap, 'theme-transit');
-        render_group(activeContainer, 'Returning', groups['RETURNING'], manifestMap, 'theme-returning');
-        
-        render_group(standbyContainer, 'Idle', groups['IDLE'], manifestMap, 'theme-idle');
-        render_group(standbyContainer, 'Maintenance', groups['MAINTENANCE'], manifestMap, 'theme-maintenance');
-    }
-
-    function render_group(container, title, items, manifestMap, themeClass) {
-        if (items.length === 0) return;
-        
-        container.append(`<div class="status-group-header">${title}</div>`);
-        
-        items.forEach(v => {
-            let m = manifestMap[v.name];
-            if (title === 'Idle' || title === 'Maintenance') {
-                m = null; 
-            }
-
-            let manifestText = m 
-                ? `<div class="card-meta"><span class="card-meta-icon">📄</span> Manifest: ${m.name}</div>` 
-                : `<div class="card-meta" style="opacity: 0.6;"><span class="card-meta-icon">📄</span> No Active Manifest</div>`;
-            
-            let driver_email = (v.current_driver || "Unknown_Driver").toLowerCase();
-            let vehicle_id = v.name || "Idle";
-
-            if (!m) {
-                vehicle_id = "Idle";
-            }
-
-            let trackingKey = `${driver_email}::${vehicle_id}`;
-            let safeManifestId = m ? m.name : '';
-
-            let btnHtml = m && m.trip_status !== 'Ready' ? `
-                <div style="display: flex; gap: 8px; margin-top: 15px;">
-                    <button class="card-btn btn-route" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="flex: 1; margin-top: 0; background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.4); color: #fff;">
-                        <i class="fa fa-map-signs me-1"></i> Route
-                    </button>
-                    <button class="card-btn btn-gmaps" data-manifest-id="${m.name}" data-vehicle-id="${v.name}" data-tid="${trackingKey}" style="flex: 1; margin-top: 0; background: rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.4); color: #fff;">
-                        <i class="fa fa-location-arrow me-1"></i> ETA
-                    </button>
-                </div>` : '';
-
-            container.append(`
-                <div class="vehicle-card ${themeClass}" data-vehicle="${v.name}" data-tid="${trackingKey}" data-status="${title}" data-manifest="${safeManifestId}">
-                    <div class="card-header">
-                        <span class="plate-number">${v.name}</span>
-                        <span class="speed-indicator speed-val" data-tid="${trackingKey}">0 km/h</span>
-                    </div>
-                    <div class="status-badge">● ${title}</div>
-                    <div class="card-meta"><span class="card-meta-icon">👤</span> Operator: ${v.current_driver || 'Unassigned'}</div>
-                    ${manifestText}
-                    ${btnHtml}
-                    <div class="mt-3 d-flex align-items-center small rounded" style="background: rgba(0,0,0,0.2); padding: 8px;">
-                        <span class="ping-dot ping-offline" data-tid="${trackingKey}"></span>
-                        <span class="stat-text" data-tid="${trackingKey}" style="opacity: 0.9;">Offline</span>
-                    </div>
-                </div>
-            `);
-        });
-    }
-
-    function clearTemporaryMapLayers() {
-        if (map_reset_timer) {
-            clearTimeout(map_reset_timer);
-            map_reset_timer = null;
-        }
-        Object.values(static_route_layers).forEach(l => map.removeLayer(l));
-        Object.values(active_route_layers).forEach(l => map.removeLayer(l));
-        if (window.current_stop_markers) {
-            map.removeLayer(window.current_stop_markers);
-            window.current_stop_markers = null;
-        }
-    }
-
-    function setGlobalZoomTimeout() {
-        if (map_reset_timer) clearTimeout(map_reset_timer);
-        map_reset_timer = setTimeout(() => {
-            clearTemporaryMapLayers();
-            
-            let globalGroup = new L.featureGroup();
-            Object.values(vehicle_markers).forEach(m => globalGroup.addLayer(m));
-            if (globalGroup.getLayers().length > 0) {
-                map.fitBounds(globalGroup.getBounds(), { padding: [50, 50], duration: 1.2 });
-            } else {
-                map.setView([-1.2921, 36.8219], 12);
-            }
-        }, 5000);
-    }
-
-    function startStalePingSweeper() {
-        if (stale_ping_purge_timer) clearInterval(stale_ping_purge_timer);
-        stale_ping_purge_timer = setInterval(() => {
-            let now = Date.now();
-            Object.keys(vehicle_marker_last_seen).forEach(tid => {
-                if (now - vehicle_marker_last_seen[tid] > PING_STALE_MS) {
-                    purgeVehicleMarker(tid);
-                }
-            });
-        }, PING_SWEEP_INTERVAL_MS);
-    }
-
-    function purgeVehicleMarker(tracking_id) {
-        if (vehicle_markers[tracking_id]) {
-            map.removeLayer(vehicle_markers[tracking_id]);
-            delete vehicle_markers[tracking_id];
-        }
-        delete vehicle_marker_last_seen[tracking_id];
-
-        let physical_vehicle = tracking_id.split('::')[1];
-        if (physical_vehicle && physical_vehicle !== 'Idle') {
-            if (active_route_layers[physical_vehicle]) {
-                map.removeLayer(active_route_layers[physical_vehicle]);
-                delete active_route_layers[physical_vehicle];
-            }
-            if (static_route_layers[physical_vehicle]) {
-                map.removeLayer(static_route_layers[physical_vehicle]);
-                delete static_route_layers[physical_vehicle];
-            }
-            delete unvisited_waypoints[physical_vehicle];
-            delete last_math_calc[physical_vehicle];
-        }
-
-        let safe_tid = tracking_id.replace(/"/g, '\\"');
-        $(`.ping-dot[data-tid="${safe_tid}"]`).removeClass('ping-online').addClass('ping-offline');
-        $(`.stat-text[data-tid="${safe_tid}"]`).text('Offline').css('opacity', '0.8');
-        $(`.speed-val[data-tid="${safe_tid}"]`).text(`0 km/h`);
-    }
-
-    $(wrapper).on('click', '.vehicle-card', function(e) {
-        if ($(e.target).closest('.btn-gmaps, .btn-route').length) return; 
-
-        let tid = $(this).attr('data-tid'); 
-        let v_name = $(this).attr('data-vehicle'); 
-        
-        $('.vehicle-card').removeClass('active-selection');
-        $(this).addClass('active-selection');
-
-        if (vehicle_markers[tid]) {
-            map.flyTo(vehicle_markers[tid].getLatLng(), 15, { duration: 1.2 });
-            vehicle_markers[tid].openPopup();
-        } else if (static_route_layers[v_name]) {
-            map.fitBounds(static_route_layers[v_name].getBounds(), { padding: [50, 50], duration: 1.2 });
-        }
-    });
-
-    $(wrapper).on('click', '.btn-route', function(e) {
-        e.stopPropagation();
-        let btn = $(this);
-        let manifest_id = btn.attr('data-manifest-id');
-        let vehicle_id = btn.attr('data-vehicle-id');
-        let trackingKey = btn.attr('data-tid');
-        
-        let original_html = btn.html();
-        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
-
-        clearTemporaryMapLayers();
-
-        let featureGroup = L.featureGroup();
-        
-        if (static_route_layers[vehicle_id]) {
-            static_route_layers[vehicle_id].addTo(map);
-            featureGroup.addLayer(static_route_layers[vehicle_id]);
-        }
-        if (active_route_layers[vehicle_id]) {
-            active_route_layers[vehicle_id].addTo(map);
-            featureGroup.addLayer(active_route_layers[vehicle_id]);
-        }
-        if (vehicle_markers[trackingKey]) {
-            featureGroup.addLayer(vehicle_markers[trackingKey]);
-        }
-
-        frappe.call({
-            method: 'frappe.client.get',
-            args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
-            callback: function(r) {
-                btn.prop('disabled', false).html(original_html);
-                if (!r.message) return;
-                
-                let stops = r.message.stops || [];
-                window.current_stop_markers = L.featureGroup().addTo(map);
-                
-                stops.forEach(s => {
-                    let lat = s.custom_latitude || s.latitude;
-                    let lng = s.custom_longitude || s.longitude;
-                    if (!lat || !lng) return;
-
-                    let total = s.grand_total || 0;
-                    let pin_color, border_color, text_color, status_bg, status_label, icon_class, desc_label, amount_label;
-                    
-                    if (s.delivery_status === 'Delivered') {
-                        pin_color = '#22c55e'; border_color = '#16a34a'; text_color = '#166534'; status_bg = '#dcfce7';
-                        status_label = 'Delivered'; icon_class = 'fa-check'; desc_label = 'Order amount'; amount_label = total;
-                    } else if (s.delivery_status === 'Failed' || s.delivery_status === 'Cancelled') {
-                        pin_color = '#ef4444'; border_color = '#dc2626'; text_color = '#991b1b'; status_bg = '#fee2e2';
-                        status_label = 'Cancelled'; icon_class = 'fa-times'; desc_label = 'Returning amount'; amount_label = total;
-                    } else if (s.delivery_status === 'Partially Delivered') {
-                        pin_color = '#eab308'; border_color = '#ca8a04'; text_color = '#854d0e'; status_bg = '#fef08a';
-                        status_label = 'Partially Delivered'; icon_class = 'fa-adjust'; desc_label = 'Order amount'; amount_label = total;
-                    } else {
-                        pin_color = '#94a3b8'; border_color = '#64748b'; text_color = '#475569'; status_bg = '#f1f5f9';
-                        status_label = 'Not Yet Delivered'; icon_class = 'fa-clock-o'; desc_label = 'Order amount'; amount_label = total;
-                    }
-
-                    let pinHtml = `
-                        <div class="stop-pin-wrap">
-                            <div class="stop-pin-body" style="background:${pin_color}; border-color:${border_color};">
-                                <i class="fa ${icon_class}"></i>
-                            </div>
-                        </div>
-                    `;
-
-                    let icon = L.divIcon({ className: '', html: pinHtml, iconSize: [28, 28], iconAnchor: [14, 28] });
-                    let marker = L.marker([lat, lng], { icon: icon });
-
-                    let cardHtml = `
-                        <div class="stop-detail-card">
-                            <button type="button" class="stop-detail-close" aria-label="Close">&times;</button>
-                            <div class="stop-detail-title">${s.customer_name || s.customer || 'Stop'}</div>
-                            <div class="stop-detail-status" style="background:${status_bg}; color:${text_color};">● ${status_label}</div>
-                            <div class="stop-detail-row"><b>${desc_label}:</b> KES ${amount_label.toLocaleString()}</div>
-                        </div>
-                    `;
-
-                    marker.bindPopup(cardHtml, {
-                        closeButton: false,
-                        className: 'stop-detail-popup',
-                        autoPan: true,
-                        offset: [0, -6]
-                    });
-
-                    window.current_stop_markers.addLayer(marker);
-                    featureGroup.addLayer(marker);
-                });
-
-                if (featureGroup.getLayers().length > 0) {
-                    map.fitBounds(featureGroup.getBounds(), { padding: [50, 50], duration: 1.2 });
-                }
-                
-                setGlobalZoomTimeout();
-            },
-            error: function() {
-                btn.prop('disabled', false).html(original_html);
-            }
-        });
-    });
-
-    $(wrapper).on('click', '.stop-detail-close', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        map.closePopup();
-    });
-
-    $(wrapper).on('click', '.btn-gmaps', function(e) {
-        e.stopPropagation(); 
-        let btn = $(this);
-        let manifest_id = btn.attr('data-manifest-id');
-        let trackingKey = btn.attr('data-tid');
-
-        if (!localStorage.getItem('nexus_google_educated')) {
-            let d = new frappe.ui.Dialog({
-                title: '<i class="fa fa-info-circle text-primary"></i> Traffic Engine Protocol',
-                fields: [
-                    { 
-                        fieldtype: 'HTML', 
-                        fieldname: 'msg', 
-                        options: `<div class="p-2 text-muted" style="line-height: 1.6;">
-                            This tool securely bridges to Google Maps to calculate accurate ETAs based on global traffic.<br><br>
-                            <b class="text-dark">Note:</b> The external map will not display live truck animation. Return here for live physical tracking.
-                        </div>` 
-                    },
-                    { fieldtype: 'Check', fieldname: 'dont_show_again', label: "Don't show this again." }
-                ],
-                primary_action_label: 'Execute',
-                primary_action: function(values) {
-                    if (values.dont_show_again) localStorage.setItem('nexus_google_educated', 'true');
-                    d.hide();
-                    triggerDeepLinkGenerator(manifest_id, trackingKey, btn);
-                }
-            });
-            d.show();
-        } else {
-            triggerDeepLinkGenerator(manifest_id, trackingKey, btn);
-        }
-    });
-
-    function triggerDeepLinkGenerator(manifest_id, trackingKey, btn) {
-        let original_html = btn.html();
-        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
-
-        let marker = vehicle_markers[trackingKey];
-        let current_pos = marker ? marker.getLatLng() : null;
-        
-        if (!current_pos) {
-            frappe.msgprint("Awaiting initial GPS lock from vehicle.");
-            btn.prop('disabled', false).html(original_html);
-            return;
-        }
-
-        frappe.call({
-            method: 'frappe.client.get',
-            args: { doctype: 'Vehicle Delivery Manifest', name: manifest_id },
-            callback: function(r) {
-                let manifest = r.message;
-                if (!manifest) {
-                    btn.prop('disabled', false).html(original_html);
-                    return;
-                }
-                
-                let stops = manifest.stops || [];
-                let origin = `${current_pos.lat},${current_pos.lng}`;
-                let waypoints = [];
-                let destination = "";
-                let pending_stops = stops.filter(s => s.delivery_status === 'Pending' && (s.custom_latitude || s.latitude) && (s.custom_longitude || s.longitude));
-
-                let company_coords = null;
-                if (manifest.route_geojson) {
-                    try {
-                        let geo = JSON.parse(manifest.route_geojson);
-                        let line = geo.features.find(f => f.geometry.type === 'LineString');
-                        if (line && line.geometry.coordinates.length > 0) {
-                            let first_pt = line.geometry.coordinates[0]; // [lng, lat]
-                            company_coords = `${first_pt[1]},${first_pt[0]}`; // Convert to lat,lng
-                        }
-                    } catch(e) {}
-                }
-
-                pending_stops.forEach((s) => {
-                    let lat = s.custom_latitude || s.latitude;
-                    let lng = s.custom_longitude || s.longitude;
-                    waypoints.push(`${lat},${lng}`);
-                });
-
-                if (company_coords) {
-                    destination = company_coords;
-                } else if (waypoints.length > 0) {
-                    destination = waypoints.pop(); // Fallback if GeoJSON fails
-                } else {
-                    destination = origin;
-                }
-
-                let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
-                if (waypoints.length > 0) {
-                    url += `&waypoints=${waypoints.slice(0, 8).join('|')}`;
-                }
-
-                window.open(url, '_blank');
-                setTimeout(() => btn.prop('disabled', false).html(original_html), 3000);
-            },
-            error: function() {
-                btn.prop('disabled', false).html(original_html);
-            }
-        });
-    }
-
-    function connectTelemetryWebSocket() {
-        if (ws && ws.readyState === WebSocket.OPEN) return;
-
-        ws = new WebSocket(FASTAPI_WS_URL);
-
-        ws.onopen = () => {
-            console.log("✅ [Nexus Dispatch] WebSocket Connected Successfully.");
-            $('#conn-stat').text('WS Live').removeClass('text-danger border-danger').addClass('text-success border-success');
-        };
-
-        ws.onmessage = (event) => {
-            requestAnimationFrame(() => {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.command === "REFRESH_MANIFESTS") {
-                        console.log("🔄 Background Invalidation Push Received. Redrawing map state...");
-                        refresh_dispatch_data();
-                        return; 
-                    }
-
-                    const fleet = data.fleet || {};
-                    const now = Date.now();
-
-                    Object.keys(fleet).forEach(tracking_id => {
-                        let v = fleet[tracking_id];
-                        let speedKmh = Math.round(v.speed * 3.6);
-                        
-                        let exact_tid = v.tracking_id || tracking_id;
-                        let safe_tid = exact_tid.replace(/"/g, '\\"'); 
-                        
-                        let $dot = $(`.ping-dot[data-tid="${safe_tid}"]`);
-                        let $stat = $(`.stat-text[data-tid="${safe_tid}"]`);
-                        let $speed = $(`.speed-val[data-tid="${safe_tid}"]`);
-
-                        $dot.removeClass('ping-offline').addClass('ping-online');
-                        $stat.text('Live').css('opacity', '1');
-                        $speed.text(`${speedKmh} km/h`);
-
-                        vehicle_marker_last_seen[exact_tid] = now;
-
-                        let heading = v.heading || 0;
-                        let color = '#2563eb'; 
-                        let cardColor = $(`.vehicle-card[data-tid="${safe_tid}"]`).css('border-left-color');
-                        if (cardColor) color = cardColor;
-
-                        if (vehicle_markers[exact_tid]) {
-                            vehicle_markers[exact_tid].setLatLng([v.lat, v.lng]);
-                            let iconElement = vehicle_markers[exact_tid].getElement();
-                            if (iconElement) {
-                                let arrow = iconElement.querySelector('.truck-arrow');
-                                if (arrow) arrow.style.transform = `rotate(${heading}deg)`;
-                            }
-                        } else {
-                            let htmlIcon = `
-                                <div style="background:#fff; border-radius:50%; width:24px; height:24px; box-shadow: 0 0 10px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center;">
-                                    <div class="truck-arrow" style="transform: rotate(${heading}deg); transition: transform 0.5s linear;">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="${color}" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M12 2L22 20L12 17L2 20L12 2Z" />
-                                        </svg>
-                                    </div>
-                                </div>`;
-
-                            let icon = L.divIcon({ className: '', html: htmlIcon, iconSize: [24, 24] });
-                            
-                            let popupText = v.vehicle === 'Idle' 
-                                ? `<b>Unassigned Driver</b><br><span class="text-muted small">${v.driver}</span>`
-                                : `<b>${v.vehicle}</b><br><span class="text-muted small">${v.driver}</span>`;
-
-                            vehicle_markers[exact_tid] = L.marker([v.lat, v.lng], { icon: icon }).addTo(map).bindPopup(`<div class="p-1">${popupText}</div>`);
-                        }
-
-                        let physical_vehicle_name = v.vehicle;
-                        
-                        if (!last_math_calc[physical_vehicle_name] || (now - last_math_calc[physical_vehicle_name] > 1000)) {
-                            last_math_calc[physical_vehicle_name] = now;
-                            
-                            if (physical_vehicle_name !== 'Idle' && unvisited_waypoints[physical_vehicle_name] && typeof turf !== 'undefined') {
-                                let truckPoint = turf.point([v.lng, v.lat]);
-                                let remainingCoords = unvisited_waypoints[physical_vehicle_name];
-
-                                while (remainingCoords.length > 0) {
-                                    let nextPoint = turf.point(remainingCoords[0]);
-                                    let dist = turf.distance(truckPoint, nextPoint, {units: 'kilometers'});
-                                    if (dist < 0.05) remainingCoords.shift(); 
-                                    else break; 
-                                }
-
-                                if (remainingCoords.length > 0) {
-                                    let remainingLine = turf.lineString(remainingCoords);
-                                    let snappedPoint = turf.nearestPointOnLine(remainingLine, truckPoint);
-                                    let offRouteDist = turf.distance(truckPoint, snappedPoint, {units: 'kilometers'});
-
-                                    let liveLineCoords = [];
-                                    if (offRouteDist > 0.1) {
-                                        liveLineCoords = [...remainingCoords]; 
-                                    } else {
-                                        liveLineCoords = [[v.lng, v.lat], ...remainingCoords]; 
-                                    }
-
-                                    if (active_route_layers[physical_vehicle_name]) {
-                                        active_route_layers[physical_vehicle_name].clearLayers();
-                                        active_route_layers[physical_vehicle_name].addData(turf.lineString(liveLineCoords));
-                                    }
-                                } else {
-                                    if (active_route_layers[physical_vehicle_name]) active_route_layers[physical_vehicle_name].clearLayers();
-                                }
-                            }
-                        }
-                    });
-
-                    Object.keys(vehicle_markers).forEach(marker_id => {
-                        if (!fleet[marker_id]) {
-                            purgeVehicleMarker(marker_id);
-                        }
-                    });
-
-                } catch (e) {
-                    console.error("Payload execution error:", e);
-                }
-            });
-        };
-
-        ws.onclose = () => {
-            console.warn("⚠️ [Nexus Dispatch] WebSocket Disconnected.");
-            $('#conn-stat').text('Reconnecting...').removeClass('text-success border-success').addClass('text-danger border-danger');
-            setTimeout(connectTelemetryWebSocket, 3000); 
-        };
-
-        ws.onerror = (e) => { 
-            console.error("❌ [Nexus Dispatch] WebSocket Error:", e);
-            ws.close(); 
-        };
-    }
+// apps/nexus_supply_chain/nexus_supply_chain/nexus_supply_chain/page/nexus_live_dispatch/nexus_live_dispatch.js
+//
+// Nexus Fleet Command Center (Live Dispatch).
+//
+//  Data
+//   - Board (vehicles + active trips with stop progress): ONE server call,
+//     nexus_live_dispatch.get_dispatch_board, refreshed when a trip changes
+//     ("manifests" socket message or the desk realtime event).
+//   - Live positions: FastAPI /api/v2/fleet/ws (kind=driver) through
+//     NexusDispatchSocket: one snapshot, then only what changed.
+//
+//  Map (NexusMaps adapter: Google or Hosted, toggle top-right)
+//   - One pin per PHONE (device-keyed: "dev:<id>"), never per driver string,
+//     so a driver switching trucks or signing out can't leave ghost pins.
+//   - Status from the server: Live / On Stand-by / Offline. Offline pins stay
+//     at the last ping, greyed, with "last seen" (toggle in the legend).
+//   - Pins glide to new positions; cards and pins are only touched when
+//     something they show actually changed.
+//
+//  Per vehicle: Route (planned route + stops), ETA (road route from the
+//  truck through the remaining stops on your routing server, with arrival
+//  times), Open trip.
+frappe.pages["nexus_live_dispatch"].on_page_load = function (wrapper) {
+	const page = frappe.ui.make_app_page({
+		parent: wrapper,
+		title: __("Nexus Fleet Command Center"),
+		single_column: true,
+	});
+	wrapper.nexus_live_dispatch = new NexusLiveDispatch(page, wrapper);
 };
+
+frappe.pages["nexus_live_dispatch"].on_page_show = function (wrapper) {
+	if (wrapper.nexus_live_dispatch) wrapper.nexus_live_dispatch.onShow();
+};
+
+const NLD_METHODS = {
+	board: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_dispatch_board",
+	manifestMap: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_manifest_map",
+	eta: "nexus_supply_chain.nexus_supply_chain.page.nexus_live_dispatch.nexus_live_dispatch.get_eta_route",
+};
+
+/**
+ * Loads the shared Nexus scripts once each, stamped with the deployed asset
+ * version (production caches /assets for a year; the stamp changes on every
+ * deploy). Shared by every page through window.__nexusScripts.
+ */
+function nld_load_scripts(urls) {
+	const version = (frappe.boot.nexus_maps && frappe.boot.nexus_maps.asset_version) || "1";
+	const loaded = (window.__nexusScripts = window.__nexusScripts || {});
+	return urls.reduce(
+		(chain, url) =>
+			chain.then(() => {
+				if (!loaded[url]) {
+					loaded[url] = new Promise((resolve, reject) => {
+						const s = document.createElement("script");
+						s.src = `${url}?v=${encodeURIComponent(version)}`;
+						s.async = true;
+						s.onload = () => resolve();
+						s.onerror = () => {
+							delete loaded[url];
+							reject(new Error(`Could not load ${url}`));
+						};
+						document.head.appendChild(s);
+					});
+				}
+				return loaded[url];
+			}),
+		Promise.resolve(),
+	);
+}
+
+const NLD_ASSETS = [
+	"/assets/nexus_supply_chain/js/nexus_gmaps_loader.js",
+	"/assets/nexus_supply_chain/js/nexus_map_adapter.js",
+	"/assets/nexus_supply_chain/js/nexus_dispatch_socket.js",
+];
+
+// group -> [label, theme colour, column]
+const NLD_GROUPS = {
+	en_route: [__("En Route"), "#10b981", "active"],
+	returning: [__("Returning"), "#f59e0b", "active"],
+	loading: [__("Loading / Ready"), "#3b82f6", "active"],
+	idle: [__("Idle"), "#94a3b8", "standby"],
+	maintenance: [__("Maintenance"), "#f43f5e", "standby"],
+	phones: [__("Phones without a vehicle"), "#64748b", "standby"],
+};
+const NLD_GROUP_ORDER = ["en_route", "returning", "loading", "idle", "maintenance", "phones"];
+const NLD_TRIP_GROUP = { Dispatched: "en_route", Returning: "returning", Ready: "loading" };
+const NLD_STOP_COLORS = {
+	Pending: "#2563eb",
+	Delivered: "#16a34a",
+	"Partially Delivered": "#d97706",
+	Failed: "#dc2626",
+	Returned: "#6b7280",
+};
+const NLD_STATUS_RANK = { Live: 0, "On Stand-by": 1, Offline: 2 };
+
+class NexusLiveDispatch {
+	constructor(page, wrapper) {
+		this.page = page;
+		this.wrapper = wrapper;
+		this.$root = $(wrapper).find(".layout-main-section");
+		this.vehicles = new Map(); // name -> vehicle
+		this.trips = new Map(); // vehicle -> manifest row
+		this.entities = new Map(); // entity id -> socket item
+		this.cardHtml = new Map(); // card key -> last rendered html
+		this.pinLook = new Map(); // entity id -> last look key
+		this.selected = null; // card key
+		this.routeView = null; // {manifest, vehicle, data, eta}
+		this.settings = {};
+		this.showOffline = true;
+		this.filters = { active: "", standby: "" };
+		this.boardLoaded = false;
+
+		this.renderLayout();
+		this.bindUi();
+		this.init();
+	}
+
+	esc(v) {
+		return frappe.utils.escape_html(v == null ? "" : String(v));
+	}
+
+	// ------------------------------------------------------------- startup
+	async init() {
+		try {
+			await nld_load_scripts(NLD_ASSETS);
+		} catch (e) {
+			console.error(e);
+			frappe.msgprint({ title: __("Live Dispatch"), message: __("Couldn't load the map scripts. Run bench build and reload."), indicator: "red" });
+			return;
+		}
+
+		// The map loads ALONGSIDE the fleet list and the live feed, never in front of
+		// them: a slow or unreachable tile server must not hold up the rest of the page.
+		this.initMap();
+		await this.loadBoard();
+
+		this.socket = new NexusDispatchSocket({
+			kind: "driver",
+			onState: (state, detail) => this.setConnState(state, detail),
+			onSettings: (s) => (this.settings = { ...this.settings, ...s }),
+			onSnapshot: (items) => this.applySnapshot(items),
+			onDelta: (items) => this.applyDelta(items),
+			onManifests: () => this.scheduleBoardReload(),
+		});
+		this.socket.start();
+
+		// Desk realtime (Batch 2): any trip change reloads the board too.
+		frappe.realtime.on("nexus_manifest_update", (data) => {
+			this.scheduleBoardReload();
+			if (this.routeView && data && (data.manifests || []).includes(this.routeView.manifest)) {
+				this.openRoute(this.routeView.vehicle, { keepCamera: true, keepEta: true });
+			}
+		});
+
+		// "last seen x min ago" text, every 30 s (cheap: only changed cards are rewritten).
+		this.clock = setInterval(() => !document.hidden && this.renderAllCards(), 30000);
+	}
+
+	async initMap() {
+		try {
+			this.view = await NexusMaps.createView(this.$root.find(".nld-map")[0], { center: [-1.2921, 36.8219], zoom: 11 });
+			this.view.onMapClick(() => this.view.closePopup());
+			// Pins for everything that arrived while the map was loading.
+			this.entities.forEach((item) => this.renderPin(item, null, true));
+		} catch (e) {
+			console.error(e);
+			this.$root.find(".nld-map").html(`<div class="nld-map-error">${__("The map could not load. Check Nexus App Settings → Dispatch Map.")}</div>`);
+		}
+	}
+
+	onShow() {
+		if (this.view) setTimeout(() => this.view.resize(), 50);
+	}
+
+	// ------------------------------------------------------------- layout
+	renderLayout() {
+		this.$root.html(`
+			<div class="nld">
+				<div class="nld-col nld-side">
+					<div class="nld-head">
+						<div class="nld-title"><i class="fa fa-truck"></i> ${__("Active Fleet")}</div>
+						<span class="nld-conn" data-state="connecting">${__("Connecting…")}</span>
+					</div>
+					<input type="search" class="form-control input-sm nld-search" data-col="active" placeholder="${__("Filter plate, driver or trip…")}">
+					<div class="nld-list" data-col="active"><div class="nld-empty"><i class="fa fa-spinner fa-spin"></i> ${__("Loading fleet…")}</div></div>
+				</div>
+				<div class="nld-col nld-center">
+					<div class="nld-map"></div>
+					<div class="nld-legend">
+						<div class="nld-legend-title">${__("Map")}</div>
+						<div><span class="nld-dot" style="background:#10b981"></span>${__("En route")}</div>
+						<div><span class="nld-dot" style="background:#f59e0b"></span>${__("Returning")}</div>
+						<div><span class="nld-dot" style="background:#3b82f6"></span>${__("Loading / Ready")}</div>
+						<div><span class="nld-dot" style="background:#94a3b8"></span>${__("No active trip")}</div>
+						<div class="nld-legend-sep"></div>
+						<div><span class="nld-ring nld-ring-live"></span>${__("Live")}</div>
+						<div><span class="nld-ring nld-ring-standby"></span>${__("On Stand-by")}</div>
+						<div><span class="nld-ring nld-ring-offline"></span>${__("Offline (last ping)")}</div>
+						<label class="nld-legend-check"><input type="checkbox" class="nld-show-offline" checked> ${__("Show offline")}</label>
+						<div class="nld-legend-sep"></div>
+						<div><span class="nld-line" style="border-top:3px dashed #94a3b8"></span>${__("Planned route")}</div>
+						<div><span class="nld-line" style="border-top:4px solid #2563eb"></span>${__("ETA route")}</div>
+					</div>
+					<div class="nld-panel" style="display:none"></div>
+				</div>
+				<div class="nld-col nld-side">
+					<div class="nld-head">
+						<div class="nld-title nld-title-muted"><i class="fa fa-parking"></i> ${__("Standby Fleet")}</div>
+					</div>
+					<input type="search" class="form-control input-sm nld-search" data-col="standby" placeholder="${__("Filter standby…")}">
+					<div class="nld-list" data-col="standby"></div>
+				</div>
+			</div>
+		`);
+
+		if (!document.getElementById("nld-css")) {
+			$("head").append(`<style id="nld-css">
+				.nld{display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,2fr) minmax(240px,1fr);height:calc(100vh - 150px);min-height:560px;
+					border:1px solid var(--border-color);border-radius:10px;overflow:hidden;background:var(--card-bg);margin:12px 0}
+				@media (max-width:1100px){.nld{grid-template-columns:1fr;height:auto}.nld-center{height:60vh}}
+				.nld-col{display:flex;flex-direction:column;min-height:0}
+				.nld-side{background:#f8fafc;border-right:1px solid var(--border-color)}
+				.nld-side:last-child{border-right:0;border-left:1px solid var(--border-color)}
+				.nld-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px 8px}
+				.nld-title{font-weight:800;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#047857}
+				.nld-title-muted{color:#475569}
+				.nld-title .fa{margin-right:6px}
+				.nld-search{margin:0 14px 10px;width:auto}
+				.nld-list{flex:1;overflow:auto;padding:0 12px 16px}
+				.nld-empty{color:#94a3b8;text-align:center;padding:30px 10px;font-size:13px}
+				.nld-group{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:#64748b;margin:14px 2px 8px;display:flex;align-items:center}
+				.nld-group:after{content:"";flex:1;height:1px;background:#e2e8f0;margin-left:10px}
+				.nld-group .nld-count{margin-left:6px;color:#94a3b8}
+				.nld-conn{font-size:10px;font-weight:800;padding:3px 8px;border-radius:10px;border:1px solid #cbd5e1;color:#64748b;background:#fff;white-space:nowrap;max-width:60%;overflow:hidden;text-overflow:ellipsis}
+				.nld-conn[data-state=open]{color:#047857;border-color:#10b981;background:#ecfdf5}
+				.nld-conn[data-state=reconnecting],.nld-conn[data-state=offline]{color:#b45309;border-color:#f59e0b;background:#fffbeb}
+				.nld-conn[data-state=denied]{color:#b91c1c;border-color:#ef4444;background:#fef2f2}
+				.nld-card{background:#fff;border:1px solid #e2e8f0;border-left:5px solid var(--c);border-radius:10px;padding:12px 12px 10px;margin-bottom:10px;cursor:pointer;
+					transition:box-shadow .15s,transform .15s}
+				.nld-card:hover{box-shadow:0 6px 16px rgba(15,23,42,.08);transform:translateY(-1px)}
+				.nld-card.selected{box-shadow:0 0 0 3px rgba(14,165,233,.55)}
+				.nld-card-top{display:flex;justify-content:space-between;align-items:baseline}
+				.nld-plate{font-size:16px;font-weight:900;color:#0f172a;letter-spacing:.3px}
+				.nld-speed{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:#334155;font-size:13px}
+				.nld-badge{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:6px;color:#fff;background:var(--c);margin:6px 0}
+				.nld-meta{font-size:12.5px;color:#475569;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+				.nld-meta .fa{width:16px;color:#94a3b8}
+				.nld-progress{height:5px;background:#f1f5f9;border-radius:3px;overflow:hidden;margin:6px 0 2px}
+				.nld-progress>div{height:5px;background:var(--c)}
+				.nld-conn-row{display:flex;align-items:center;font-size:12px;margin-top:8px;padding:6px 8px;background:#f8fafc;border-radius:6px;color:#334155}
+				.nld-conn-row .nld-sdot{width:9px;height:9px;border-radius:50%;margin-right:7px;flex-shrink:0}
+				.nld-sdot.live{background:#22c55e;box-shadow:0 0 0 0 rgba(34,197,94,.6);animation:nldpulse 2s infinite}
+				.nld-sdot.standby{background:#f59e0b}
+				.nld-sdot.offline,.nld-sdot.none{background:#cbd5e1}
+				@keyframes nldpulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}70%{box-shadow:0 0 0 7px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+				.nld-actions{display:flex;gap:6px;margin-top:8px}
+				.nld-actions .btn{flex:1;font-weight:700}
+				.nld-center{position:relative;background:#e5e7eb}
+				.nld-map{position:absolute;inset:0}
+				.nld-map-error{padding:40px;text-align:center;color:#64748b}
+				.nld-legend{position:absolute;top:12px;left:12px;z-index:4;background:#fff;border-radius:10px;padding:10px 12px;font-size:11.5px;color:#334155;
+					box-shadow:0 4px 14px rgba(15,23,42,.18);min-width:150px}
+				.nld-legend>div{display:flex;align-items:center;margin:3px 0}
+				.nld-legend-title{font-weight:800;text-transform:uppercase;font-size:10px;letter-spacing:.08em;color:#64748b}
+				.nld-legend-sep{height:1px;background:#e2e8f0;margin:6px 0!important}
+				.nld-legend-check{display:flex;align-items:center;gap:6px;margin:4px 0 0;font-weight:600;cursor:pointer}
+				.nld-dot{width:10px;height:10px;border-radius:50%;margin-right:8px;display:inline-block}
+				.nld-ring{width:12px;height:12px;border-radius:50%;margin-right:8px;display:inline-block;border:3px solid}
+				.nld-ring-live{border-color:#22c55e}.nld-ring-standby{border-color:#f59e0b;border-style:dashed}.nld-ring-offline{border-color:#cbd5e1}
+				.nld-line{width:18px;height:0;margin-right:8px;display:inline-block}
+				.nld-panel{position:absolute;left:12px;right:12px;bottom:12px;z-index:4;background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.25);
+					padding:12px 14px;max-height:45%;overflow:auto;font-size:12.5px}
+				@media (min-width:1300px){.nld-panel{right:auto;width:420px}}
+				.nld-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+				.nld-panel-title{font-weight:900;font-size:14px;color:#0f172a}
+				.nld-panel-sub{color:#64748b;font-size:12px;margin-top:2px}
+				.nld-x{border:0;background:#f1f5f9;border-radius:50%;width:26px;height:26px;color:#475569;flex-shrink:0}
+				.nld-x:hover{background:#ef4444;color:#fff}
+				.nld-eta-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9}
+				.nld-eta-row b{color:#0f172a}
+				.nld-eta-time{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:800;color:#1d4ed8;white-space:nowrap;margin-left:10px}
+				.nld-note{color:#94a3b8;font-size:11.5px;margin-top:6px}
+				.nld-pin{position:relative;width:30px;height:30px}
+				.nld-pin .ring{position:absolute;inset:0;border-radius:50%;background:#fff;border:3px solid var(--c);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+				.nld-pin.standby .ring{border-style:dashed}
+				.nld-pin.offline{opacity:.55;filter:grayscale(1)}
+				.nld-pin .arrow{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transition:transform .6s linear}
+				.nld-pin .tag{position:absolute;top:31px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,.85);color:#fff;font-size:10px;font-weight:800;
+					padding:1px 6px;border-radius:6px;white-space:nowrap;pointer-events:none}
+				.nld-pin.live .ring{animation:nldpulse 2s infinite}
+				.nld-stop{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;color:#fff;font-weight:800;font-size:11px;
+					border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.45)}
+				.nld-pop{min-width:200px;font-size:12.5px;line-height:1.5}
+				.nld-pop-title{font-weight:900;font-size:14px;margin-bottom:2px;color:#0f172a}
+				.nld-pop .nld-actions{margin-top:8px}
+			</style>`);
+		}
+	}
+
+	bindUi() {
+		const self = this;
+		this.$root.on("input", ".nld-search", function () {
+			self.filters[$(this).data("col")] = ($(this).val() || "").toLowerCase();
+			self.applyFilters();
+		});
+		this.$root.on("change", ".nld-show-offline", function () {
+			self.showOffline = this.checked;
+			self.entities.forEach((item) => self.renderPin(item));
+		});
+		this.$root.on("click", ".nld-card", function (e) {
+			if ($(e.target).closest("button, a").length) return;
+			self.selectCard($(this).attr("data-key"), true);
+		});
+		this.$root.on("click", "[data-act]", function (e) {
+			e.preventDefault();
+			e.stopPropagation();
+			const act = $(this).attr("data-act");
+			const vehicle = $(this).attr("data-vehicle");
+			if (act === "route") self.openRoute(vehicle);
+			else if (act === "eta") self.openRoute(vehicle, { withEta: true });
+			else if (act === "open") frappe.set_route("Form", "Vehicle Delivery Manifest", $(this).attr("data-manifest"));
+			else if (act === "close-route") self.closeRoute();
+			else if (act === "refresh-eta") self.loadEta();
+		});
+	}
+
+	setConnState(state, detail) {
+		const labels = {
+			connecting: __("Connecting…"),
+			open: __("Live"),
+			reconnecting: __("Reconnecting…"),
+			offline: __("Offline"),
+			denied: __("No access"),
+		};
+		const $c = this.$root.find(".nld-conn");
+		$c.attr("data-state", state).text(labels[state] || state);
+		const why = detail && (typeof detail === "string" ? detail : detail.error);
+		$c.attr("title", why || "");
+		if (state === "denied" && !this._deniedShown) {
+			this._deniedShown = true;
+			frappe.msgprint({ title: __("Live map unavailable"), message: this.esc(why || ""), indicator: "red" });
+		}
+	}
+
+	// ------------------------------------------------------------- board
+	async loadBoard() {
+		try {
+			const r = await frappe.call({ method: NLD_METHODS.board, type: "GET" });
+			const data = r.message || {};
+			this.vehicles = new Map((data.vehicles || []).map((v) => [v.name, v]));
+			this.trips = new Map();
+			(data.manifests || []).forEach((m) => {
+				// One active trip per vehicle; if the data ever holds two, the one on the road wins.
+				const current = this.trips.get(m.vehicle);
+				const rank = (t) => ({ Dispatched: 0, Returning: 1, Ready: 2 })[t.trip_status] ?? 3;
+				if (!current || rank(m) < rank(current)) this.trips.set(m.vehicle, m);
+			});
+			this.boardLoaded = true;
+			this.layoutCards();
+			this.entities.forEach((item) => this.renderPin(item));
+		} catch (e) {
+			console.error("[Live Dispatch] board failed", e);
+			this.$root.find('.nld-list[data-col="active"]').html(`<div class="nld-empty">${__("Couldn't load the fleet. Refresh the page.")}</div>`);
+		}
+	}
+
+	scheduleBoardReload() {
+		clearTimeout(this._boardTimer);
+		this._boardTimer = setTimeout(() => this.loadBoard(), 800);
+	}
+
+	/** The phone (entity) that best represents a vehicle: Live first, then the most recent contact. */
+	entityForVehicle(vehicle) {
+		let best = null;
+		this.entities.forEach((item) => {
+			if (item.vehicle !== vehicle) return;
+			if (
+				!best ||
+				(NLD_STATUS_RANK[item.status] ?? 3) < (NLD_STATUS_RANK[best.status] ?? 3) ||
+				((NLD_STATUS_RANK[item.status] ?? 3) === (NLD_STATUS_RANK[best.status] ?? 3) && (item.last_seen || 0) > (best.last_seen || 0))
+			) {
+				best = item;
+			}
+		});
+		return best;
+	}
+
+	groupForVehicle(v) {
+		const trip = this.trips.get(v.name);
+		if (trip && NLD_TRIP_GROUP[trip.trip_status]) return NLD_TRIP_GROUP[trip.trip_status];
+		if (/maint/i.test(v.status || "")) return "maintenance";
+		return "idle";
+	}
+
+	/** Phones that aren't attached to a known vehicle get their own card. */
+	orphanEntities() {
+		const out = [];
+		this.entities.forEach((item) => {
+			if (!item.vehicle || item.vehicle === "Idle" || !this.vehicles.has(item.vehicle)) out.push(item);
+		});
+		return out;
+	}
+
+	layoutCards() {
+		const groups = {};
+		NLD_GROUP_ORDER.forEach((g) => (groups[g] = []));
+		this.vehicles.forEach((v) => groups[this.groupForVehicle(v)].push({ key: `veh:${v.name}`, vehicle: v }));
+		this.orphanEntities().forEach((item) => groups.phones.push({ key: `ent:${item.id}`, entity: item }));
+
+		const lists = { active: [], standby: [] };
+		NLD_GROUP_ORDER.forEach((g) => {
+			const items = groups[g];
+			if (!items.length) return;
+			items.sort((a, b) => this.cardSortKey(a).localeCompare(this.cardSortKey(b)));
+			const [label, color, col] = NLD_GROUPS[g];
+			lists[col].push(`<div class="nld-group" data-group="${g}">${label}<span class="nld-count">${items.length}</span></div>`);
+			items.forEach((c) => {
+				const html = this.cardInner(c);
+				this.cardHtml.set(c.key, html);
+				lists[col].push(
+					`<div class="nld-card${this.selected === c.key ? " selected" : ""}" data-key="${this.esc(c.key)}" style="--c:${color}" data-search="${this.esc(this.cardSearch(c))}">${html}</div>`,
+				);
+			});
+		});
+		const $active = this.$root.find('.nld-list[data-col="active"]');
+		const $standby = this.$root.find('.nld-list[data-col="standby"]');
+		$active.html(lists.active.join("") || `<div class="nld-empty">${__("No vehicle is loading or on the road.")}</div>`);
+		$standby.html(lists.standby.join("") || `<div class="nld-empty">${__("Nothing on standby.")}</div>`);
+		this._layoutSignature = this.layoutSignature();
+		this.applyFilters();
+	}
+
+	/** Changes when a card must move to another group (then the lists are rebuilt). */
+	layoutSignature() {
+		const parts = [];
+		this.vehicles.forEach((v) => parts.push(`${v.name}:${this.groupForVehicle(v)}`));
+		this.orphanEntities().forEach((i) => parts.push(`ent:${i.id}`));
+		return parts.sort().join("|");
+	}
+
+	cardSortKey(c) {
+		return c.vehicle ? (c.vehicle.plate || c.vehicle.name || "").toUpperCase() : (c.entity.driver_name || c.entity.id || "");
+	}
+
+	cardSearch(c) {
+		if (c.entity) return `${c.entity.driver_name || ""} ${c.entity.driver || ""} ${c.entity.device_id || ""}`.toLowerCase();
+		const v = c.vehicle;
+		const trip = this.trips.get(v.name);
+		return `${v.name} ${v.plate || ""} ${v.driver_name || ""} ${v.driver || ""} ${trip ? trip.name : ""}`.toLowerCase();
+	}
+
+	connText(item) {
+		if (!item) return { cls: "none", text: __("No phone seen yet") };
+		const ago = NexusMaps.timeAgo(item.last_seen);
+		if (item.status === "Live") return { cls: "live", text: __("Live") };
+		if (item.status === "On Stand-by") return { cls: "standby", text: __("On Stand-by · last ping {0}", [ago]) };
+		return { cls: "offline", text: item.signed_out ? __("Offline · signed out {0}", [ago]) : __("Offline · last seen {0}", [ago]) };
+	}
+
+	cardInner(c) {
+		if (c.entity) {
+			const item = c.entity;
+			const conn = this.connText(item);
+			return `
+				<div class="nld-card-top"><span class="nld-plate">${this.esc(item.driver_name || item.driver || __("Unassigned phone"))}</span>
+					<span class="nld-speed">${item.status === "Live" ? `${Math.round((item.spd || 0) * 3.6)} km/h` : ""}</span></div>
+				<div class="nld-meta"><i class="fa fa-mobile"></i> ${this.esc(item.device_id || item.id)}${item.app_version ? ` · v${this.esc(item.app_version)}` : ""}</div>
+				<div class="nld-conn-row"><span class="nld-sdot ${conn.cls}"></span>${this.esc(conn.text)}${item.bat != null ? ` · 🔋 ${Math.round(item.bat)}%` : ""}</div>`;
+		}
+		const v = c.vehicle;
+		const trip = this.trips.get(v.name);
+		const item = this.entityForVehicle(v.name);
+		const conn = this.connText(item);
+		const group = this.groupForVehicle(v);
+		const label = NLD_GROUPS[group][0];
+		const driver = (item && item.driver_signed_in && (item.driver_name || item.driver)) || v.driver_name || v.driver || __("Unassigned");
+		let tripHtml = `<div class="nld-meta" style="opacity:.7"><i class="fa fa-file-text-o"></i> ${__("No active trip")}</div>`;
+		let actions = "";
+		if (trip) {
+			const done = trip.stops_total - trip.stops_pending;
+			const pct = trip.stops_total ? Math.round((done / trip.stops_total) * 100) : 0;
+			tripHtml = `
+				<div class="nld-meta"><i class="fa fa-file-text-o"></i> ${this.esc(trip.name)} · ${done}/${trip.stops_total} ${__("stops")}</div>
+				<div class="nld-progress"><div style="width:${pct}%"></div></div>`;
+			const onRoad = trip.trip_status === "Dispatched" || trip.trip_status === "Returning";
+			actions = `<div class="nld-actions">
+				<button class="btn btn-xs btn-default" data-act="route" data-vehicle="${this.esc(v.name)}"><i class="fa fa-map-signs"></i> ${__("Route")}</button>
+				${onRoad && trip.stops_pending ? `<button class="btn btn-xs btn-default" data-act="eta" data-vehicle="${this.esc(v.name)}"><i class="fa fa-clock-o"></i> ${__("ETA")}</button>` : ""}
+				<button class="btn btn-xs btn-default" data-act="open" data-manifest="${this.esc(trip.name)}"><i class="fa fa-external-link"></i> ${__("Open")}</button>
+			</div>`;
+		}
+		return `
+			<div class="nld-card-top"><span class="nld-plate">${this.esc(v.plate || v.name)}</span>
+				<span class="nld-speed">${item && item.status === "Live" ? `${Math.round((item.spd || 0) * 3.6)} km/h` : ""}</span></div>
+			<span class="nld-badge">● ${this.esc(label)}</span>
+			<div class="nld-meta"><i class="fa fa-user"></i> ${this.esc(driver)}</div>
+			${tripHtml}
+			<div class="nld-conn-row"><span class="nld-sdot ${conn.cls}"></span>${this.esc(conn.text)}${item && item.bat != null ? ` · 🔋 ${Math.round(item.bat)}%` : ""}</div>
+			${actions}`;
+	}
+
+	/** Rewrites only the cards whose content changed. */
+	renderAllCards() {
+		if (!this.boardLoaded) return;
+		if (this.layoutSignature() !== this._layoutSignature) {
+			this.layoutCards();
+			return;
+		}
+		this.vehicles.forEach((v) => this.renderCard({ key: `veh:${v.name}`, vehicle: v }));
+		this.orphanEntities().forEach((item) => this.renderCard({ key: `ent:${item.id}`, entity: item }));
+	}
+
+	renderCard(c) {
+		const html = this.cardInner(c);
+		if (this.cardHtml.get(c.key) === html) return;
+		this.cardHtml.set(c.key, html);
+		this.$root.find(`.nld-card[data-key="${CSS.escape(c.key)}"]`).html(html);
+	}
+
+	applyFilters() {
+		["active", "standby"].forEach((col) => {
+			const q = this.filters[col];
+			const $list = this.$root.find(`.nld-list[data-col="${col}"]`);
+			$list.find(".nld-card").each(function () {
+				$(this).toggle(!q || ($(this).attr("data-search") || "").includes(q));
+			});
+		});
+	}
+
+	selectCard(key, focus) {
+		this.selected = key;
+		this.$root.find(".nld-card").removeClass("selected");
+		this.$root.find(`.nld-card[data-key="${CSS.escape(key)}"]`).addClass("selected");
+		if (!focus || !this.view) return;
+		const item = key.startsWith("ent:") ? this.entities.get(key.slice(4)) : this.entityForVehicle(key.slice(4));
+		if (item && NexusMaps.validPoint(item.lat, item.lng)) {
+			this.view.flyTo(item.lat, item.lng, 15);
+			this.showEntityPopup(item);
+		} else if (key.startsWith("veh:") && this.trips.get(key.slice(4))) {
+			this.openRoute(key.slice(4));
+		} else {
+			frappe.show_alert({ message: __("No position for this vehicle yet."), indicator: "orange" });
+		}
+	}
+
+	// ------------------------------------------------------------- live data
+	applySnapshot(items) {
+		const seen = new Set();
+		items.forEach((item) => {
+			seen.add(item.id);
+			this.upsertEntity(item, true);
+		});
+		[...this.entities.keys()].forEach((id) => !seen.has(id) && this.removeEntity(id));
+		this.renderAllCards();
+	}
+
+	applyDelta(items) {
+		let touchedLayout = false;
+		items.forEach((item) => {
+			if (item.removed) {
+				this.removeEntity(item.id);
+				touchedLayout = true;
+			} else {
+				const before = this.entities.get(item.id);
+				if (!before || before.vehicle !== item.vehicle) touchedLayout = true;
+				this.upsertEntity(item, false);
+			}
+		});
+		if (touchedLayout) this.renderAllCards();
+		else {
+			const keys = new Set();
+			items.forEach((item) => {
+				if (item.vehicle && this.vehicles.has(item.vehicle)) keys.add(`veh:${item.vehicle}`);
+				else keys.add(`ent:${item.id}`);
+			});
+			keys.forEach((key) => {
+				if (key.startsWith("veh:")) this.renderCard({ key, vehicle: this.vehicles.get(key.slice(4)) });
+				else if (this.entities.get(key.slice(4))) this.renderCard({ key, entity: this.entities.get(key.slice(4)) });
+			});
+		}
+	}
+
+	upsertEntity(item, instant) {
+		const before = this.entities.get(item.id);
+		this.entities.set(item.id, item);
+		this.renderPin(item, before, instant);
+	}
+
+	removeEntity(id) {
+		this.entities.delete(id);
+		this.pinLook.delete(id);
+		if (this.view) this.view.removeMarker(id);
+	}
+
+	tripColor(item) {
+		const trip = item.vehicle ? this.trips.get(item.vehicle) : null;
+		return (trip && NLD_GROUPS[NLD_TRIP_GROUP[trip.trip_status]] && NLD_GROUPS[NLD_TRIP_GROUP[trip.trip_status]][1]) || "#94a3b8";
+	}
+
+	pinLabel(item) {
+		const v = item.vehicle && this.vehicles.get(item.vehicle);
+		return (v && (v.plate || v.name)) || item.vehicle_plate || (item.vehicle !== "Idle" && item.vehicle) || item.driver_name || "";
+	}
+
+	pinElement(item, color, cls, label) {
+		const el = document.createElement("div");
+		el.className = `nld-pin ${cls}`;
+		el.style.setProperty("--c", color);
+		el.innerHTML = `<div class="ring"></div>
+			<div class="arrow" style="transform:rotate(${Math.round(item.hdg || 0)}deg)">
+				<svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 2L21 21L12 16.5L3 21Z" fill="${color}"/></svg>
+			</div>
+			${label ? `<div class="tag">${this.esc(label)}</div>` : ""}`;
+		return el;
+	}
+
+	renderPin(item, before, instant) {
+		if (!this.view) return;
+		if (!NexusMaps.validPoint(item.lat, item.lng)) return;
+		const cls = item.status === "Live" ? "live" : item.status === "On Stand-by" ? "standby" : "offline";
+		const hidden = cls === "offline" && !this.showOffline;
+		const color = this.tripColor(item);
+		const label = this.pinLabel(item);
+		const look = `${cls}|${color}|${label}`;
+		const zIndex = cls === "live" ? 300 : cls === "standby" ? 200 : 100;
+
+		if (!this.view.hasMarker(item.id) || this.pinLook.get(item.id) !== look) {
+			this.pinLook.set(item.id, look);
+			this.view.setMarker(item.id, {
+				lat: item.lat,
+				lng: item.lng,
+				element: this.pinElement(item, color, cls, label),
+				anchor: "center",
+				zIndex,
+				hidden,
+				onClick: () => this.showEntityPopup(this.entities.get(item.id)),
+			});
+			return;
+		}
+		this.view.updateMarker(item.id, { hidden, zIndex });
+		const spec = this.view.markers.get(item.id);
+		if (spec && spec.element) {
+			const arrow = spec.element.querySelector(".arrow");
+			if (arrow) arrow.style.transform = `rotate(${Math.round(item.hdg || 0)}deg)`;
+		}
+		if (!before || before.lat !== item.lat || before.lng !== item.lng) {
+			if (instant) this.view.updateMarker(item.id, { lat: item.lat, lng: item.lng });
+			else this.view.animateMarker(item.id, item.lat, item.lng, 1200);
+		}
+	}
+
+	showEntityPopup(item) {
+		if (!item || !this.view) return;
+		const conn = this.connText(item);
+		const v = item.vehicle && this.vehicles.get(item.vehicle);
+		const trip = v ? this.trips.get(v.name) : null;
+		const el = document.createElement("div");
+		el.className = "nld-pop";
+		el.innerHTML = `
+			<div class="nld-pop-title">${this.esc(this.pinLabel(item) || __("Phone"))}</div>
+			<div>${this.esc(item.driver_name || item.driver || __("No driver signed in"))}</div>
+			<div><span class="nld-sdot ${conn.cls}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px"></span>${this.esc(conn.text)}</div>
+			${item.status === "Live" ? `<div>${__("Speed")}: <b>${Math.round((item.spd || 0) * 3.6)} km/h</b></div>` : ""}
+			${item.acc ? `<div>${__("GPS accuracy")}: ±${Math.round(item.acc)} m</div>` : ""}
+			${item.bat != null ? `<div>${__("Battery")}: ${Math.round(item.bat)}%${item.chg ? " ⚡" : ""}</div>` : ""}
+			${trip ? `<div>${__("Trip")}: <b>${this.esc(trip.name)}</b> (${this.esc(trip.trip_status)})</div>` : ""}
+			${trip ? `<div class="nld-actions">
+				<button class="btn btn-xs btn-default" data-act="route" data-vehicle="${this.esc(v.name)}">${__("Route")}</button>
+				${trip.stops_pending && (trip.trip_status === "Dispatched" || trip.trip_status === "Returning") ? `<button class="btn btn-xs btn-default" data-act="eta" data-vehicle="${this.esc(v.name)}">${__("ETA")}</button>` : ""}
+				<button class="btn btn-xs btn-default" data-act="open" data-manifest="${this.esc(trip.name)}">${__("Open")}</button>
+			</div>` : ""}`;
+		// Buttons in the popup live outside the page root (map engine DOM): wire them directly.
+		el.querySelectorAll("[data-act]").forEach((btn) =>
+			btn.addEventListener("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				const act = btn.getAttribute("data-act");
+				if (act === "route") this.openRoute(btn.getAttribute("data-vehicle"));
+				else if (act === "eta") this.openRoute(btn.getAttribute("data-vehicle"), { withEta: true });
+				else frappe.set_route("Form", "Vehicle Delivery Manifest", btn.getAttribute("data-manifest"));
+			}),
+		);
+		this.view.showPopup(el, item.lat, item.lng, { offset: 20 });
+	}
+
+	// ------------------------------------------------------------- route view
+	clearRouteLayers() {
+		if (!this.view) return;
+		this.view.markerIds().filter((id) => id.startsWith("stop:")).forEach((id) => this.view.removeMarker(id));
+		this.view.lineIds().filter((id) => id.startsWith("planned:") || id === "eta").forEach((id) => this.view.removeLine(id));
+	}
+
+	closeRoute() {
+		this.routeView = null;
+		this.clearRouteLayers();
+		this.$root.find(".nld-panel").hide().empty();
+	}
+
+	async openRoute(vehicle, options) {
+		options = options || {};
+		const trip = this.trips.get(vehicle);
+		if (!trip || !this.view) return;
+		this.selectCard(`veh:${vehicle}`, false);
+		let data;
+		try {
+			const r = await frappe.call({ method: NLD_METHODS.manifestMap, args: { manifest: trip.name }, type: "GET" });
+			data = r.message;
+		} catch (e) {
+			return;
+		}
+		if (!data) return;
+		const keepEta = options.keepEta && this.routeView && this.routeView.manifest === trip.name ? this.routeView.eta : null;
+		this.clearRouteLayers();
+		this.routeView = { manifest: trip.name, vehicle, data, eta: keepEta };
+
+		const points = [];
+		NexusMaps.geojsonLines(data.route_geojson).forEach((line, i) => {
+			this.view.setLine(`planned:${i}`, line, { color: "#94a3b8", width: 4, opacity: 0.85, dash: [8, 6], zIndex: 1 });
+			line.forEach((p) => points.push(p));
+		});
+		data.stops.forEach((s) => {
+			if (s.lat == null) return;
+			const el = document.createElement("div");
+			el.className = "nld-stop";
+			el.style.background = NLD_STOP_COLORS[s.status] || NLD_STOP_COLORS.Pending;
+			el.textContent = s.idx;
+			this.view.setMarker(`stop:${s.name}`, {
+				lat: s.lat,
+				lng: s.lng,
+				element: el,
+				anchor: "center",
+				zIndex: s.status === "Pending" ? 150 : 120,
+				onClick: () => this.showStopPopup(s),
+			});
+			points.push([s.lat, s.lng]);
+		});
+		const truck = this.entityForVehicle(vehicle);
+		if (truck && NexusMaps.validPoint(truck.lat, truck.lng)) points.push([truck.lat, truck.lng]);
+		if (!options.keepCamera) {
+			if (points.length) this.view.fitPoints(points, { padding: 70 });
+			else frappe.show_alert({ message: __("This trip has no planned route or stop locations yet."), indicator: "orange" });
+		}
+		if (keepEta) this.drawEta(keepEta);
+		this.renderRoutePanel();
+		if (options.withEta) this.loadEta();
+	}
+
+	showStopPopup(s) {
+		const el = document.createElement("div");
+		el.className = "nld-pop";
+		const dropoff =
+			s.status !== "Pending" && s.dropoff_distance_m != null
+				? `<div>${__("Drop-off")}: ${NexusMaps.formatDistance(s.dropoff_distance_m)} ${__("from pin")} (${s.on_site ? __("on site") : __("off site")})</div>`
+				: s.status !== "Pending" && s.dropoff_gps_status === "Unavailable"
+					? `<div>${__("Drop-off")}: ${__("no GPS")}</div>`
+					: "";
+		el.innerHTML = `
+			<div class="nld-pop-title">${s.idx}. ${this.esc(s.customer || s.sales_order)}</div>
+			<div style="color:${NLD_STOP_COLORS[s.status] || "#334155"};font-weight:800">● ${this.esc(s.status)}</div>
+			<div>${this.esc(s.sales_order)} · ${format_currency(s.grand_total || 0)}</div>
+			${dropoff}
+			${s.completion_time ? `<div>${__("Confirmed")}: ${this.esc(frappe.datetime.str_to_user(s.completion_time))}</div>` : ""}`;
+		this.view.showPopup(el, s.lat, s.lng, { offset: 16 });
+	}
+
+	async loadEta() {
+		const rv = this.routeView;
+		if (!rv) return;
+		const truck = this.entityForVehicle(rv.vehicle);
+		if (!truck || !NexusMaps.validPoint(truck.lat, truck.lng)) {
+			frappe.show_alert({ message: __("No live position for this truck yet."), indicator: "orange" });
+			return;
+		}
+		if (truck.status === "Offline") {
+			frappe.show_alert({ message: __("This truck is offline; the ETA starts from its last ping ({0}).", [NexusMaps.timeAgo(truck.last_seen)]), indicator: "orange" }, 8);
+		}
+		rv.etaLoading = true;
+		this.renderRoutePanel();
+		let res;
+		try {
+			const r = await frappe.call({ method: NLD_METHODS.eta, args: { manifest: rv.manifest, latitude: truck.lat, longitude: truck.lng } });
+			res = r.message || {};
+		} catch (e) {
+			res = { status: "error", message: __("The ETA couldn't be calculated.") };
+		}
+		if (this.routeView !== rv) return;
+		rv.etaLoading = false;
+		if (res.status !== "success") {
+			rv.etaError = res.message || __("The ETA couldn't be calculated.");
+			this.renderRoutePanel();
+			return;
+		}
+		rv.etaError = null;
+		rv.eta = { ...res, computedAt: Date.now(), from: [truck.lat, truck.lng], fromStatus: truck.status };
+		this.drawEta(rv.eta);
+		this.renderRoutePanel();
+	}
+
+	drawEta(eta) {
+		const line = NexusMaps.decodePolyline(eta.polyline, 5);
+		this.view.setLine("eta", line, { color: "#2563eb", width: 5, opacity: 0.95, zIndex: 3 });
+		this.view.fitPoints(line, { padding: 70 });
+	}
+
+	renderRoutePanel() {
+		const rv = this.routeView;
+		const $p = this.$root.find(".nld-panel");
+		if (!rv) {
+			$p.hide().empty();
+			return;
+		}
+		const d = rv.data;
+		const pending = d.stops.filter((s) => s.status === "Pending").length;
+		const noPin = d.stops.filter((s) => s.lat == null).length;
+		let etaHtml = "";
+		if (rv.etaLoading) {
+			etaHtml = `<div class="nld-note"><i class="fa fa-spinner fa-spin"></i> ${__("Calculating the road route…")}</div>`;
+		} else if (rv.etaError) {
+			etaHtml = `<div class="nld-note" style="color:#b91c1c">${this.esc(rv.etaError)}</div>`;
+		} else if (rv.eta) {
+			const eta = rv.eta;
+			let cumulative = 0;
+			const rows = eta.waypoints
+				.map((w, i) => {
+					const leg = eta.legs[i] || {};
+					cumulative += Number(leg.duration_s) || 0;
+					const at = new Date(eta.computedAt + cumulative * 1000);
+					return `<div class="nld-eta-row"><span>${w.kind === "yard" ? "🏁 " : ""}<b>${this.esc(w.label)}</b>
+						<span style="color:#94a3b8"> · ${NexusMaps.formatDistance(leg.distance_m)}</span></span>
+						<span class="nld-eta-time">${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>`;
+				})
+				.join("");
+			etaHtml = `
+				<div style="margin:8px 0 4px"><b>${NexusMaps.formatDistance(eta.distance_m)}</b> · <b>${NexusMaps.formatDuration(eta.duration_s)}</b> ${__("driving")}
+					<span style="color:#94a3b8">· ${__("calculated {0}", [new Date(eta.computedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })])}</span></div>
+				${rows}
+				<div class="nld-note">${__("Arrival times are driving time from the truck's position; time spent at each stop is not included.")}</div>
+				${eta.skipped_without_pin && eta.skipped_without_pin.length ? `<div class="nld-note">${__("Not routed (no saved location)")}: ${this.esc(eta.skipped_without_pin.join(", "))}</div>` : ""}
+				${eta.truncated ? `<div class="nld-note">${__("Only the next 24 stops are routed.")}</div>` : ""}`;
+		}
+		const onRoad = d.trip_status === "Dispatched" || d.trip_status === "Returning";
+		$p.html(`
+			<div class="nld-panel-head">
+				<div><div class="nld-panel-title">${this.esc(d.name)} · ${this.esc((this.vehicles.get(d.vehicle) || {}).plate || d.vehicle)}</div>
+				<div class="nld-panel-sub">${this.esc(d.trip_status)} · ${d.stops.length - pending}/${d.stops.length} ${__("stops done")}${noPin ? ` · ${noPin} ${__("without location")}` : ""}</div></div>
+				<button class="nld-x" data-act="close-route" title="${__("Close")}"><i class="fa fa-times"></i></button>
+			</div>
+			${etaHtml}
+			<div class="nld-actions">
+				${onRoad && pending ? `<button class="btn btn-xs btn-primary" data-act="refresh-eta"><i class="fa fa-clock-o"></i> ${rv.eta ? __("Refresh ETA") : __("ETA")}</button>` : ""}
+				<button class="btn btn-xs btn-default" data-act="open" data-manifest="${this.esc(d.name)}"><i class="fa fa-external-link"></i> ${__("Open trip")}</button>
+			</div>`).show();
+	}
+}

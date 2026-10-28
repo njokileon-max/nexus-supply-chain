@@ -14,6 +14,7 @@ class FastBOMExploder:
         self.load_system_data()
 
     def load_system_data(self):
+        # 1. Standard Buying Prices
         prices = frappe.db.sql("""
             SELECT item_code, price_list_rate
             FROM `tabItem Price`
@@ -22,9 +23,11 @@ class FastBOMExploder:
         """, as_dict=True)
         self.price_map = {p.item_code: flt(p.price_list_rate) for p in prices}
 
+        # 2. Item Valuations
         vals = frappe.db.sql("SELECT name, valuation_rate, item_name, item_group FROM `tabItem`", as_dict=True)
         self.item_val_map = {v.name: flt(v.valuation_rate) for v in vals}
 
+        # 3. Active Default BOMs
         boms = frappe.db.sql("""
             SELECT name, item, quantity
             FROM `tabBOM`
@@ -35,6 +38,7 @@ class FastBOMExploder:
             for b in boms
         }
 
+        # 4. BOM Items
         self.bom_items_map = {}
         if boms:
             bom_names = tuple(b.name for b in boms)
@@ -47,7 +51,9 @@ class FastBOMExploder:
                 self.bom_items_map.setdefault(bi.parent, []).append(bi)
 
     def explode(self, item_code, depth=0, visited=None):
-
+        """
+        Returns a tuple: (unit_cost, set_of_sources)
+        """
         if visited is None:
             visited = set()
 
@@ -56,6 +62,7 @@ class FastBOMExploder:
 
         bom_info = self.bom_map.get(item_code)
 
+        # Base Case: Raw Material / Leaf Node
         if not bom_info:
             cost = self.price_map.get(item_code)
             if cost:
@@ -67,6 +74,7 @@ class FastBOMExploder:
 
             return 0.0, {"Zero Cost"}
 
+        # Recursive Case: Sub-Assembly or FG
         visited.add(item_code)
         bom_name = bom_info["name"]
         bom_yield = bom_info["qty"]
@@ -89,7 +97,45 @@ class FastBOMExploder:
 
 @frappe.whitelist()
 def get_delivery_margin_data(from_date, to_date):
+    """
+    Fetches submitted, non-return Delivery Note items (drafts, cancellations,
+    and sales returns excluded) within the date range, joins with Sales Order
+    for custom_delivery_region, calculates gross profit, and returns raw rows
+    for frontend filtering/processing.
 
+    Filter logic (ERPNext v15):
+      - dn.docstatus = 1        -> excludes Draft (0) and Cancelled (2). This
+                                    alone correctly drops cancelled originals of
+                                    amended documents, so amended docs (name
+                                    suffix "-1") are naturally kept if they were
+                                    resubmitted and submitted, or naturally
+                                    dropped if the amendment itself was
+                                    cancelled/never resubmitted.
+      - dn.status = 'Completed' -> by confirmed business definition, "Delivered
+                                    Value" means fully invoiced/reconciled
+                                    deliveries only. This excludes submitted
+                                    notes still sitting at "To Bill" or "Closed"
+                                    that haven't been fully billed yet.
+
+    Returns are intentionally NOT filtered out (no `is_return` condition):
+      Sales Return delivery notes carry negative qty/amount and are netted
+      straight into the totals here, so "Delivered Value" reflects what
+      actually stayed with the customer (gross deliveries minus returns),
+      not a gross figure that pretends returns never happened. This is the
+      figure that reconciles to the original Delivery Note report and to
+      the manual UI filter (Date + Status=Completed) — 77,750,924.30 for
+      May 2026 — and is the number a director should be shown, since a
+      gross-only figure would overstate both revenue and gross profit by
+      the value of goods that were later returned.
+
+    Deliberately NOT used:
+      - dni.parent NOT LIKE '%-1' -> this strips out valid amended/resubmitted
+        delivery notes (which get a "-1" name suffix in Frappe's amendment
+        convention), not orphaned cancellations. This was the cause of the
+        missing +12,500.00 delivery note in the original buggy query, and is
+        still wrong now — status='Completed' already does the real filtering
+        job this filter was mistakenly trying to do.
+    """
     if not from_date or not to_date:
         return []
 
@@ -121,6 +167,7 @@ def get_delivery_margin_data(from_date, to_date):
     engine = FastBOMExploder()
     rows = []
 
+    # Local cache so we don't re-explode the same item code multiple times in one report run
     cogs_cache = {}
 
     for row in data:
@@ -140,6 +187,7 @@ def get_delivery_margin_data(from_date, to_date):
         total_cogs = unit_cogs * qty
         gross_margin_inc_vat = total_amount - total_cogs
 
+        # Strip 16% VAT from revenue to get Excl VAT profit
         revenue_ex_vat = total_amount / 1.16
         gp_ex_vat = revenue_ex_vat - total_cogs
 
