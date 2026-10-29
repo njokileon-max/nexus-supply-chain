@@ -23,10 +23,10 @@ doc_events = {
         # 🚨 LEAD CONVERSION: fires once when a Customer is created from a Lead
         # (lead_name newly set) — closes open lead visits and notifies the app.
         "on_update": [
-            "nexus_supply_chain.api.handle_lead_conversion"
+            "nexus_supply_chain.api.handle_lead_conversion",
             # Desk pin edits move the open delivery stops and recalculate those
             # trips' planned distance (app and geocoder writes call it directly).
-            "nexus_supply_chain.driver_api.on_customer_update"
+            "nexus_supply_chain.driver_api.on_customer_update",
         ],
         "on_change": [
             "nexus_supply_chain.api.queue_party_geocoding",
