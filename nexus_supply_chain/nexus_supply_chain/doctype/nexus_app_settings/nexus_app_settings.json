@@ -19,7 +19,8 @@
   "hosted_tile_url",
   "column_break_map",
   "google_maps_web_api_key",
-  "google_maps_map_id"
+  "google_maps_map_id",
+  "google_maps_server_api_key"
  ],
  "fields": [
   {
@@ -117,13 +118,20 @@
    "fieldname": "google_maps_map_id",
    "fieldtype": "Data",
    "label": "Google Maps Map ID (Web)"
+  },
+  {
+   "description": "SERVER key for Google Routes (Truck Plan Dispatch / Reconcile Dispatch route + distance). Restrict it in Google Cloud to the Routes API and to this ERPNext server's public IP. Stored encrypted and read only on the server; never sent to a browser. Leave empty to use the hosted engine only.",
+   "fieldname": "google_maps_server_api_key",
+   "fieldtype": "Password",
+   "label": "Google Maps Server API Key (Routes)",
+   "length": 255
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-25 14:00:00.000000",
+ "modified": "2026-10-31 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Nexus Supply Chain",
  "name": "Nexus App Settings",
