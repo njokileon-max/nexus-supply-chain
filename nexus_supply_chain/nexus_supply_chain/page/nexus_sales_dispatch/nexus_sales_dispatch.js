@@ -83,14 +83,48 @@ frappe.pages["nexus_sales_dispatch"].on_page_load = function (wrapper) {
 	let routeOpen = null; // {email, repName, date}
 	const filters = { active: "", standby: "" };
 
-	page.add_inner_button(__("Pull Sales Attendance"), () => {
+	// ================================================================ access
+	// The live map (team list, pins, View Route) is for Sales Dispatch and
+	// System Manager only. Everyone else who can open this page gets the
+	// attendance report alone: no map scripts, roster, live socket or tiles
+	// are loaded for them. The server enforces the same rule for route data.
+	const MAP_ROLES = ["Sales Dispatch", "System Manager"];
+	const CAN_VIEW_MAP = frappe.user.has_role(MAP_ROLES);
+
+	const open_attendance = () => {
 		try {
 			show_attendance_dialog();
 		} catch (err) {
 			console.error("[Nexus Sales Dispatch] Attendance dialog failed:", err);
 			frappe.msgprint({ title: __("Error"), indicator: "red", message: __("Could not open the Attendance dialog.") });
 		}
-	});
+	};
+
+	page.add_inner_button(__("Pull Sales Attendance"), open_attendance);
+
+	if (!CAN_VIEW_MAP) {
+		page.set_title(__("Sales Attendance"));
+		$root.html(`
+			<div style="max-width:560px;margin:40px auto;padding:28px;border:1px solid var(--border-color);border-radius:12px;background:var(--card-bg);text-align:center">
+				<div style="font-size:34px;color:#0ea5e9;margin-bottom:10px"><i class="fa fa-calendar-check-o"></i></div>
+				<div style="font-size:18px;font-weight:800;color:var(--heading-color);margin-bottom:6px">${__("Sales Attendance")}</div>
+				<div class="text-muted" style="font-size:13px;margin-bottom:18px">
+					${__("Pull visit, order, invoice and distance figures for the sales team, and export them to Excel.")}
+				</div>
+				<button type="button" class="btn btn-primary nsd-open-attendance">
+					<i class="fa fa-download"></i> ${__("Pull Sales Attendance")}
+				</button>
+				<div class="text-muted small" style="margin-top:16px">
+					${__("The live team map is available to Sales Dispatch and System Manager users.")}
+				</div>
+			</div>
+		`);
+		$root.on("click", ".nsd-open-attendance", open_attendance);
+
+		// on_page_show calls resize(); nothing to resize without a map.
+		wrapper.nexus_sales_dispatch = { resize: () => {} };
+		return;
+	}
 
 	// ================================================================ layout
 	$root.html(`

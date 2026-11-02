@@ -1,7 +1,25 @@
 import frappe
 import math
 import requests
+from frappe import _
 from frappe.utils import getdate, today, add_days, cint, flt
+
+# Roles that may see the live sales map and reps' route history.
+# Keep in sync with MAP_ROLES in nexus_sales_dispatch.js.
+SALES_MAP_ROLES = ("Sales Dispatch", "System Manager")
+
+
+def _require_sales_map_access():
+    """Refuses route-history calls from users without a map role. The page
+    hides the map for them, but whitelisted methods can be called directly,
+    so the rule is enforced here as well."""
+    if frappe.session.user == "Administrator":
+        return
+    if not set(SALES_MAP_ROLES) & set(frappe.get_roles()):
+        frappe.throw(
+            _("Only Sales Dispatch or System Manager users can view sales routes."),
+            frappe.PermissionError,
+        )
 
 # Crystal API base URL for road-distance (ORS driving-car) route computation.
 CRYSTAL_API_BASE_URL = "https://crystal-api.crystalapps.dev"
@@ -197,6 +215,8 @@ def get_sales_person_route(sales_person_email, route_date):
     record resolved from the rep's own Employee/User), scoped to Sales
     Orders placed on that same date for that checked-in customer.
     """
+    _require_sales_map_access()
+
     if not sales_person_email or not route_date:
         frappe.throw("sales_person_email and route_date are required.")
 
@@ -504,4 +524,3 @@ def get_sales_attendance(date_filter, start_date=None, end_date=None, sales_pers
         row["onsite_ratio"] = round(cint(row.get("onsite_visits")) * 100.0 / total, 1) if total else 0.0
 
     return data
-
