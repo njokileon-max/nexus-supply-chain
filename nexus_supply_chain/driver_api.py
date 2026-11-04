@@ -349,6 +349,41 @@ def _sales_order_items(sales_order):
 	return items
 
 
+def _delivery_note_items(delivery_note):
+	"""item_code -> {item_code, item_name, qty, uom} from a Delivery Note: what was
+	actually loaded for the stop (Batch 12). Same shape as _sales_order_items."""
+	items = OrderedDict()
+	if not delivery_note:
+		return items
+	for r in frappe.db.sql("""
+		SELECT item_code, MAX(item_name) AS item_name, SUM(qty) AS qty, MAX(uom) AS uom, MIN(idx) AS first_idx
+		FROM `tabDelivery Note Item`
+		WHERE parent = %s
+		GROUP BY item_code
+		ORDER BY first_idx
+	""", (delivery_note,), as_dict=True):
+		items[r.item_code] = {"item_code": r.item_code, "item_name": r.item_name, "qty": flt(r.qty), "uom": r.uom}
+	return items
+
+
+def _stop_delivery_note(stop_name):
+	"""The stop's Delivery Note (Batch 12 field), or None on an older stop / before migrate."""
+	if not stop_name or not frappe.db.has_column(STOP, "delivery_note_id"):
+		return None
+	return frappe.db.get_value(STOP, stop_name, "delivery_note_id")
+
+
+def _stop_items(sales_order, stop_name=None):
+	"""Lines a stop delivers: the Delivery Note's when the stop has one (SO 20 units,
+	DN 15 -> 15), otherwise the Sales Order's (stops made before Batch 12)."""
+	dn = _stop_delivery_note(stop_name)
+	if dn:
+		items = _delivery_note_items(dn)
+		if items:
+			return items
+	return _sales_order_items(sales_order)
+
+
 def _return_reasons():
 	field = frappe.get_meta(RETURN).get_field("reason")
 	return [o.strip() for o in (field.options or "").split("\n") if o.strip()] if field else []
@@ -779,7 +814,7 @@ def get_driver_payload(user=None):
 		return {"manifests": [], "context": context}
 
 	names = tuple(r.name for r in ordered)
-	stop_distance_cols = "".join(f", `{c}`" for c in _columns(STOP, STOP_DISTANCE_FIELDS))
+	stop_distance_cols = "".join(f", `{c}`" for c in _columns(STOP, STOP_DISTANCE_FIELDS + ("delivery_note_id",)))
 	stops = frappe.db.sql(f"""
 		SELECT name, parent, idx, sales_order, customer_id, customer, customer_phone, payment_terms,
 		       grand_total, weight_kg, delivery_status, arrival_time, completion_time, delivery_notes,
@@ -844,6 +879,21 @@ def get_driver_payload(user=None):
 				"qty": flt(it.qty), "max_qty": flt(it.qty), "uom": it.uom,
 			})
 
+	dn_names = tuple({s.get("delivery_note_id") for s in stops if s.get("delivery_note_id")})
+	dn_items = {}
+	if dn_names:
+		for it in frappe.db.sql("""
+			SELECT parent, item_code, MAX(item_name) AS item_name, SUM(qty) AS qty, MAX(uom) AS uom, MIN(idx) AS first_idx
+			FROM `tabDelivery Note Item`
+			WHERE parent IN %(dns)s
+			GROUP BY parent, item_code
+			ORDER BY parent, first_idx
+		""", {"dns": dn_names}, as_dict=True):
+			dn_items.setdefault(it.parent, []).append({
+				"item_code": it.item_code, "item_name": it.item_name,
+				"qty": flt(it.qty), "max_qty": flt(it.qty), "uom": it.uom,
+			})
+
 	returns_by_stop, returns_by_parent = {}, {}
 	for r in returns:
 		item = {
@@ -900,7 +950,8 @@ def get_driver_payload(user=None):
 			"odometer_km": flt(s.odometer_km) if s.get("odometer_km") is not None else None,
 			"distance_from_previous_km": (flt(s.distance_from_previous_km)
 			                              if s.get("distance_from_previous_km") is not None else None),
-			"items": so_items.get(s.sales_order, []),
+			"items": dn_items.get(s.get("delivery_note_id")) or so_items.get(s.sales_order, []),
+			"delivery_note": s.get("delivery_note_id"),
 			"returned_items": returns_by_stop.get(s.name, []),
 			"sales_person": sales_people.get(s.sales_order),
 			"return_collections": collections_by_stop.get(s.name, []),
@@ -970,7 +1021,7 @@ def get_stop_items(manifest, stop_row):
 		so = frappe.db.get_value(STOP, {"name": stop_row, "parent": m.name, "parenttype": MANIFEST}, "sales_order")
 		if not so:
 			_err("STOP_NOT_FOUND", "This stop isn't on the manifest.")
-		return {"status": "success", "items": list(_sales_order_items(so).values()), "reasons": _return_reasons()}
+		return {"status": "success", "items": list(_stop_items(so, stop_row).values()), "reasons": _return_reasons()}
 	return _run(work)
 
 
@@ -1006,7 +1057,7 @@ def _confirm_stop(manifest, stop_row, delivery_status, returned_items=None, retu
 
 	# --- Returns ---------------------------------------------------------
 	reason = (return_reason or "").strip()
-	order_items = _sales_order_items(stop.sales_order)
+	order_items = _stop_items(stop.sales_order, stop.name)
 	return_rows = []
 
 	if delivery_status in ("Partially Delivered", "Failed"):
